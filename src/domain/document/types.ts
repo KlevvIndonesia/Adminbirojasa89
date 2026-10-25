@@ -19,6 +19,8 @@ export interface DocumentItem {
   createdAt: string;
   fileUrl: string;
   downloadUrl: string;
+  metadata?: Record<string, any> | null;
+  arahDokumen?: "MASUK" | "KELUAR" | string;
 }
 
 export interface UploadDocumentOptions {

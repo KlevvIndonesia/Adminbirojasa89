@@ -488,7 +488,7 @@ export function OrderTracking({
       } else {
         addRekapDocument(selectedOrder.orderNo, {
           phase: "AFTER",
-          documentType: newDocName.trim(),
+          documentType: (["STNK", "BPKB", "SKKP"].includes(newDocName.trim().toUpperCase()) ? newDocName.trim().toUpperCase() : "OTHER") as "STNK" | "BPKB" | "SKKP" | "OTHER",
           label: newDocName.trim(),
           fileType: isPdf ? "PDF" : "IMAGE",
           fileUrl: uploaded.fileUrl,

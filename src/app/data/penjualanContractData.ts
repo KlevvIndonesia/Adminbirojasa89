@@ -11,7 +11,11 @@ import { paymentMethodStore } from "./paymentMethodStore";
  * Schema definition - strictly preserved without alterations, translations, abbreviations, or reordering.
  */
 
-export const MUTASI_LD_COLUMNS_CONTRACT = [
+/**
+ * CANONICAL UNIFIED DATA PENJUALAN COLUMN CONTRACT (30 Columns)
+ * Applied uniformly across all 7 canonical service tabs.
+ */
+export const CANONICAL_PENJUALAN_COLUMNS_CONTRACT = [
   "Tanggal Masuk Berkas",
   "Nomor Order",
   "R4 / R2",
@@ -19,133 +23,37 @@ export const MUTASI_LD_COLUMNS_CONTRACT = [
   "Nama Customer",
   "Nama Pemilik (STNK/BPKB)",
   "Jenis Pengurusan",
-  "Samsat",
+  "Samsat Asal",
+  "Samsat Tujuan",
   "Skema Pembayaran",
   "Tanggal Uang Masuk",
   "Uang Masuk dari Konsumen",
+  "Total Tagihan Konsumen",
   "Sisa Tagihan",
   "Bank Uang Keluar",
   "Tanggal Uang Keluar",
-  "Uang Keluar Biro Jasa",
+  "Biaya Pokok Samsat",
+  "Biaya Jasa",
+  "Biaya Antar Jemput",
+  "Biaya Lainnya",
   "Profit",
   "Status Pengerjaan",
   "Status Pembayaran",
   "No Invoice",
-  "Tanggal Invoice",
   "Tanda Terima",
-  "BPKB",
-  "Status BPKB",
+  "Nomor Tanda Terima",
+  "Dokumen BPKB",
+  "Keterangan Dokumen BPKB",
   "TTB BPKB",
+  "Keterangan",
 ] as const;
 
-export const MUTASI_AS_COLUMNS_CONTRACT = [
-  "Tanggal Masuk Berkas",
-  "Nomor Order",
-  "R4 / R2",
-  "Plat No",
-  "Nama Customer",
-  "Nama Pemilik (STNK/BPKB)",
-  "Jenis Pengurusan",
-  "Samsat",
-  "Skema Pembayaran",
-  "Tanggal Uang Masuk",
-  "Uang Masuk dari Konsumen",
-  "Sisa Tagihan",
-  "Bank Uang Keluar",
-  "Tanggal Uang Keluar",
-  "Biaya Pokok Samsat",
-  "Biaya Jasa",
-  "Biaya Antar Jemput",
-  "Profit",
-  "Status Pengerjaan",
-  "Status Pembayaran",
-  "No Invoice",
-  "Tanggal Invoice",
-  "Tanda Terima",
-  "BPKB",
-  "Status BPKB",
-  "TTB BPKB",
-] as const;
-
-export const BBN_COLUMNS_CONTRACT = [
-  "Tanggal Masuk Berkas",
-  "Nomor Order",
-  "R4 / R2",
-  "Plat No",
-  "Nama Customer",
-  "Nama Pemilik (STNK/BPKB)",
-  "Jenis Pengurusan",
-  "Samsat",
-  "Skema Pembayaran",
-  "Tanggal Uang Masuk",
-  "Uang Masuk dari Konsumen",
-  "Sisa Tagihan",
-  "Bank Uang Keluar",
-  "Tanggal Uang Keluar",
-  "Biaya Pokok Samsat",
-  "Biaya Jasa",
-  "Biaya Antar Jemput",
-  "Profit",
-  "Status Pengerjaan",
-  "Status Pembayaran",
-  "No Invoice",
-  "Tanggal Invoice",
-  "Tanda Terima",
-  "BPKB",
-  "Status BPKB",
-] as const;
-
-export const PERPANJANGAN_PAJAK_COLUMNS_CONTRACT = [
-  "Tanggal Masuk Berkas",
-  "Nomor Order",
-  "R4 / R2",
-  "Plat No",
-  "Nama Customer",
-  "Nama Pemilik (STNK/BPKB)",
-  "Jenis Pengurusan",
-  "Samsat",
-  "Skema Pembayaran",
-  "Tanggal Uang Masuk",
-  "Uang Masuk dari Konsumen",
-  "Sisa Tagihan",
-  "Bank Uang Keluar",
-  "Tanggal Uang Keluar",
-  "Biaya Pokok Samsat",
-  "Biaya Jasa",
-  "Biaya Antar Jemput",
-  "Profit",
-  "Status Pengerjaan",
-  "Status Pembayaran",
-  "No Invoice",
-  "Tanggal Invoice",
-  "Tanda Terima",
-] as const;
-
-export const LAIN_LAIN_COLUMNS_CONTRACT = [
-  "Tanggal Masuk Berkas",
-  "Nomor Order",
-  "R4 / R2",
-  "Plat No",
-  "Nama Customer",
-  "Nama Pemilik (STNK/BPKB)",
-  "Jenis Pengurusan",
-  "Samsat",
-  "Skema Pembayaran",
-  "Tanggal Uang Masuk",
-  "Uang Masuk dari Konsumen",
-  "Sisa Tagihan",
-  "Bank Uang Keluar",
-  "Tanggal Uang Keluar",
-  "Biaya Pokok Samsat",
-  "Biaya Jasa",
-  "Biaya Antar Jemput",
-  "Profit",
-  "Status Pengerjaan",
-  "Status Pembayaran",
-  "No Invoice",
-  "Tanggal Invoice",
-  "Tanda Terima",
-] as const;
+// Backward-compatible aliases for legacy imports
+export const MUTASI_LD_COLUMNS_CONTRACT = CANONICAL_PENJUALAN_COLUMNS_CONTRACT;
+export const MUTASI_AS_COLUMNS_CONTRACT = CANONICAL_PENJUALAN_COLUMNS_CONTRACT;
+export const BBN_COLUMNS_CONTRACT = CANONICAL_PENJUALAN_COLUMNS_CONTRACT;
+export const PERPANJANGAN_PAJAK_COLUMNS_CONTRACT = CANONICAL_PENJUALAN_COLUMNS_CONTRACT;
+export const LAIN_LAIN_COLUMNS_CONTRACT = CANONICAL_PENJUALAN_COLUMNS_CONTRACT;
 
 export const BELUM_KURANG_BAYAR_COLUMNS_CONTRACT = [
   "Tanggal Masuk Berkas",
@@ -163,10 +71,10 @@ export const BELUM_KURANG_BAYAR_COLUMNS_CONTRACT = [
   "Biaya Pokok Samsat",
   "Biaya Jasa",
   "Biaya Antar Jemput",
+  "Biaya Lainnya",
   "Profit",
   "Status Pembayaran",
   "No Invoice",
-  "Tanggal Invoice",
   "Tanda Terima",
   "BPKB",
   "TTB BPKB",
@@ -188,10 +96,10 @@ export const PROFIT_TERPENDING_COLUMNS_CONTRACT = [
   "Biaya Pokok Samsat",
   "Biaya Jasa",
   "Biaya Antar Jemput",
+  "Biaya Lainnya",
   "Profit",
   "Status Pembayaran",
   "No Invoice",
-  "Tanggal Invoice",
   "Tanda Terima",
 ] as const;
 
@@ -211,10 +119,10 @@ export const CASHBACK_TERPENDING_COLUMNS_CONTRACT = [
   "Biaya Pokok Samsat",
   "Biaya Jasa",
   "Biaya Antar Jemput",
+  "Biaya Lainnya",
   "Profit",
   "Status Pembayaran",
   "No Invoice",
-  "Tanggal Invoice",
   "Tanda Terima",
   "Jumlah Cashback",
 ] as const;
@@ -233,7 +141,14 @@ export function buildTableColumnsFromContract(columnList: readonly string[]): Co
       colName === "Jenis Pengurusan" ||
       colName === "No Invoice" ||
       colName === "Tanda Terima" ||
-      colName === "TTB BPKB";
+      colName === "Nomor Tanda Terima" ||
+      colName === "Samsat Asal" ||
+      colName === "Samsat Tujuan" ||
+      colName === "Samsat" ||
+      colName === "TTB BPKB" ||
+      colName === "Keterangan" ||
+      colName === "Keterangan Dokumen BPKB" ||
+      colName === "Nomor Order";
 
     const isR4R2 = colName === "R4 / R2";
     const isSkemaBayar = colName === "Skema Pembayaran" || colName === "Jenis Bayar";
@@ -242,7 +157,7 @@ export function buildTableColumnsFromContract(columnList: readonly string[]): Co
     const isStatusPengerjaan = colName === "Status Pengerjaan";
     const isStatusPembayaran = colName === "Status Pembayaran" || colName === "Status";
     const isStatusBPKB = colName === "Status BPKB";
-    const isBPKB = colName === "BPKB";
+    const isBPKB = colName === "BPKB" || colName === "Dokumen BPKB";
 
     const displayLabel = colName === "Plat No" ? "Nomor Polisi" : colName;
 
@@ -272,11 +187,11 @@ export function buildTableColumnsFromContract(columnList: readonly string[]): Co
     } else if (isStatusPengerjaan) {
       baseCol.filterable = true;
       baseCol.filterType = "select";
-      baseCol.filterOptions = ["Dalam Proses", "Menunggu Arsip", "Selesai", "Pending", "-"];
+      baseCol.filterOptions = ["Dalam Proses", "Menunggu Arsip", "Selesai", "Pending", "Dibatalkan", "-"];
     } else if (isStatusPembayaran) {
       baseCol.filterable = true;
       baseCol.filterType = "select";
-      baseCol.filterOptions = ["Belum Bayar", "Kurang Bayar", "Lunas", "Kelebihan Bayar"];
+      baseCol.filterOptions = ["Belum Bayar", "Kurang Bayar", "Lunas", "Kelebihan Bayar", "Dibatalkan"];
     } else if (isStatusBPKB) {
       baseCol.filterable = true;
       baseCol.filterType = "select";
@@ -294,6 +209,17 @@ export function buildTableColumnsFromContract(columnList: readonly string[]): Co
   });
 }
 
+const CANONICAL_SERVICES_OPTIONS = [
+  "Perpanjangan 1 Tahun",
+  "Perpanjangan 5 Tahun",
+  "Mutasi Asal Samsat",
+  "Mutasi Antar Daerah",
+  "Balik Nama",
+  "Tarik Berkas",
+  "Duplikat STNK",
+  "Lainnya",
+];
+
 /**
  * Helper to build FieldConfig for add/edit pages matching exact contract
  */
@@ -308,6 +234,7 @@ export function buildFieldsFromContract(
       colName.toLowerCase().includes("profit") ||
       colName.toLowerCase().includes("cashback") ||
       colName.toLowerCase().includes("kekurangan") ||
+      colName.toLowerCase().includes("tagihan") ||
       colName.toLowerCase().includes("biaya");
     const label = colName === "Plat No" ? "Nomor Polisi" : colName;
 
@@ -321,10 +248,9 @@ export function buildFieldsFromContract(
       };
     }
     if (colName === "Samsat" || colName === "Samsat Asal" || colName === "Wilayah Samsat") {
-      const samsatLabel = (category === "mutasi-ld" && colName === "Samsat") ? "Samsat Asal" : label;
       return {
         key: colName,
-        label: samsatLabel,
+        label: colName === "Samsat" ? "Samsat Asal" : label,
         type: "samsat-select" as any,
         placeholder: "Pilih kantor Samsat asal...",
         helpText: "Kantor Samsat asal sesuai STNK/BPKB (data master resmi)",
@@ -340,14 +266,24 @@ export function buildFieldsFromContract(
       };
     }
     if (colName === "Jenis Pengurusan" || colName === "Layanan") {
+      if (category === "lainnya") {
+        return {
+          key: colName,
+          label,
+          type: "text",
+          placeholder: "Masukkan jenis pengurusan (contoh: Blokir STNK, Ganti Warna, Cek Fisik, dll)",
+          helpText: "Ketik nama layanan/pengurusan khusus secara bebas",
+        };
+      }
       const availServices = typeof pricingStore.getAvailableServices === "function"
         ? pricingStore.getAvailableServices()
         : [];
+      const options = availServices.length > 0 ? availServices : CANONICAL_SERVICES_OPTIONS;
       return {
         key: colName,
         label,
         type: "select",
-        options: availServices.length > 0 ? availServices : ["Perpanjangan 1 Tahun", "Perpanjangan 5 Tahun", "Balik Nama", "Mutasi Antar Samsat", "Mutasi Luar Daerah"],
+        options,
         placeholder: "Pilih jenis pengurusan",
         helpText: "Pilih jenis layanan resmi biro jasa",
       };
@@ -372,31 +308,22 @@ export function buildFieldsFromContract(
         helpText: "Dihitung otomatis dari Total Tagihan - Uang Masuk Terverifikasi (read-only)",
       };
     }
-    if (colName === "Jenis Pengurusan") {
-      const isMutasiLD = category === "mutasi-ld";
-      return {
-        key: colName,
-        label,
-        type: isMutasiLD ? "text" : "select",
-        readOnly: isMutasiLD ? true : false,
-        placeholder: "Mutasi Luar Daerah",
-        helpText: isMutasiLD
-          ? "Otomatis Mutasi Luar Daerah untuk halaman Mutasi LD (read-only)"
-          : "Jenis layanan pengurusan berkas",
-        options: ["Mutasi Luar Daerah", "Mutasi Antar Samsat", "Balik Nama", "Perpanjangan Pajak", "Lain-Lain"],
-      };
-    }
     if (colName === "Uang Masuk dari Konsumen") {
-      const isMutasiLD = category === "mutasi-ld";
       return {
         key: colName,
         label,
         type: "number",
-        readOnly: isMutasiLD ? false : true,
         placeholder: "0",
-        helpText: isMutasiLD
-          ? "Nominal uang yang diterima dari konsumen (dapat diisi manual)"
-          : "Dikelola melalui pencatatan pembayaran terverifikasi dengan bukti transfer (read-only)",
+        helpText: "Nominal uang masuk yang telah diterima dari konsumen",
+      };
+    }
+    if (colName === "Total Tagihan Konsumen") {
+      return {
+        key: colName,
+        label,
+        type: "number",
+        placeholder: "0",
+        helpText: "Total estimasi biaya tagihan konsumen keseluruhan",
       };
     }
     if (colName === "Nama Pemilik (STNK/BPKB)" || colName === "Nama") {
@@ -409,16 +336,39 @@ export function buildFieldsFromContract(
       };
     }
     if (colName === "Biaya Pokok Samsat" || colName === "Uang Keluar Biro Jasa" || colName === "Uang Keluar dari Biro Jasa") {
-      const isMutasiLD = category === "mutasi-ld";
       return {
         key: colName,
         label,
         type: "number",
-        readOnly: isMutasiLD ? false : true,
         placeholder: "0",
-        helpText: isMutasiLD
-          ? "Uang keluar biro jasa untuk biaya pokok pengurusan Samsat (dapat diisi manual sesuai kebutuhan transaksi)"
-          : "Dikelola melalui biaya riil Samsat / Kas Kantor (read-only)",
+        helpText: "Biaya pokok resmi Samsat (PKB, PNBP, SWDKLLJ)",
+      };
+    }
+    if (colName === "Biaya Jasa") {
+      return {
+        key: colName,
+        label,
+        type: "number",
+        placeholder: "0",
+        helpText: "Tarif jasa pengurusan resmi biro jasa",
+      };
+    }
+    if (colName === "Biaya Antar Jemput") {
+      return {
+        key: colName,
+        label,
+        type: "number",
+        placeholder: "0",
+        helpText: "Biaya penjemputan dan pengantaran dokumen",
+      };
+    }
+    if (colName === "Biaya Lainnya") {
+      return {
+        key: colName,
+        label,
+        type: "number",
+        placeholder: "0",
+        helpText: "Biaya operasional lainnya (opsional)",
       };
     }
     if (colName === "Jumlah Cashback") {
@@ -459,16 +409,13 @@ export function buildFieldsFromContract(
       };
     }
     if (colName === "Status Pengerjaan") {
-      const isMutasiLD = category === "mutasi-ld";
       return {
         key: colName,
         label,
         type: "select",
         readOnly: true,
-        options: ["Selesai", "Dalam Proses", "Menunggu Arsip", "Dibatalkan", "-"],
-        helpText: isMutasiLD
-          ? "Otomatis diset Selesai khusus registrasi transaksi Mutasi LD (read-only)"
-          : "Status tahapan pemrosesan berkas ditentukan oleh Order Tracking (read-only)",
+        options: ["Dalam Proses", "Menunggu Arsip", "Selesai", "Pending", "Dibatalkan", "-"],
+        helpText: "Status tahapan pemrosesan berkas ditentukan oleh Order Tracking (read-only)",
       };
     }
     if (colName === "Status Pembayaran" || colName === "Status") {
@@ -491,15 +438,7 @@ export function buildFieldsFromContract(
         helpText: "Nomor faktur invoice penjualan kanonis (read-only)",
       };
     }
-    if (colName === "Tanggal Invoice") {
-      return {
-        key: colName,
-        label,
-        type: "date",
-        helpText: "Tanggal terbit invoice",
-      };
-    }
-    if (colName === "Tanda Terima") {
+    if (colName === "Tanda Terima" || colName === "Nomor Tanda Terima") {
       return {
         key: colName,
         label,
@@ -508,22 +447,22 @@ export function buildFieldsFromContract(
         helpText: "Nomor tanda terima invoice/dokumen",
       };
     }
-    if (colName === "Profit") {
+    if (colName === "Dokumen BPKB" || colName === "BPKB") {
       return {
         key: colName,
         label,
-        type: "number",
-        placeholder: "0",
-        helpText: "Margin profit / keuntungan bersih",
+        type: "select",
+        options: ["Ada", "Belum", "-"],
+        helpText: "Status keberadaan fisik buku BPKB",
       };
     }
-    if (colName === "Biaya Pokok Samsat" || colName === "Uang Keluar Biro Jasa" || colName === "Uang Keluar dari Biro Jasa") {
+    if (colName === "Keterangan Dokumen BPKB") {
       return {
         key: colName,
         label,
-        type: "number",
-        placeholder: "0",
-        helpText: "Modal / uang keluar pengurusan resmi Samsat (PKB, SWDKLLJ, PNBP)",
+        type: "text",
+        placeholder: "Catatan BPKB (contoh: di leasing/finance, dll.)",
+        helpText: "Keterangan status atau lokasi penyimpanan BPKB",
       };
     }
     if (colName === "Status BPKB") {
@@ -542,6 +481,15 @@ export function buildFieldsFromContract(
         type: "text",
         placeholder: "Nomor tanda terima berkas BPKB",
         helpText: "Nomor tanda terima BPKB",
+      };
+    }
+    if (colName === "Keterangan") {
+      return {
+        key: colName,
+        label,
+        type: "text",
+        placeholder: "Catatan transaksi pengurusan...",
+        helpText: "Catatan tambahan untuk transaksi penjualan ini",
       };
     }
 
@@ -567,9 +515,6 @@ export function buildFieldsFromContract(
         placeholder: "Pilih metode pembayaran / kas...",
         helpText: "Metode pembayaran atau kas perbankan keluar",
       };
-    }
-    if (colName === "BPKB") {
-      return { key: colName, label, type: "select", options: ["Ada", "Belum"] };
     }
     if (isNumber) {
       return { key: colName, label, type: "number", placeholder: "0" };
@@ -619,46 +564,88 @@ export function buildFieldsFromContract(
 }
 
 /**
- * Resolves an operational order's service name to its canonical Data Penjualan tab category.
+ * Resolves an operational order's service name to its canonical Data Penjualan tab category (7 Canonical Services).
  * Phase 9.0 Order-to-Sales Projection Architecture.
  */
-export function resolveOrderSalesCategory(layanan?: string): PenjualanContractCategory {
-  if (!layanan) return "lain-lain";
+export function resolveOrderSalesCategory(layanan?: string, serviceId?: string): PenjualanContractCategory {
+  if (serviceId) {
+    const sId = serviceId.toLowerCase();
+    if (sId.includes("1th") || sId.includes("perp_1thn")) return "perpanjangan-1-tahun";
+    if (sId.includes("5th") || sId.includes("perp_5thn")) return "perpanjangan-5-tahun";
+    if (sId.includes("mut-as") || sId.includes("mut_as")) return "mutasi-asal";
+    if (sId.includes("mut-ad") || sId.includes("mut_ad") || sId.includes("mutasi-ld") || sId.includes("mutasi_ld")) return "mutasi-antar-daerah";
+    if (sId.includes("bbn")) return "balik-nama";
+    if (sId.includes("tarik") || sId.includes("tb")) return "tarik-berkas";
+    if (sId.includes("dup") || sId.includes("stnk")) return "duplikat-stnk";
+    if (sId.includes("lain") || sId.includes("other")) return "lainnya";
+  }
+
+  if (!layanan) return "perpanjangan-1-tahun";
   const normalized = layanan.toLowerCase().trim();
 
-  // 1. Mutasi Antar Samsat (check before generic Mutasi)
+  // 1. Duplikat STNK
+  if (normalized.includes("duplikat") || normalized.includes("hilang")) {
+    return "duplikat-stnk";
+  }
+
+  // 2. Tarik Berkas / Cabut Berkas (without mutasi)
+  if (normalized.includes("tarik berkas") || normalized.includes("cabut berkas")) {
+    return "tarik-berkas";
+  }
+
+  // 3. Mutasi Asal Samsat
   if (
+    normalized.includes("mutasi asal") ||
     normalized.includes("antar samsat") ||
     normalized === "mutasi as" ||
     normalized.includes("mutasi as ") ||
     normalized.endsWith("mutasi as")
   ) {
-    return "mutasi-as";
+    return "mutasi-asal";
   }
 
-  // 2. Mutasi Luar Daerah (or generic Mutasi)
+  // 4. Mutasi Antar Daerah / Mutasi Luar Daerah
   if (
+    normalized.includes("antar daerah") ||
     normalized.includes("luar daerah") ||
     normalized === "mutasi ld" ||
     normalized.includes("mutasi ld ") ||
     normalized.endsWith("mutasi ld") ||
     normalized.includes("mutasi")
   ) {
-    return "mutasi-ld";
+    return "mutasi-antar-daerah";
   }
 
-  // 3. Balik Nama (BBN)
+  // 5. Balik Nama (BBN)
   if (normalized.includes("balik nama") || normalized.includes("bbn")) {
-    return "bbn";
+    return "balik-nama";
   }
 
-  // 4. Perpanjangan Pajak
-  if (normalized.includes("perpanjangan") || normalized.includes("pajak")) {
-    return "perpanjangan-pajak";
+  // 6. Perpanjangan 5 Tahun (check 5 tahun before generic perpanjangan)
+  if (
+    normalized.includes("5 tahun") ||
+    normalized.includes("5 thn") ||
+    normalized.includes("lima tahun") ||
+    normalized.includes("ganti plat") ||
+    normalized.includes("ganti kaleng")
+  ) {
+    return "perpanjangan-5-tahun";
   }
 
-  // 5. Default/Other
-  return "lain-lain";
+  // 7. Perpanjangan 1 Tahun (or generic perpanjangan / pajak)
+  if (
+    normalized.includes("1 tahun") ||
+    normalized.includes("1 thn") ||
+    normalized.includes("satu tahun") ||
+    normalized.includes("perpanjangan") ||
+    normalized.includes("pajak") ||
+    normalized.includes("stnk")
+  ) {
+    return "perpanjangan-1-tahun";
+  }
+
+  // 8. Layanan Lainnya (or any other custom service)
+  return "lainnya";
 }
 
 /**
@@ -738,7 +725,7 @@ export function deriveStatusPembayaran(
     order?.currentStageName === "Dibatalkan" ||
     (order as any)?.isCancelled ||
     (order as any)?.status === "Dibatalkan" ||
-    invoice?.billingStatus === "CANCELLED" ||
+    (invoice?.billingStatus as any) === "CANCELLED" ||
     (invoice?.status as any) === "CANCELLED" ||
     (invoice as any)?.isCancelled
   ) {
@@ -761,7 +748,7 @@ export function deriveStatusPembayaran(
   }
 
   // If explicit Lunas status
-  if (invoice?.status === "Lunas" || (order?.payment?.status && order.payment.status.toLowerCase() === "lunas")) {
+  if (invoice?.status === "Lunas" || ((order?.payment as any)?.status && ((order?.payment as any).status.toLowerCase() === "lunas"))) {
     return "Lunas";
   }
 
@@ -802,8 +789,8 @@ export function projectOrderToContractRow(
   }
 
   // Samsat location: category-aware resolution (Phase 9.4 Finding 2)
-  const category = resolveOrderSalesCategory(order.layanan);
-  const isMutasi = category === "mutasi-ld" || category === "mutasi-as";
+  const category = resolveOrderSalesCategory(order.layanan, (order as any).serviceId);
+  const isMutasi = category === "mutasi-antar-daerah" || category === "mutasi-asal" || (category as any) === "mutasi-ld" || (category as any) === "mutasi-as";
 
   const isValidSamsat = (val?: string | null): boolean => {
     if (!val) return false;
@@ -811,15 +798,25 @@ export function projectOrderToContractRow(
     return trimmed !== "" && trimmed !== "-";
   };
 
+  let samsatAsal = "-";
+  if (isValidSamsat(order.wilayahSamsatAsal)) {
+    samsatAsal = order.wilayahSamsatAsal.trim();
+  } else if (invoice?.samsat && isValidSamsat(invoice.samsat)) {
+    samsatAsal = invoice.samsat.trim();
+  } else {
+    samsatAsal = "Samsat";
+  }
+
+  let samsatTujuan = "-";
+  if (isValidSamsat(order.wilayahSamsatTujuan)) {
+    samsatTujuan = order.wilayahSamsatTujuan!.trim();
+  }
+
   let samsat: string;
   if (isMutasi && isValidSamsat(order.wilayahSamsatTujuan)) {
     samsat = order.wilayahSamsatTujuan!.trim();
-  } else if (isValidSamsat(order.wilayahSamsatAsal)) {
-    samsat = order.wilayahSamsatAsal.trim();
-  } else if (invoice?.samsat && isValidSamsat(invoice.samsat)) {
-    samsat = invoice.samsat.trim();
   } else {
-    samsat = "Samsat";
+    samsat = samsatAsal;
   }
 
   // Financial calculations
@@ -842,16 +839,18 @@ export function projectOrderToContractRow(
   const metodePembayaran = order.payment?.metodePembayaran || invoice?.metodePembayaran || "-";
   const noHp = order.nomorHP || (invoice as any)?.phone || "-";
 
-  // Tanggal Uang Masuk: based on actual payment timestamp, never order creation date if unpaid
-  const tanggalUangMasuk = uangMasuk > 0
-    ? formatDateDDMMYYYY(
-        order.payment?.paymentVerifiedAt ||
-        order.payment?.tanggalBayar ||
-        (invoice as any)?.tanggalBayar ||
-        (invoice?.status === "Lunas" ? invoice?.tanggal : null) ||
-        order.createdAt
-      )
-    : "-";
+  // Tanggal Uang Masuk: based on explicit order field, payment timestamp, or fallback
+  const tanggalUangMasuk = (order as any).tanggalUangMasuk
+    ? formatDateDDMMYYYY((order as any).tanggalUangMasuk)
+    : (uangMasuk > 0
+        ? formatDateDDMMYYYY(
+            order.payment?.paymentVerifiedAt ||
+            order.payment?.tanggalBayar ||
+            (invoice as any)?.tanggalBayar ||
+            (invoice?.status === "Lunas" ? invoice?.tanggal : null) ||
+            order.createdAt
+          )
+        : "-");
 
   const bankUangKeluar = order.payment?.namaBank || invoice?.bank || "BCA";
   
@@ -871,14 +870,14 @@ export function projectOrderToContractRow(
     uangKeluar = (order.pkb || 0) + (order.swdkllj || 0) + (order.dendaSwdkllj || 0);
   }
 
-  // Profit
+  const biayaLainnya = (order as any).biayaLainnya ?? (order as any).biaya_lainnya ?? (invoice as any)?.biayaLainnya ?? 0;
+
+  // Profit: Total Uang Masuk - Biaya Pokok Samsat - Biaya Lainnya
   let profit = 0;
   if (invoice?.profit !== undefined && invoice.profit !== null) {
     profit = invoice.profit;
-  } else if (order.biayaJasa !== undefined && order.biayaJasa > 0) {
-    profit = order.biayaJasa;
   } else {
-    profit = Math.max(0, totalBiaya - uangKeluar);
+    profit = uangMasuk - uangKeluar - biayaLainnya;
   }
 
   // Phase 9.1: Authoritative dual statuses
@@ -886,7 +885,7 @@ export function projectOrderToContractRow(
     (order as any).isCancelled ||
     order.currentStageName === "Dibatalkan" ||
     (order as any).status === "Dibatalkan" ||
-    invoice?.billingStatus === "CANCELLED" ||
+    (invoice?.billingStatus as any) === "CANCELLED" ||
     (invoice?.status as any) === "CANCELLED" ||
     (invoice as any)?.isCancelled
   );
@@ -909,12 +908,15 @@ export function projectOrderToContractRow(
   const tandaTerima = (order as any).tandaTerima !== undefined
     ? ((order as any).tandaTerima || "-")
     : (invoice?.tandaTerima || "-");
+  const nomorTandaTerima = (order as any).nomorTandaTerima || tandaTerima;
 
   // BPKB fields: honor explicit manual values, never force fake defaults
   const bpkbDoc = order.clientDocuments?.["BPKB"];
   const bpkb = (order as any).bpkb !== undefined
     ? ((order as any).bpkb || "-")
     : (bpkbDoc?.status === "Sudah Tersedia" ? "Ada" : (order.currentStep >= 5 ? "Ada" : "-"));
+  const dokumenBPKB = (order as any).dokumenBPKB || bpkb;
+  const keteranganDokumenBPKB = (order as any).keteranganDokumenBPKB || (order as any).keteranganBPKB || "-";
 
   const statusBPKB = (order as any).statusBPKB !== undefined
     ? ((order as any).statusBPKB || "-")
@@ -923,6 +925,8 @@ export function projectOrderToContractRow(
   const ttbBPKB = (order as any).ttbBPKB !== undefined
     ? ((order as any).ttbBPKB || "-")
     : (invoice?.ttbBPKB || "-");
+
+  const keterangan = (order as any).catatan || (order as any).keterangan || "-";
 
   // Real digital documents count
   let attachedDocsCount = 0;
@@ -936,8 +940,8 @@ export function projectOrderToContractRow(
   if (order.rekapDocuments) {
     attachedDocsCount += order.rekapDocuments.length;
   }
-  if (order.uploadedDocs) {
-    attachedDocsCount += order.uploadedDocs.length;
+  if ((order as any).uploadedDocs) {
+    attachedDocsCount += (order as any).uploadedDocs.length;
   }
   if (order.deliveryHandover?.photoProofUrl) {
     attachedDocsCount++;
@@ -951,25 +955,17 @@ export function projectOrderToContractRow(
   return {
     id: `ord:${order.orderNo}`,
     orderNo: order.orderNo,
-    "Nomor Order": order.orderNo,
+    // 30 Uniform Columns (CANONICAL_PENJUALAN_COLUMNS_CONTRACT):
     "Tanggal Masuk Berkas": tanggalBerkas,
+    "Nomor Order": order.orderNo,
     "R4 / R2": r4r2,
     "Plat No": order.nopol,
     "Nama Customer": order.customer,
-    "No HP": noHp,
-    "Nomor HP": noHp,
     "Nama Pemilik (STNK/BPKB)": namaPemilik,
-    "Nama": namaPemilik,
     "Jenis Pengurusan": order.layanan,
-    "Samsat": samsat,
-    "Samsat Asal": samsat,
-    "Samsat Tujuan": order.wilayahSamsatTujuan || "-",
-    "Alamat": formattedAlamat,
-    alamatPenjemputan: order.alamatPenjemputan,
-    alamatPengantaran: order.alamatPengantaran,
+    "Samsat Asal": samsatAsal,
+    "Samsat Tujuan": samsatTujuan,
     "Skema Pembayaran": jenisBayar,
-    "Jenis Bayar": jenisBayar,
-    "Metode Pembayaran": metodePembayaran,
     "Tanggal Uang Masuk": tanggalUangMasuk,
     "Uang Masuk dari Konsumen": uangMasuk,
     "Total Tagihan Konsumen": totalBiaya,
@@ -977,40 +973,76 @@ export function projectOrderToContractRow(
     "Bank Uang Keluar": bankUangKeluar,
     "Tanggal Uang Keluar": tanggalUangKeluar,
     "Biaya Pokok Samsat": uangKeluar,
-    "Uang Keluar Biro Jasa": uangKeluar,
-    "Uang Keluar dari Biro Jasa": uangKeluar,
     "Biaya Jasa": (order as any).biayaJasa || profit,
     "Biaya Antar Jemput": (order as any).biayaAntarJemput || 0,
-    "Nama Rekening/Penerima": (order as any).namaPenerimaKeluar || (order as any).namaPemilikRekeningKeluar || "-",
-    "Nama Rekening / Penerima": (order as any).namaPenerimaKeluar || (order as any).namaPemilikRekeningKeluar || "-",
-    biayaJasa: (order as any).biayaJasa || profit,
-    biayaAntarJemput: (order as any).biayaAntarJemput || 0,
-    namaPenerimaKeluar: (order as any).namaPenerimaKeluar || (order as any).namaPemilikRekeningKeluar || "-",
-    metodePembayaranKeluar: (order as any).metodePembayaranKeluar || "",
+    "Biaya Lainnya": (order as any).biayaLainnya || (invoice as any)?.biayaLainnya || 0,
     "Profit": profit,
-    "Jumlah Cashback": cashback,
     "Status Pengerjaan": statusPengerjaan,
     "Status Pembayaran": statusPembayaran,
-    "Status": statusPengerjaan,
     "No Invoice": noInvoice,
-    "Tanggal Invoice": tanggalInvoice,
     "Tanda Terima": tandaTerima,
+    "Nomor Tanda Terima": nomorTandaTerima,
+    "Dokumen BPKB": dokumenBPKB,
+    "Keterangan Dokumen BPKB": keteranganDokumenBPKB,
+    "TTB BPKB": ttbBPKB,
+    "Keterangan": keterangan,
+
+    // Backward-compatibility keys:
+    "Samsat": samsat,
+    "Nama": namaPemilik,
+    "No HP": noHp,
+    "Nomor HP": noHp,
+    "Alamat": formattedAlamat,
+    alamatPenjemputan: order.alamatPenjemputan,
+    alamatPengantaran: order.alamatPengantaran,
+    "Jenis Bayar": jenisBayar,
+    "Metode Pembayaran": metodePembayaran,
+    "Uang Keluar Biro Jasa": uangKeluar,
+    "Uang Keluar dari Biro Jasa": uangKeluar,
+    "Nama Rekening/Penerima": (order as any).namaPenerima || (order as any).namaPenerimaKeluar || (order as any).namaPemilikRekeningKeluar || "-",
+    "Nama Rekening / Penerima": (order as any).namaPenerima || (order as any).namaPenerimaKeluar || (order as any).namaPemilikRekeningKeluar || "-",
+    "Nama Penerima": (order as any).namaPenerima || (order as any).namaPenerimaKeluar || "-",
+    namaPenerima: (order as any).namaPenerima || (order as any).namaPenerimaKeluar || "-",
+    "Staf Pengirim": (order as any).stafPengirim || "",
+    stafPengirim: (order as any).stafPengirim || "",
+    "Nomor Rekening Pengirim": (order as any).noRekeningPengirim || (order as any).payment?.noRekening || "",
+    noRekeningPengirim: (order as any).noRekeningPengirim || (order as any).payment?.noRekening || "",
+    "Nomor Rekening Penerima": (order as any).noRekeningPenerima || "",
+    noRekeningPenerima: (order as any).noRekeningPenerima || "",
+    biayaJasa: (order as any).biayaJasa || profit,
+    biayaAntarJemput: (order as any).biayaAntarJemput || 0,
+    biayaLainnya: (order as any).biayaLainnya || (invoice as any)?.biayaLainnya || 0,
+    namaPenerimaKeluar: (order as any).namaPenerimaKeluar || (order as any).namaPemilikRekeningKeluar || "-",
+    metodePembayaranKeluar: (order as any).metodePembayaranKeluar || "",
+    "Jumlah Cashback": cashback,
+    "Status": statusPengerjaan,
     "BPKB": bpkb,
     "Status BPKB": statusBPKB,
-    "TTB BPKB": ttbBPKB,
     "Dokumen": attachedDocsCount > 0 ? `${attachedDocsCount} Berkas` : "Belum Ada",
     attachedDocsCount,
+    dokumenAwal: (order as any).dokumenAwal || order.rekapDocuments?.filter((d: any) => d.phase === "BEFORE" || d.phase === "INBOUND" || !d.phase) || [],
+    dokumenAkhir: (order as any).dokumenAkhir || order.rekapDocuments?.filter((d: any) => d.phase === "AFTER" || d.category === "Dokumen Hasil") || [],
   };
 }
 
 /**
  * Initial Contract Datasets (Clean Initial State - Transactions Derived from Canonical Orders)
  */
-export const initialMutasiLDContract: any[] = [];
-export const initialMutasiASContract: any[] = [];
-export const initialBBNContract: any[] = [];
-export const initialPerpanjanganPajakContract: any[] = [];
-export const initialLainLainContract: any[] = [];
+export const initialPerpanjangan1TahunContract: any[] = [];
+export const initialPerpanjangan5TahunContract: any[] = [];
+export const initialMutasiAsalContract: any[] = [];
+export const initialMutasiAntarDaerahContract: any[] = [];
+export const initialBalikNamaContract: any[] = [];
+export const initialTarikBerkasContract: any[] = [];
+export const initialDuplikatSTNKContract: any[] = [];
+export const initialLainnyaContract: any[] = [];
+
+// Backwards compatibility aliases
+export const initialMutasiLDContract: any[] = initialMutasiAntarDaerahContract;
+export const initialMutasiASContract: any[] = initialMutasiAsalContract;
+export const initialBBNContract: any[] = initialBalikNamaContract;
+export const initialPerpanjanganPajakContract: any[] = initialPerpanjangan1TahunContract;
+export const initialLainLainContract: any[] = initialTarikBerkasContract;
 export const initialBelumKurangBayarContract: any[] = [];
 export const initialProfitTerpendingContract: any[] = [];
 export const initialCashbackTerpendingContract: any[] = [];

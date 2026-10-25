@@ -140,6 +140,20 @@ export async function deleteArchivedOrder(req: AuthenticatedRequest, res: Respon
   }
 }
 
+export async function hardDeleteOrder(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
+  try {
+    const { orderNo } = req.params;
+    const success = orderService.hardDeleteOrder(orderNo, req.user);
+    if (!success) {
+      res.status(404).json({ success: false, message: `Data order ${orderNo} tidak ditemukan atau sudah dihapus` });
+      return;
+    }
+    res.json({ success: true, message: `Data order ${orderNo} berhasil dihapus permanen`, timestamp: new Date().toISOString() });
+  } catch (err) {
+    next(err);
+  }
+}
+
 export async function clearArchivedOrders(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
   try {
     const clearedCount = orderService.clearArchivedOrders(req.user);

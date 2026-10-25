@@ -30,7 +30,6 @@ export default defineConfig({
       '@app': path.resolve(__dirname, './src/app'),
       '@domain': path.resolve(__dirname, './src/domain'),
       '@data': path.resolve(__dirname, './src/data'),
-      '@api': path.resolve(__dirname, './src/api'),
     },
   },
   server: {

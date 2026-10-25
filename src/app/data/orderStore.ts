@@ -42,6 +42,61 @@ export type {
 };
 export { STAGES, getDefaultSamsatProcesses, createInitialOrders };
 
+export function extractPeriodMMYY(dateStr?: string): string {
+  if (!dateStr) {
+    const now = new Date();
+    const mm = String(now.getMonth() + 1).padStart(2, "0");
+    const yy = String(now.getFullYear()).slice(-2);
+    return `${mm}${yy}`;
+  }
+  const isoMatch = String(dateStr).match(/^(\d{4})-(\d{1,2})-(\d{1,2})/);
+  if (isoMatch) {
+    const yy = isoMatch[1].slice(-2);
+    const mm = isoMatch[2].padStart(2, "0");
+    return `${mm}${yy}`;
+  }
+  const slashMatch = String(dateStr).match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})/);
+  if (slashMatch) {
+    const mm = slashMatch[2].padStart(2, "0");
+    const yy = slashMatch[3].slice(-2);
+    return `${mm}${yy}`;
+  }
+  const d = new Date(dateStr);
+  if (!isNaN(d.getTime())) {
+    const mm = String(d.getMonth() + 1).padStart(2, "0");
+    const yy = String(d.getFullYear()).slice(-2);
+    return `${mm}${yy}`;
+  }
+  const now = new Date();
+  return `${String(now.getMonth() + 1).padStart(2, "0")}${String(now.getFullYear()).slice(-2)}`;
+}
+
+export function generateNextOrderAndInvoiceNo(
+  dateStr?: string,
+  existingOrders: OperationalOrder[] = []
+): { orderNo: string; invoiceNo: string } {
+  const mmyy = extractPeriodMMYY(dateStr);
+  const prefix = `ORD-${mmyy}-`;
+  let maxSeq = 0;
+  for (const ord of existingOrders) {
+    if (ord && ord.orderNo && ord.orderNo.startsWith(prefix)) {
+      const parts = ord.orderNo.split("-");
+      if (parts.length >= 3) {
+        const num = parseInt(parts[2], 10);
+        if (!isNaN(num) && num > maxSeq) {
+          maxSeq = num;
+        }
+      }
+    }
+  }
+  const nextSeq = maxSeq + 1;
+  const seqStr = String(nextSeq).padStart(3, "0");
+  return {
+    orderNo: `ORD-${mmyy}-${seqStr}`,
+    invoiceNo: `INV-${mmyy}-${seqStr}`,
+  };
+}
+
 
 // Global application state boundary for Orders
 class OrderStore {
@@ -150,8 +205,10 @@ class OrderStore {
     const totalEst = data.totalEstimasi || data.uangMasuk || 0;
     const initialPaid = data.uangMasuk || 0;
     const explicitInvoice = data.noInvoice !== undefined ? data.noInvoice : (data.invoiceNo || data["No Invoice"]);
+    const explicitOrderNo = data.orderNo || data["Nomor Order"];
 
     return this.addOrder({
+      orderNo: explicitOrderNo || undefined,
       customer: data.customer.trim(),
       nopol: data.nopol.trim(),
       layanan: data.layanan.trim(),
@@ -162,15 +219,18 @@ class OrderStore {
       jenisKendaraan: data.jenisKendaraan || (data.r4r2 === "R2" ? "Motor" : "Mobil"),
       biayaJasa: data.biayaJasa || 0,
       biayaAntarJemput: data.biayaAntarJemput || 0,
+      biayaLainnya: data.biayaLainnya || data["Biaya Lainnya"] || 0,
       namaPenerimaKeluar: data.namaPenerimaKeluar || data.namaPemilikRekeningKeluar || "",
       bankUangKeluar: data.bankUangKeluar || "",
       metodePembayaranKeluar: data.metodePembayaranKeluar || "",
-      tanggalPengeluaranSamsat: data.tanggalPengeluaranSamsat || "",
+      tanggalMasukBerkas: data.tanggalMasukBerkas || data["Tanggal Masuk Berkas"],
+      tanggalUangMasuk: data.tanggalUangMasuk || data["Tanggal Uang Masuk"],
+      tanggalPengeluaranSamsat: data.tanggalPengeluaranSamsat || data.tanggalUangKeluar || data["Tanggal Uang Keluar"] || "",
       totalEstimasi: totalEst,
       currentStep: data.currentStep || 1,
       currentStageName: data.currentStageName || "Verifikasi",
       isArchived: data.isArchived || false,
-      catatanOrder: data.catatanOrder || "Order dibuat dari Data Penjualan (+ Tambah Data)",
+      catatanOrder: data.catatanOrder || data.catatan || data.keterangan || data["Keterangan"] || "Order dibuat dari Data Penjualan (+ Tambah Data)",
       statusPengerjaan: data.statusPengerjaan,
       salesSnapshotStatus: data.salesSnapshotStatus || data.statusPengerjaan,
       noInvoice: explicitInvoice,
@@ -227,27 +287,44 @@ class OrderStore {
 
     const totalEst = data.totalEstimasi || data.uangMasuk || 0;
     const initialPaid = data.uangMasuk || 0;
-    const explicitInvoice = data.invoiceNo || data["No Invoice"];
+    const explicitInvoice = data.noInvoice !== undefined ? data.noInvoice : (data.invoiceNo || data["No Invoice"]);
+    const explicitOrderNo = data.orderNo || data["Nomor Order"];
 
     return await this.addOrderAsync({
+      orderNo: explicitOrderNo || undefined,
       customer: data.customer.trim(),
       nopol: data.nopol.trim(),
       layanan: data.layanan.trim(),
       namaPemilik: data.namaPemilik?.trim() || "-",
       nomorHP: data.nomorHP?.trim() || "081200000000",
       wilayahSamsatAsal: data.wilayahSamsatAsal || "Jakarta Timur",
+      wilayahSamsatTujuan: data.wilayahSamsatTujuan || "-",
       jenisKendaraan: data.jenisKendaraan || (data.r4r2 === "R2" ? "Motor" : "Mobil"),
       biayaJasa: data.biayaJasa || 0,
       biayaAntarJemput: data.biayaAntarJemput || 0,
+      biayaLainnya: data.biayaLainnya || data["Biaya Lainnya"] || 0,
       namaPenerimaKeluar: data.namaPenerimaKeluar || data.namaPemilikRekeningKeluar || "",
       bankUangKeluar: data.bankUangKeluar || "",
       metodePembayaranKeluar: data.metodePembayaranKeluar || "",
-      tanggalPengeluaranSamsat: data.tanggalPengeluaranSamsat || "",
+      tanggalMasukBerkas: data.tanggalMasukBerkas || data["Tanggal Masuk Berkas"],
+      tanggalUangMasuk: data.tanggalUangMasuk || data["Tanggal Uang Masuk"],
+      tanggalPengeluaranSamsat: data.tanggalPengeluaranSamsat || data.tanggalUangKeluar || data["Tanggal Uang Keluar"] || "",
       totalEstimasi: totalEst,
-      catatanOrder: "Order dibuat dari Data Penjualan (+ Tambah Data)",
+      currentStep: data.currentStep || 1,
+      currentStageName: data.currentStageName || "Verifikasi",
+      isArchived: data.isArchived || false,
+      catatanOrder: data.catatanOrder || data.catatan || data.keterangan || data["Keterangan"] || "Order dibuat dari Data Penjualan (+ Tambah Data)",
+      statusPengerjaan: data.statusPengerjaan,
+      salesSnapshotStatus: data.salesSnapshotStatus || data.statusPengerjaan,
+      noInvoice: explicitInvoice,
+      tandaTerima: data.tandaTerima,
+      ttbBPKB: data.ttbBPKB,
+      statusBPKB: data.statusBPKB,
+      bpkb: data.bpkb,
+      statusKepemilikan: data.statusKepemilikan || "Pribadi",
       clientDocuments: data.clientDocuments || {
         stnk: { name: "", status: "Belum Tersedia", isOptional: false },
-        bpkb: { name: "", status: "Belum Tersedia", isOptional: false },
+        bpkb: { name: "", status: data.bpkb === "Ada" ? "Sudah Tersedia" : "Belum Tersedia", isOptional: false },
         ktp: { name: "", status: "Belum Tersedia", isOptional: false },
         skkp: { name: "", status: "Belum Tersedia", isOptional: true },
         lainnya: { name: "", status: "Belum Tersedia", isOptional: true },
@@ -255,7 +332,7 @@ class OrderStore {
       payment: {
         tipePembayaran: initialPaid >= totalEst && totalEst > 0 ? "Bayar di Awal" : "Bayar di Akhir",
         metodePembayaran: "Transfer",
-        statusPembayaran: initialPaid >= totalEst && totalEst > 0 ? "Lunas" : initialPaid > 0 ? "Kurang" : "Belum Bayar",
+        statusPembayaran: data.statusPembayaran || (initialPaid >= totalEst && totalEst > 0 ? "Lunas" : initialPaid > 0 ? "Kurang" : "Belum Bayar"),
         totalBiaya: totalEst,
         totalEstimasi: totalEst,
         dibayar: initialPaid,
@@ -277,8 +354,13 @@ class OrderStore {
     nomorHP: string;
     nopol: string;
   }): OperationalOrder {
-    this.orderCounter++;
-    const orderNo = `ORD-${String(this.orderCounter).padStart(4, "0")}`;
+    const targetDate = data.tanggalMasukBerkas || (data as any).tanggal_masuk_berkas || (data as any).createdAt;
+    let orderNo = (data.orderNo || "").trim();
+    if (!orderNo || !orderNo.startsWith("ORD-")) {
+      const allOrders = this.repository.getAllFlat();
+      const generated = generateNextOrderAndInvoiceNo(targetDate, allOrders);
+      orderNo = generated.orderNo;
+    }
     const processes = getDefaultSamsatProcesses(data.layanan);
 
     const masterServiceFee = (data.layanan && data.wilayahSamsatAsal)
@@ -403,9 +485,12 @@ class OrderStore {
       statusBPKB: (data as any).statusBPKB,
       bpkb: (data as any).bpkb,
       biayaAntarJemput: (data as any).biayaAntarJemput || 0,
+      biayaLainnya: (data as any).biayaLainnya || 0,
       namaPenerimaKeluar: (data as any).namaPenerimaKeluar || (data as any).namaPemilikRekeningKeluar || "",
       bankUangKeluar: (data as any).bankUangKeluar || "",
       metodePembayaranKeluar: (data as any).metodePembayaranKeluar || "",
+      tanggalMasukBerkas: (data as any).tanggalMasukBerkas || "",
+      tanggalUangMasuk: (data as any).tanggalUangMasuk || "",
       tanggalPengeluaranSamsat: (data as any).tanggalPengeluaranSamsat || "",
     };
   }
@@ -427,7 +512,8 @@ class OrderStore {
       const isLunasInitial = newOrder.payment.statusPembayaran === "Lunas" && newOrder.payment.isPaymentVerified;
       const initialPaid = newOrder.payment.tipePembayaran === "Bayar di Awal" ? (newOrder.payment.dibayar || 0) : 0;
       const initialOverpayment = newOrder.payment.tipePembayaran === "Bayar di Awal" ? (newOrder.payment.overpayment || 0) : 0;
-      const explicitInv = (data as any).noInvoice !== undefined ? (data as any).noInvoice : newOrder.payment?.invoiceNo;
+      const matchingInv = orderNo.replace(/^ORD-/, "INV-");
+      const explicitInv = (data as any).noInvoice !== undefined ? (data as any).noInvoice : (newOrder.payment?.invoiceNo || matchingInv);
       const invRecord = financeStore.addInvoice({
         orderNo,
         customer: data.customer,
@@ -490,6 +576,8 @@ class OrderStore {
       const isLunasInitial = newOrder.payment.statusPembayaran === "Lunas" && newOrder.payment.isPaymentVerified;
       const initialPaid = newOrder.payment.tipePembayaran === "Bayar di Awal" ? (newOrder.payment.dibayar || 0) : 0;
       const initialOverpayment = newOrder.payment.tipePembayaran === "Bayar di Awal" ? (newOrder.payment.overpayment || 0) : 0;
+      const matchingInv = tempOrderNo.replace(/^ORD-/, "INV-");
+      const explicitInv = (data as any).noInvoice !== undefined ? (data as any).noInvoice : (newOrder.payment?.invoiceNo || matchingInv);
       invRecord = financeStore.addInvoice({
         orderNo: tempOrderNo,
         customer: data.customer,
@@ -505,9 +593,10 @@ class OrderStore {
         settlementCondition: "PENDING_FINALIZATION",
         refundStatus: "NONE",
         overpayment: initialOverpayment,
-        invoice: newOrder.payment?.invoiceNo || undefined,
+        invoice: explicitInv !== undefined ? explicitInv : undefined,
       });
-      newOrder.payment.invoiceNo = invRecord.invoice;
+      newOrder.payment.invoiceNo = explicitInv !== undefined ? explicitInv : invRecord.invoice;
+      (newOrder as any).noInvoice = explicitInv !== undefined ? explicitInv : invRecord.invoice;
     } catch {
       // safe fallback
     }
@@ -867,6 +956,36 @@ class OrderStore {
     return true;
   }
 
+  // 6c. HARD DELETE ORDER (Menghapus order secara fisik dan permanen dari database & stores)
+  public async deleteOrder(orderNo: string): Promise<boolean> {
+    const cleanNo = (orderNo || "").trim().toUpperCase();
+    if (!cleanNo) return false;
+
+    let success = false;
+    if (typeof this.repository.deleteOrder === "function") {
+      success = await this.repository.deleteOrder(cleanNo);
+    } else if (typeof (this.repository as any).provider?.deleteOrder === "function") {
+      success = await (this.repository as any).provider.deleteOrder(cleanNo);
+    }
+
+    try {
+      auditLog.log({
+        userId: "usr-admin",
+        userName: "Admin",
+        userRole: "admin",
+        action: "DELETE",
+        module: "Data Penjualan",
+        details: `Order ${cleanNo} dihapus permanen oleh admin`,
+        metadata: { orderNo: cleanNo },
+      });
+    } catch {
+      // safe fallback
+    }
+
+    this.notify();
+    return Boolean(success);
+  }
+
   // 6c. CLEAR SELURUH REKAP ORDER (Membersihkan tampilan rekap order saja, Data Penjualan & Finance 100% utuh)
   public clearArchivedOrders(): boolean {
     const currentArchived = this.repository.getArchivedOrders();
@@ -1061,6 +1180,9 @@ export function useOrderStore() {
   return {
     activeOrders: orderStore.getActiveOrders(),
     archivedOrders: orderStore.getArchivedOrders(),
+    isLoading: false,
+    error: null as string | null,
+    refresh: async () => {},
     getAllOrders: orderStore.getAllOrders.bind(orderStore),
     addOrder: orderStore.addOrder.bind(orderStore),
     addOrderAsync: orderStore.addOrderAsync.bind(orderStore),
@@ -1071,6 +1193,7 @@ export function useOrderStore() {
     verifyPayment: orderStore.verifyPayment.bind(orderStore),
     archiveOrder: orderStore.archiveOrder.bind(orderStore),
     deleteArchivedOrder: orderStore.deleteArchivedOrder.bind(orderStore),
+    deleteOrder: orderStore.deleteOrder.bind(orderStore),
     clearArchivedOrders: orderStore.clearArchivedOrders.bind(orderStore),
     getOrderByNo: orderStore.getOrderByNo.bind(orderStore),
     getOrdersByStage: orderStore.getOrdersByStage.bind(orderStore),

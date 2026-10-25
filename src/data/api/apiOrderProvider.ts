@@ -11,6 +11,7 @@ import { OperationalOrder, StageName, STAGES } from "../../domain/order/types";
 import { IOrderDataProvider } from "../mock/mockOrderProvider";
 import { createInitialOrders } from "../mock/orderMockData";
 import { APP_CONFIG } from "../../app/config/appConfig";
+import { toast } from "sonner";
 
 export class ApiOrderProvider implements IOrderDataProvider {
   private baseUrl: string;
@@ -342,15 +343,88 @@ export class ApiOrderProvider implements IOrderDataProvider {
     if (updated) {
       this.notify();
 
+      // Sanitize protected fields before sending PUT to backend (enforces P1-B protection compatibility)
+      const protectedFields = new Set([
+        "orderNo", "id", "createdAt", "updatedAt", "currentStep", "currentStageName",
+        "stageBeforeCancel", "isArchived", "isCancelled", "cancelledAt", "cancelledBy",
+        "cancellationReason", "approvedBySpv", "spvApprovedAt", "spvName", "spvNotes",
+        "stage6Approved", "stage6ApprovedBy", "stage6ApprovedAt", "stage5Verified",
+        "stage5VerifiedBy", "stage5VerifiedAt", "approvedDocsSnapshot", "documentApproval",
+        "documentsVerified", "isVerified", "finalCost", "finalCostBreakdown", "finalBiayaJasa",
+        "finalPkb", "finalSwdkllj", "finalDendaSwdkllj", "finalMutasiKeluar", "finalMutasiMasuk",
+        "finalBiayaLainnya", "settlementCondition", "refundStatus", "refundAmount",
+        "refundProcessedAt", "refundProcessedBy", "totalBiaya", "paymentStatus"
+      ]);
+      const sanitizedUpdates: Record<string, any> = {};
+      for (const [key, val] of Object.entries(updates)) {
+        if (!protectedFields.has(key)) {
+          sanitizedUpdates[key] = val;
+        }
+      }
+
       fetch(`${this.baseUrl}/orders/${encodeURIComponent(orderNo)}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json", ...this.getAuthHeader() },
-        body: JSON.stringify(updates),
-      }).catch(() => {
-        // background sync fallback
-      });
+        body: JSON.stringify(sanitizedUpdates),
+      })
+        .then(async (res) => {
+          if (!res.ok) {
+            let errMsg = `HTTP ${res.status}`;
+            try {
+              const errPayload = await res.json();
+              if (errPayload.message || errPayload.error?.message) {
+                errMsg = errPayload.message || errPayload.error?.message;
+              }
+            } catch {
+              // ignore json parse error
+            }
+            console.error(`[ApiOrderProvider] Gagal memperbarui order ${orderNo} di server:`, errMsg);
+            toast.error(`Gagal sinkronisasi ke server: ${errMsg}`);
+          }
+        })
+        .catch((err) => {
+          console.error(`[ApiOrderProvider] Network error saat memperbarui order ${orderNo}:`, err);
+          toast.error(`Koneksi server terputus saat memperbarui order: ${err?.message || "Gagal"}`);
+        });
     }
 
+    return updated;
+  }
+
+  public async updateOrderAsync(orderNo: string, updates: Partial<OperationalOrder>): Promise<boolean> {
+    const updated = this.updateOrder(orderNo, updates);
+    const protectedFields = new Set([
+      "orderNo", "id", "createdAt", "updatedAt", "currentStep", "currentStageName",
+      "stageBeforeCancel", "isArchived", "isCancelled", "cancelledAt", "cancelledBy",
+      "cancellationReason", "approvedBySpv", "spvApprovedAt", "spvName", "spvNotes",
+      "stage6Approved", "stage6ApprovedBy", "stage6ApprovedAt", "stage5Verified",
+      "stage5VerifiedBy", "stage5VerifiedAt", "approvedDocsSnapshot", "documentApproval",
+      "documentsVerified", "isVerified", "finalCost", "finalCostBreakdown", "finalBiayaJasa",
+      "finalPkb", "finalSwdkllj", "finalDendaSwdkllj", "finalMutasiKeluar", "finalMutasiMasuk",
+      "finalBiayaLainnya", "settlementCondition", "refundStatus", "refundAmount",
+      "refundProcessedAt", "refundProcessedBy", "totalBiaya", "paymentStatus"
+    ]);
+    const sanitizedUpdates: Record<string, any> = {};
+    for (const [key, val] of Object.entries(updates)) {
+      if (!protectedFields.has(key)) {
+        sanitizedUpdates[key] = val;
+      }
+    }
+    const res = await fetch(`${this.baseUrl}/orders/${encodeURIComponent(orderNo)}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json", ...this.getAuthHeader() },
+      body: JSON.stringify(sanitizedUpdates),
+    });
+    if (!res.ok) {
+      let errMsg = `HTTP ${res.status}`;
+      try {
+        const errPayload = await res.json();
+        if (errPayload.message || errPayload.error?.message) {
+          errMsg = errPayload.message || errPayload.error?.message;
+        }
+      } catch {}
+      throw new Error(errMsg);
+    }
     return updated;
   }
 
@@ -446,6 +520,46 @@ export class ApiOrderProvider implements IOrderDataProvider {
       return true;
     }
     return false;
+  }
+
+  public async deleteOrder(orderNo: string): Promise<boolean> {
+    const cleanNo = (orderNo || "").trim().toUpperCase();
+    if (!cleanNo) return false;
+
+    // Remove from in-memory active orders
+    let found = false;
+    for (const stage of Object.keys(this.activeOrders) as StageName[]) {
+      const initialLen = this.activeOrders[stage]?.length ?? 0;
+      this.activeOrders[stage] = (this.activeOrders[stage] || []).filter(
+        (o) => (o.orderNo || "").toUpperCase() !== cleanNo
+      );
+      if (this.activeOrders[stage].length < initialLen) {
+        found = true;
+      }
+    }
+
+    // Remove from in-memory archived orders
+    const archIdx = this.archivedOrders.findIndex((o) => (o.orderNo || "").toUpperCase() === cleanNo);
+    if (archIdx !== -1) {
+      this.archivedOrders.splice(archIdx, 1);
+      found = true;
+    }
+
+    if (found) {
+      this.notify();
+    }
+
+    // Call backend DELETE /orders/:orderNo
+    try {
+      const res = await fetch(`${this.baseUrl}/orders/${encodeURIComponent(cleanNo)}`, {
+        method: "DELETE",
+        headers: { ...this.getAuthHeader() },
+      });
+      return res.ok;
+    } catch (err) {
+      console.warn("[ApiOrderProvider] Error during hard delete order request:", err);
+      return false;
+    }
   }
 
   public clearArchivedOrders(): boolean {

@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from "react";
+import React, { useState, useMemo, useCallback } from "react";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "./ui/table";
 import { Button } from "./ui/button";
 import { Input } from "./ui/input";
@@ -90,6 +90,7 @@ export interface FieldConfig {
   options?: string[];
   placeholder?: string;
   readOnly?: boolean;
+  required?: boolean;
   helpText?: string;
 }
 
@@ -109,6 +110,7 @@ interface EnhancedTableWithDialogsProps {
   hideEditButton?: boolean;
   hideDeleteButton?: boolean;
   bypassInternalDeleteDialog?: boolean;
+  bypassInternalEditDialog?: boolean;
   subTabTitle?: string;
 }
 
@@ -130,6 +132,7 @@ export function EnhancedTableWithDialogs({
   hideEditButton = false,
   hideDeleteButton = false,
   bypassInternalDeleteDialog = false,
+  bypassInternalEditDialog = false,
   subTabTitle
 }: EnhancedTableWithDialogsProps) {
   // Search inputs (Requirement 12: separate date and text searches)
@@ -144,7 +147,30 @@ export function EnhancedTableWithDialogs({
   const [customEndDate, setCustomEndDate] = useState<string>("");
 
   const [currentPage, setCurrentPage] = useState(1);
-  const [itemsPerPage, setItemsPerPage] = useState(itemsPerPageOptions.includes(25) ? 25 : itemsPerPageOptions[0]);
+  // Desktop Table Settings Persistence (survives F5 refresh)
+  const storageKey = useMemo(() => {
+    const safeTitle = (subTabTitle || "default_table").replace(/[^a-zA-Z0-9]/g, "_").toLowerCase();
+    return `sun89_table_settings_${safeTitle}`;
+  }, [subTabTitle]);
+
+  const loadPersistedSettings = useCallback(() => {
+    try {
+      if (typeof window !== "undefined" && window.localStorage) {
+        const raw = localStorage.getItem(storageKey);
+        if (raw) return JSON.parse(raw);
+      }
+    } catch {}
+    return null;
+  }, [storageKey]);
+
+  const savedSettings = loadPersistedSettings();
+
+  const [itemsPerPage, setItemsPerPage] = useState(() => {
+    if (savedSettings?.itemsPerPage && itemsPerPageOptions.includes(savedSettings.itemsPerPage)) {
+      return savedSettings.itemsPerPage;
+    }
+    return itemsPerPageOptions.includes(25) ? 25 : itemsPerPageOptions[0];
+  });
   const [isFilterOpen, setIsFilterOpen] = useState(false);
   const [filters, setFilters] = useState<Record<string, string>>({});
 
@@ -153,32 +179,105 @@ export function EnhancedTableWithDialogs({
   const [sortDirection, setSortDirection] = useState<SortDirection>(null);
 
   // Desktop Table Settings: Font size & column visibility (Requirements 20-26)
-  const [tableFontSize, setTableFontSize] = useState<"1x" | "2x" | "3x">("1x");
-  const [visibleColumnKeys, setVisibleColumnKeys] = useState<Set<string>>(() => new Set(columns.map(c => c.key)));
+  const [tableFontSize, setTableFontSize] = useState<"1x" | "2x" | "3x">(() => {
+    if (savedSettings?.tableFontSize && ["1x", "2x", "3x"].includes(savedSettings.tableFontSize)) {
+      return savedSettings.tableFontSize;
+    }
+    return "1x";
+  });
+
+  const [visibleColumnKeys, setVisibleColumnKeys] = useState<Set<string>>(() => {
+    const allColKeys = new Set(columns.map((c) => c.key));
+    if (Array.isArray(savedSettings?.visibleColumns) && savedSettings.visibleColumns.length > 0) {
+      const validKeys = savedSettings.visibleColumns.filter((k: string) => allColKeys.has(k));
+      if (validKeys.length > 0) {
+        return new Set(validKeys);
+      }
+    }
+    return allColKeys;
+  });
+
+  // Persist table settings to localStorage whenever changes occur
+  React.useEffect(() => {
+    try {
+      if (typeof window !== "undefined" && window.localStorage) {
+        const payload = {
+          visibleColumns: Array.from(visibleColumnKeys),
+          tableFontSize,
+          itemsPerPage,
+        };
+        localStorage.setItem(storageKey, JSON.stringify(payload));
+      }
+    } catch {}
+  }, [storageKey, visibleColumnKeys, tableFontSize, itemsPerPage]);
 
   // Synchronize visibleColumnKeys when columns prop updates or when subTabTitle changes
   const prevSubTabRef = React.useRef(subTabTitle);
+  const prevColumnsKeyStrRef = React.useRef(columns.map((c) => c.key).join(","));
+
   React.useEffect(() => {
-    if (prevSubTabRef.current !== subTabTitle) {
-      prevSubTabRef.current = subTabTitle;
-      setVisibleColumnKeys(new Set(columns.map(c => c.key)));
+    const currentKeysStr = columns.map((c) => c.key).join(",");
+    const subTabChanged = prevSubTabRef.current !== subTabTitle;
+    const columnsChanged = prevColumnsKeyStrRef.current !== currentKeysStr;
+
+    if (!subTabChanged && !columnsChanged) {
       return;
     }
 
-    setVisibleColumnKeys(prev => {
-      const currentKeys = new Set(columns.map(c => c.key));
-      if (prev.size === 0) return currentKeys;
-      const next = new Set<string>();
-      columns.forEach(c => {
-        if (prev.has(c.key)) next.add(c.key);
-      });
-      // If none or only 1 column matched out of many, it's a completely different schema
-      if (next.size <= 1 && columns.length > 2) {
-        return currentKeys;
+    prevSubTabRef.current = subTabTitle;
+    prevColumnsKeyStrRef.current = currentKeysStr;
+
+    if (subTabChanged) {
+      const saved = loadPersistedSettings();
+      const allKeys = new Set(columns.map((c) => c.key));
+      if (Array.isArray(saved?.visibleColumns) && saved.visibleColumns.length > 0) {
+        const valid = saved.visibleColumns.filter((k: string) => allKeys.has(k));
+        if (valid.length > 0) {
+          setVisibleColumnKeys(new Set(valid));
+        } else {
+          setVisibleColumnKeys(allKeys);
+        }
+      } else {
+        setVisibleColumnKeys(allKeys);
       }
-      return next.size > 0 ? next : currentKeys;
-    });
-  }, [subTabTitle, columns]);
+      if (saved?.tableFontSize && ["1x", "2x", "3x"].includes(saved.tableFontSize)) {
+        setTableFontSize(saved.tableFontSize);
+      }
+      if (saved?.itemsPerPage && itemsPerPageOptions.includes(saved.itemsPerPage)) {
+        setItemsPerPage(saved.itemsPerPage);
+      }
+      return;
+    }
+
+    if (columnsChanged) {
+      setVisibleColumnKeys((prev) => {
+        const currentKeys = new Set(columns.map((c) => c.key));
+        if (prev.size === 0) return currentKeys;
+        const next = new Set<string>();
+        columns.forEach((c) => {
+          if (prev.has(c.key)) next.add(c.key);
+        });
+        const resolved = (next.size <= 1 && columns.length > 2) ? currentKeys : (next.size > 0 ? next : currentKeys);
+        if (resolved.size === prev.size && Array.from(resolved).every((k) => prev.has(k))) {
+          return prev;
+        }
+        return resolved;
+      });
+    }
+  }, [subTabTitle, columns, loadPersistedSettings, itemsPerPageOptions]);
+
+  const handleResetTableSettings = () => {
+    const allKeys = new Set(columns.map((c) => c.key));
+    setVisibleColumnKeys(allKeys);
+    setTableFontSize("1x");
+    setItemsPerPage(itemsPerPageOptions.includes(25) ? 25 : itemsPerPageOptions[0]);
+    try {
+      if (typeof window !== "undefined" && window.localStorage) {
+        localStorage.removeItem(storageKey);
+      }
+    } catch {}
+    toast.success("Pengaturan tabel dikembalikan ke default");
+  };
 
   const isAllColumnsVisible = visibleColumnKeys.size === columns.length;
   const isSomeColumnsVisible = visibleColumnKeys.size > 0 && visibleColumnKeys.size < columns.length;
@@ -654,10 +753,93 @@ export function EnhancedTableWithDialogs({
   };
 
   const handleEditClick = (item: any) => {
+    if (bypassInternalEditDialog && onEdit) {
+      onEdit(item, item);
+      return;
+    }
     setSelectedItem(item);
     setEditFormData({ ...item });
     setInitialEditSnapshot(JSON.stringify(item));
     setIsEditDialogOpen(true);
+  };
+
+  const handleEditFieldChange = (fieldKey: string, value: any) => {
+    const updated = { ...editFormData, [fieldKey]: value };
+
+    // Financial calculations & live derivations
+    if (
+      fieldKey === "Uang Masuk dari Konsumen" ||
+      fieldKey === "Biaya Pokok Samsat" ||
+      fieldKey === "Biaya Jasa" ||
+      fieldKey === "Biaya Antar Jemput" ||
+      fieldKey === "Biaya Lainnya" ||
+      fieldKey === "Total Tagihan Konsumen"
+    ) {
+      const uangMasuk = Math.max(0, Number(fieldKey === "Uang Masuk dari Konsumen" ? value : updated["Uang Masuk dari Konsumen"] || 0));
+      const biayaSamsat = Math.max(0, Number(fieldKey === "Biaya Pokok Samsat" ? value : updated["Biaya Pokok Samsat"] || 0));
+      const biayaJasa = Math.max(0, Number(fieldKey === "Biaya Jasa" ? value : updated["Biaya Jasa"] || 0));
+      const biayaAntar = Math.max(0, Number(fieldKey === "Biaya Antar Jemput" ? value : updated["Biaya Antar Jemput"] || 0));
+      const biayaLainnya = Math.max(0, Number(fieldKey === "Biaya Lainnya" ? value : updated["Biaya Lainnya"] || 0));
+
+      let totalTagihan = Number(fieldKey === "Total Tagihan Konsumen" ? value : updated["Total Tagihan Konsumen"] || 0);
+
+      if (fieldKey === "Biaya Pokok Samsat" || fieldKey === "Biaya Jasa" || fieldKey === "Biaya Antar Jemput" || fieldKey === "Biaya Lainnya") {
+        totalTagihan = biayaSamsat + biayaJasa + biayaAntar + biayaLainnya;
+        updated["Total Tagihan Konsumen"] = totalTagihan;
+      } else if (totalTagihan === 0 && uangMasuk > 0 && fieldKey === "Uang Masuk dari Konsumen") {
+        totalTagihan = uangMasuk;
+        updated["Total Tagihan Konsumen"] = totalTagihan;
+      }
+
+      const sisaTagihan = Math.max(0, totalTagihan - uangMasuk);
+      const cashback = Math.max(0, uangMasuk - totalTagihan);
+      const profit = Math.max(0, totalTagihan - biayaSamsat);
+
+      updated["Sisa Tagihan"] = sisaTagihan;
+      updated["Jumlah Cashback"] = cashback;
+      updated["Profit"] = profit;
+
+      // Update status pembayaran if not locked by canonical order
+      const isCanonical = typeof selectedItem?.id === "string" && (selectedItem.id.startsWith("ord:") || selectedItem.id.toUpperCase().startsWith("ORD-"));
+      if (!isCanonical) {
+        if (uangMasuk === 0) {
+          updated["Status Pembayaran"] = "Belum Bayar";
+        } else if (totalTagihan > 0 && uangMasuk < totalTagihan) {
+          updated["Status Pembayaran"] = "Kurang Bayar";
+        } else if (totalTagihan > 0 && uangMasuk > totalTagihan) {
+          updated["Status Pembayaran"] = "Kelebihan Bayar";
+        } else {
+          updated["Status Pembayaran"] = "Lunas";
+        }
+      }
+    }
+
+    // Bidirectional sync
+    if (fieldKey === "Samsat Asal") {
+      updated["Samsat"] = value;
+    } else if (fieldKey === "Samsat") {
+      updated["Samsat Asal"] = value;
+    }
+
+    if (fieldKey === "Dokumen BPKB") {
+      updated["BPKB"] = value;
+    } else if (fieldKey === "BPKB") {
+      updated["Dokumen BPKB"] = value;
+    }
+
+    if (fieldKey === "Nomor TTB BPKB") {
+      updated["TTB BPKB"] = value;
+    } else if (fieldKey === "TTB BPKB") {
+      updated["Nomor TTB BPKB"] = value;
+    }
+
+    if (fieldKey === "Tanda Terima") {
+      updated["Nomor Tanda Terima"] = value;
+    } else if (fieldKey === "Nomor Tanda Terima") {
+      updated["Tanda Terima"] = value;
+    }
+
+    setEditFormData(updated);
   };
 
   const handleDeleteClick = (item: any) => {
@@ -884,9 +1066,21 @@ export function EnhancedTableWithDialogs({
               align="start"
               className="w-80 max-w-[calc(100vw-1.5rem)] p-4 space-y-4 bg-popover text-popover-foreground border-border shadow-md"
             >
-              <div>
-                <h4 className="font-semibold text-sm leading-tight text-foreground">Pengaturan tabel</h4>
-                <p className="text-xs text-muted-foreground mt-0.5">Sesuaikan ukuran font, visibilitas kolom, dan ekspor</p>
+              <div className="flex items-center justify-between pb-2 border-b border-border/70">
+                <div>
+                  <h4 className="font-semibold text-sm leading-tight text-foreground">Pengaturan tabel</h4>
+                  <p className="text-xs text-muted-foreground mt-0.5">Tersimpan otomatis di browser</p>
+                </div>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  onClick={handleResetTableSettings}
+                  className="h-6 px-2 text-xs text-muted-foreground hover:text-foreground"
+                  title="Kembalikan semua kolom dan font ke default"
+                >
+                  Reset
+                </Button>
               </div>
 
               {/* Font Size Setting */}
@@ -1182,8 +1376,8 @@ export function EnhancedTableWithDialogs({
             handleCancelEdit();
           }
         }}>
-          <DialogContent className="border-border sm:max-w-2xl max-h-[90vh] overflow-y-auto">
-            <DialogHeader className="pb-2 border-b border-border/60">
+          <DialogContent className="border-border sm:max-w-2xl max-h-[90vh] flex flex-col p-0 overflow-hidden">
+            <DialogHeader className="p-4 pb-3 border-b border-border/60 sticky top-0 bg-card z-10 shrink-0">
               <DialogTitle className="text-base font-semibold flex items-center gap-2 text-foreground">
                 <Edit className="w-4 h-4 text-primary" />
                 <span>Ubah Data Transaksi {subTabTitle ? `— ${subTabTitle}` : ""}</span>
@@ -1193,20 +1387,101 @@ export function EnhancedTableWithDialogs({
               </DialogDescription>
             </DialogHeader>
 
-            <div className="space-y-4 my-2">
+            <div className="flex-1 overflow-y-auto p-4 space-y-4">
               {(() => {
-                const isCanonicalOrder = typeof selectedItem?.id === "string" && selectedItem.id.startsWith("ord:");
+                const CANONICAL_SERVICES_OPTIONS = [
+                  "Perpanjangan 1 Tahun",
+                  "Perpanjangan 5 Tahun",
+                  "Mutasi Asal Samsat",
+                  "Mutasi Antar Daerah",
+                  "Balik Nama",
+                  "Tarik Berkas",
+                  "Duplikat STNK",
+                ];
+
+                const STATUS_PENGERJAAN_OPTIONS = [
+                  "Dalam Proses",
+                  "Pending",
+                  "Menunggu Arsip",
+                  "Selesai",
+                  "Dibatalkan",
+                ];
+
+                const STATUS_PEMBAYARAN_OPTIONS = [
+                  "Belum Bayar",
+                  "Kurang Bayar",
+                  "Lunas",
+                  "Kelebihan Bayar",
+                  "Dibatalkan",
+                ];
+
+                const SKEMA_PEMBAYARAN_OPTIONS = [
+                  "Bayar di Awal",
+                  "Bayar di Akhir",
+                  "Tempo",
+                ];
+
+                const DOKUMEN_BPKB_OPTIONS = [
+                  "Ada",
+                  "Tidak Ada",
+                  "Di Konsumen",
+                  "Di Samsat",
+                  "Di Leasing",
+                ];
+
+                const R4_R2_OPTIONS = ["R4", "R2"];
+
+                const isCanonicalOrder = typeof selectedItem?.id === "string" && (selectedItem.id.startsWith("ord:") || selectedItem.id.toUpperCase().startsWith("ORD-"));
                 const isDerivedOrderField = (key: string) => {
-                  return isCanonicalOrder && (
-                    key === "Status Pengerjaan" ||
-                    key === "Status Pembayaran" ||
-                    key === "No Invoice"
+                  return (
+                    key === "Nomor Order" ||
+                    key === "No Order" ||
+                    key === "No Invoice" ||
+                    key === "Sisa Tagihan" ||
+                    key === "Profit" ||
+                    key === "Jumlah Cashback" ||
+                    (isCanonicalOrder && (
+                      key === "Status Pengerjaan" ||
+                      key === "Status Pembayaran"
+                    ))
                   );
+                };
+
+                const getLockBadgeLabel = (key: string) => {
+                  if (key === "Nomor Order" || key === "No Order") return "Kanonis";
+                  if (key === "No Invoice") return "Faktur";
+                  if (key === "Sisa Tagihan" || key === "Profit" || key === "Jumlah Cashback") return "Kalkulasi";
+                  if (key === "Status Pengerjaan" || key === "Status Pembayaran") return "Alur Order";
+                  return "Read-only";
                 };
 
                 const renderSingleField = (field: any) => {
                   const isReadOnly = Boolean(field.readOnly || isDerivedOrderField(field.key));
                   const isOrderLocked = isDerivedOrderField(field.key);
+
+                  // Determine options for select fields
+                  let options = field.options;
+                  if (!options) {
+                    if (field.key === "Jenis Pengurusan") options = CANONICAL_SERVICES_OPTIONS;
+                    else if (field.key === "Status Pengerjaan") options = STATUS_PENGERJAAN_OPTIONS;
+                    else if (field.key === "Status Pembayaran") options = STATUS_PEMBAYARAN_OPTIONS;
+                    else if (field.key === "Skema Pembayaran") options = SKEMA_PEMBAYARAN_OPTIONS;
+                    else if (field.key === "Dokumen BPKB" || field.key === "BPKB") options = DOKUMEN_BPKB_OPTIONS;
+                    else if (field.key === "R4 / R2") options = R4_R2_OPTIONS;
+                  }
+
+                  const isSelect = Boolean(options && options.length > 0) || field.type === "select";
+
+                  const isCurrencyField =
+                    field.key === "Uang Masuk dari Konsumen" ||
+                    field.key === "Biaya Pokok Samsat" ||
+                    field.key === "Biaya Jasa" ||
+                    field.key === "Biaya Antar Jemput" ||
+                    field.key === "Biaya Lainnya" ||
+                    field.key === "Total Tagihan Konsumen" ||
+                    field.key === "Sisa Tagihan" ||
+                    field.key === "Profit" ||
+                    field.key === "Jumlah Cashback";
 
                   return (
                     <div key={field.key} className="space-y-1.5">
@@ -1216,37 +1491,63 @@ export function EnhancedTableWithDialogs({
                         </Label>
                         {isReadOnly && (
                           <span className="text-[10px] font-mono px-1.5 py-0.5 bg-muted text-muted-foreground rounded border border-border">
-                            {isOrderLocked ? "Alur Order" : "Read-only"}
+                            {getLockBadgeLabel(field.key)}
                           </span>
                         )}
                       </div>
+
                       {field.type === "plate-number" || (!isReadOnly && (field.key === "Plat No" || field.key === "Nomor Polisi" || field.key === "nopol")) ? (
                         <PlateNumberInput
                           value={editFormData[field.key] || ""}
-                          onChange={(val) => setEditFormData({ ...editFormData, [field.key]: val })}
+                          onChange={(val) => handleEditFieldChange(field.key, val)}
                           disabled={isReadOnly}
                         />
-                      ) : field.type === "samsat-select" || (!isReadOnly && (field.key === "Samsat" || field.key === "Wilayah Samsat Asal" || field.key === "Wilayah Samsat" || field.key === "Samsat Tujuan")) ? (
+                      ) : field.type === "samsat-select" || (!isReadOnly && (field.key === "Samsat" || field.key === "Samsat Asal" || field.key === "Samsat Tujuan" || field.key === "Wilayah Samsat Asal" || field.key === "Wilayah Samsat")) ? (
                         <SearchableSamsatSelect
                           value={editFormData[field.key] || ""}
-                          onValueChange={(val) => setEditFormData({ ...editFormData, [field.key]: val })}
+                          onValueChange={(val) => handleEditFieldChange(field.key, val)}
                           disabled={isReadOnly}
                           placeholder={`Pilih ${field.label.toLowerCase()}`}
                         />
-                      ) : field.type === "select" && field.options && !isReadOnly ? (
+                      ) : isSelect && !isReadOnly ? (
                         <Select
-                          value={editFormData[field.key] || ""}
-                          onValueChange={(value) => setEditFormData({ ...editFormData, [field.key]: value })}
+                          value={editFormData[field.key] || (options ? options[0] : "")}
+                          onValueChange={(value) => handleEditFieldChange(field.key, value)}
                         >
                           <SelectTrigger className="bg-input-background border-border h-9 text-xs">
                             <SelectValue placeholder={`Pilih ${field.label.toLowerCase()}`} />
                           </SelectTrigger>
                           <SelectContent>
-                            {field.options.map((opt: string) => (
+                            {options.map((opt: string) => (
                               <SelectItem key={opt} value={opt} className="text-xs">{opt}</SelectItem>
                             ))}
                           </SelectContent>
                         </Select>
+                      ) : isCurrencyField ? (
+                        <div className="space-y-1">
+                          <Input
+                            type="number"
+                            min="0"
+                            step="1000"
+                            readOnly={isReadOnly}
+                            disabled={isReadOnly}
+                            placeholder="0"
+                            className={cn(
+                              "bg-input-background border-border h-9 text-xs font-mono font-medium",
+                              isReadOnly && "bg-muted/40 text-muted-foreground cursor-not-allowed select-none opacity-85"
+                            )}
+                            value={editFormData[field.key] !== undefined ? editFormData[field.key] : ""}
+                            onChange={(e) => {
+                              if (!isReadOnly) {
+                                handleEditFieldChange(field.key, e.target.value);
+                              }
+                            }}
+                          />
+                          <div className="flex items-center justify-between text-[10px] text-muted-foreground font-mono">
+                            <span>{formatRupiah(Number(editFormData[field.key]) || 0)}</span>
+                            {field.helpText && <span>{field.helpText}</span>}
+                          </div>
+                        </div>
                       ) : (
                         <Input
                           type={field.type === "select" ? "text" : field.type}
@@ -1260,14 +1561,15 @@ export function EnhancedTableWithDialogs({
                           value={editFormData[field.key] !== undefined ? editFormData[field.key] : ""}
                           onChange={(e) => {
                             if (!isReadOnly) {
-                              setEditFormData({ ...editFormData, [field.key]: e.target.value });
+                              handleEditFieldChange(field.key, e.target.value);
                             }
                           }}
                         />
                       )}
-                      {(field.helpText || isOrderLocked) && (
+
+                      {!isCurrencyField && (field.helpText || isOrderLocked) && (
                         <p className="text-[10px] text-muted-foreground leading-tight">
-                          {isOrderLocked
+                          {isOrderLocked && (field.key === "Status Pengerjaan" || field.key === "Status Pembayaran")
                             ? "Ditentukan otomatis oleh tahapan proses order tracking kanonis."
                             : field.helpText}
                         </p>
@@ -1276,8 +1578,9 @@ export function EnhancedTableWithDialogs({
                   );
                 };
 
-                const berkasKeys = ["polisi", "plat", "nopol", "customer", "pemilik", "kendaraan", "samsat", "telp", "hp", "r4", "r2"];
-                const keuanganKeys = ["uang", "bayar", "biaya", "tagihan", "profit", "saldo", "masuk", "keluar", "nominal", "rekening", "bank", "invoice", "ttb"];
+                const berkasKeys = ["polisi", "plat", "nopol", "customer", "pemilik", "kendaraan", "samsat", "telp", "hp", "r4", "r2", "order"];
+                const keuanganKeys = ["uang", "bayar", "biaya", "tagihan", "profit", "saldo", "masuk", "keluar", "nominal", "rekening", "bank", "invoice", "cashback"];
+                const operasionalKeys = ["layanan", "pengurusan", "status", "bpkb", "ttb", "tanda terima", "keterangan"];
 
                 const berkasFields = editFields.filter((f) => {
                   const k = f.key.toLowerCase();
@@ -1313,7 +1616,7 @@ export function EnhancedTableWithDialogs({
                       <div className="space-y-3 p-4 rounded-xl border border-border/70 bg-card shadow-2xs">
                         <h4 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider flex items-center gap-1.5 pb-2 border-b border-border/60">
                           <Car className="w-3.5 h-3.5 text-primary" />
-                          Data Klien & Kendaraan
+                          1. Data Klien & Kendaraan
                         </h4>
                         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 sm:gap-4">
                           {berkasFields.map(renderSingleField)}
@@ -1325,7 +1628,7 @@ export function EnhancedTableWithDialogs({
                       <div className="space-y-3 p-4 rounded-xl border border-border/70 bg-card shadow-2xs">
                         <h4 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider flex items-center gap-1.5 pb-2 border-b border-border/60">
                           <FileText className="w-3.5 h-3.5 text-primary" />
-                          Layanan & Operasional
+                          2. Layanan & Operasional
                         </h4>
                         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 sm:gap-4">
                           {operasionalFields.map(renderSingleField)}
@@ -1337,7 +1640,7 @@ export function EnhancedTableWithDialogs({
                       <div className="space-y-3 p-4 rounded-xl border border-border/70 bg-card shadow-2xs">
                         <h4 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider flex items-center gap-1.5 pb-2 border-b border-border/60">
                           <CreditCard className="w-3.5 h-3.5 text-primary" />
-                          Keuangan & Administrasi
+                          3. Keuangan & Administrasi
                         </h4>
                         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 sm:gap-4">
                           {keuanganFields.map(renderSingleField)}
@@ -1349,7 +1652,7 @@ export function EnhancedTableWithDialogs({
               })()}
             </div>
 
-            <DialogFooter className="mt-4 gap-2 pt-3 border-t border-border/60">
+            <DialogFooter className="p-4 pt-3 border-t border-border/60 sticky bottom-0 bg-card z-10 shrink-0 flex items-center justify-between sm:justify-between">
               <Button variant="outline" size="sm" onClick={handleCancelEdit} className="text-xs h-9 px-4">
                 Batal
               </Button>
@@ -1374,7 +1677,7 @@ export function EnhancedTableWithDialogs({
               Anda memiliki perubahan pada data yang belum disimpan. Jika Anda membatalkan sekarang, semua perubahan yang Anda lakukan akan dibuang.
             </AlertDialogDescription>
           </AlertDialogHeader>
-          <AlertDialogFooter className="mt-4 gap-2">
+          <AlertDialogFooter className="mt-4 gap-2 flex items-center justify-between sm:justify-between w-full">
             <Button
               size="sm"
               variant="outline"
@@ -1412,7 +1715,7 @@ export function EnhancedTableWithDialogs({
               </p>
             </AlertDialogDescription>
           </AlertDialogHeader>
-          <AlertDialogFooter className="mt-4 gap-2">
+          <AlertDialogFooter className="mt-4 gap-2 flex items-center justify-between sm:justify-between w-full">
             <AlertDialogCancel disabled={isDeleting} className="text-xs h-8">
               Batal
             </AlertDialogCancel>
@@ -1547,7 +1850,7 @@ export function EnhancedTableWithDialogs({
             </div>
           </div>
 
-          <DialogFooter className="mt-2 gap-2">
+          <DialogFooter className="mt-2 gap-2 flex items-center justify-between sm:justify-between w-full">
             <Button variant="outline" size="sm" onClick={() => setIsExportDialogOpen(false)} className="text-xs h-8">
               Batal
             </Button>

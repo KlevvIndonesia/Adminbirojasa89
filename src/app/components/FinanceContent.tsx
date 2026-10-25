@@ -40,8 +40,18 @@ import {
   FileText,
   Plus,
   Pencil,
-  Lock
+  Lock,
+  Printer,
+  MessageCircle,
+  Undo2,
+  History,
+  FileSpreadsheet,
 } from "lucide-react";
+import { InvoiceA5Dialog } from "./InvoiceA5Dialog";
+import { KwitansiA5Dialog } from "./KwitansiA5Dialog";
+import { VoucherRefundDialog } from "./VoucherRefundDialog";
+import { RekonsiliasiKasModal } from "./RekonsiliasiKasModal";
+import { exportToCSV } from "../utils/financeExport";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -269,6 +279,7 @@ export function FinanceContent({ tab }: FinanceContentProps) {
   const [isSubmittingPayout, setIsSubmittingPayout] = useState<boolean>(false);
 
   const [previewReceiptDoc, setPreviewReceiptDoc] = useState<{ url: string; title: string } | null>(null);
+  const [isRekonsiliasiOpen, setIsRekonsiliasiOpen] = useState(false);
 
   const handleOpenCashbackConfirm = (item: any) => {
     setCashbackTargetItem(item);
@@ -401,7 +412,28 @@ export function FinanceContent({ tab }: FinanceContentProps) {
         toast.success(
           `Pencairan dana untuk ${cashbackTargetItem.orderNo || cashbackTargetItem.invoice} sebesar ${formatRupiah(amount)} berhasil dicatat ke Kas Kantor.`
         );
-        // Mark as paid so status becomes "Dibayar" and button becomes "Selesai"
+
+        const voucherPayload = {
+          orderNo: cashbackTargetItem.orderNo || cashbackTargetItem.invoice || `ORD-${cashbackTargetItem.id}`,
+          invoiceNo: cashbackTargetItem.invoice || cashbackTargetItem.invoiceNo || (cashbackTargetItem.orderNo ? `INV/${cashbackTargetItem.orderNo.replace(/^ORD-/, "")}` : `INV-${cashbackTargetItem.id}`),
+          voucherNo: `VCR-REF/${(cashbackTargetItem.orderNo || `ORD-${cashbackTargetItem.id}`).replace(/^ORD-/, "")}`,
+          customer: cashbackTargetItem.customer || "Konsumen",
+          phone: cashbackTargetItem.phone || cashbackTargetItem.nomorHp || "",
+          nopol: cashbackTargetItem.nopol || "-",
+          layanan: cashbackTargetItem.pengurusan || (cashbackTargetItem as any).jenisLayanan || "Pengurusan Dokumen Kendaraan",
+          tanggal: cashbackDate || new Date().toISOString().split("T")[0],
+          metode: cashbackMethod,
+          bank: isCashbackCash ? "Tunai" : cashbackBank.trim(),
+          noRekening: isCashbackCash ? "-" : cashbackNoRekening.trim(),
+          namaRekening: cashbackPenerima || cashbackTargetItem.customer || "Konsumen",
+          nominal: amount,
+          catatan: "Pengembalian kelebihan bayar customer",
+          approvedBy: "Supervisor Finansial",
+          kasirName: "Kasir SUN89",
+        };
+        setPrintVoucherData(voucherPayload);
+
+        // Mark as paid so status becomes "Dibayar" and button becomes "Selesai" 
         setPaidCashbackIds((prev) => {
           const next = new Set(prev);
           next.add(cashbackTargetItem.id);
@@ -513,6 +545,27 @@ export function FinanceContent({ tab }: FinanceContentProps) {
         toast.success(
           `Pembayaran ${formatRupiah(payAmount)} untuk ${lunasTargetItem.invoice || lunasTargetItem.invoiceNo || lunasTargetItem.orderNo} (${lunasTargetItem.customer}) berhasil dicatat.`
         );
+
+        const kwitansiPayload = {
+          orderNo: lunasTargetItem.orderNo || lunasTargetItem.invoice || `ORD-${lunasTargetItem.id}`,
+          invoiceNo: lunasTargetItem.invoice || lunasTargetItem.invoiceNo || (lunasTargetItem.orderNo ? `INV/${lunasTargetItem.orderNo.replace(/^ORD-/, "")}` : `INV-${lunasTargetItem.id}`),
+          kwitansiNo: `KW/${(lunasTargetItem.orderNo || `ORD-${lunasTargetItem.id}`).replace(/^ORD-/, "")}/${Date.now().toString().slice(-4)}`,
+          customer: lunasTargetItem.customer || "Pelanggan",
+          phone: lunasTargetItem.phone || (lunasTargetItem as any).nomorHp || "",
+          nopol: lunasTargetItem.nopol || "-",
+          layanan: lunasTargetItem.pengurusan || (lunasTargetItem as any).jenisLayanan || "Pengurusan Dokumen Kendaraan",
+          samsat: (lunasTargetItem as any).samsat || (lunasTargetItem as any).wilayahSamsatAsal || "Samsat DKI Jakarta",
+          tanggal: lunasDate || new Date().toISOString().split("T")[0],
+          nominal: payAmount,
+          totalTagihan: Number(lunasTargetItem.totalTagihan || 0),
+          totalDibayar: Number(lunasTargetItem.terbayar ?? (lunasTargetItem as any).uangMasuk ?? 0) + payAmount,
+          sisaTagihan: Math.max(0, currentSisa - payAmount),
+          metodePembayaran: lunasMethod,
+          catatan: lunasNotes.trim() || undefined,
+          kasirName: "Kasir SUN89",
+        };
+        setPrintKwitansiData(kwitansiPayload);
+
         setLunasTargetItem(null);
         setLunasProof(null);
         setLunasIdempotencyKey("");
@@ -546,6 +599,9 @@ export function FinanceContent({ tab }: FinanceContentProps) {
     completeInvoice,
     processRefund,
     processCashbackPayment,
+    voidInvoicePayment,
+    voidCashbackPayout,
+    getVoidAuditHistory,
     dismissCashback,
     addInvoice,
     updateInvoice,
@@ -563,6 +619,593 @@ export function FinanceContent({ tab }: FinanceContentProps) {
     reviewReimbursement,
     payReimbursement,
   } = useFinanceStore();
+
+  // User role checking for Supervisor / Admin Void privileges
+  const isSpvOrAdmin = useMemo(() => {
+    try {
+      const savedUserStr = localStorage.getItem("auth_user");
+      if (!savedUserStr) return false;
+      const user = JSON.parse(savedUserStr);
+      const r = String(user?.role || "").toLowerCase();
+      const j = String(user?.jabatan || "").toLowerCase();
+      return (
+        ["administrator", "supervisor", "spv", "svp", "admin"].includes(r) ||
+        j.includes("supervisor") ||
+        j.includes("spv") ||
+        j.includes("svp") ||
+        j.includes("admin")
+      );
+    } catch {
+      return false;
+    }
+  }, []);
+
+  // Invoice A5 Print State (Tahap 1)
+  const [printInvoiceData, setPrintInvoiceData] = useState<any | null>(null);
+
+  // Tahap 3: Kwitansi & Voucher Refund State
+  const [printKwitansiData, setPrintKwitansiData] = useState<any | null>(null);
+  const [printVoucherData, setPrintVoucherData] = useState<any | null>(null);
+  const [lunasInstallmentMode, setLunasInstallmentMode] = useState<"full" | "partial">("full");
+
+  // Tahap 2: Void Payment & Cashback State (SPV / Admin Only)
+  const [voidTargetPayment, setVoidTargetPayment] = useState<{
+    invoiceId: number;
+    paymentId: number;
+    nominal: number;
+    invoiceNo: string;
+    orderNo?: string;
+  } | null>(null);
+
+  const [voidTargetCashback, setVoidTargetCashback] = useState<{
+    invoiceId: number;
+    nominal: number;
+    orderNo: string;
+    customer: string;
+  } | null>(null);
+
+  const [voidReasonText, setVoidReasonText] = useState<string>("");
+  const [isSubmittingVoid, setIsSubmittingVoid] = useState<boolean>(false);
+
+  // Tahap 4: Step 8 Handover & Closing State
+  const [closingTargetItem, setClosingTargetItem] = useState<any | null>(null);
+  const [isSubmittingClosing, setIsSubmittingClosing] = useState<boolean>(false);
+  const [closingPenerima, setClosingPenerima] = useState<string>("");
+  const [closingNotes, setClosingNotes] = useState<string>("");
+
+  // Tahap 4: Void Audit History State
+  const [isVoidHistoryOpen, setIsVoidHistoryOpen] = useState<boolean>(false);
+  const [voidHistoryData, setVoidHistoryData] = useState<{ payments: any[]; cashbacks: any[] }>({ payments: [], cashbacks: [] });
+  const [isLoadingVoidHistory, setIsLoadingVoidHistory] = useState<boolean>(false);
+  const [voidHistoryTab, setVoidHistoryTab] = useState<"payments" | "cashbacks">("payments");
+
+  // Send Invoice / Tagihan directly to WhatsApp (Tahap 1)
+  const handleSendWhatsAppTagihan = (item: any) => {
+    const phone = item.nomorHP || item.noHp || item["No HP / WhatsApp"] || item.phone || "";
+    const customer = item["Nama Customer"] || item.customer || "Pelanggan";
+    const orderNo = item.orderNo || item["Nomor Order"] || item["No Order"] || (typeof item.id === "string" && item.id.startsWith("ord:") ? item.id.slice(4) : (item["No Invoice"] || `ORD-${item.id || "001"}`));
+    const invoiceNo = item["No Invoice"] || item.invoice || item.invoiceNo || (orderNo ? `INV/${orderNo.replace(/^ORD-/, "")}` : "INV-001");
+    const nopol = item["Plat No"] || item.nopol || "-";
+    const layanan = item["Jenis Pengurusan"] || item.layanan || item.jenisLayanan || "Pengurusan Dokumen Kendaraan";
+    const samsat = item["Samsat Asal"] || item["Samsat"] || item.wilayahSamsatAsal || item.samsat || "Samsat DKI Jakarta";
+    const sisa = Number(item["Sisa Tagihan"] ?? item.Kekurangan ?? item.sisaTagihan ?? item.sisa ?? item.kurang ?? item.kekurangan ?? 0);
+    const total = Number(item["Total Tagihan Konsumen"] ?? item.totalBiaya ?? item.totalTagihan ?? (sisa + Number(item.dibayar ?? item.terbayar ?? 0)));
+    const dibayar = Number(item["Uang Masuk dari Konsumen"] ?? item.dibayar ?? item.terbayar ?? Math.max(0, total - sisa));
+
+    if (!phone || !phone.trim() || phone === "-") {
+      toast.warning(`Nomor WhatsApp tidak ditemukan pada data transaksi ${orderNo}.`);
+      return;
+    }
+    let cleanPhone = phone.replace(/[^0-9]/g, "");
+    if (cleanPhone.startsWith("0")) {
+      cleanPhone = "62" + cleanPhone.slice(1);
+    } else if (cleanPhone.startsWith("8")) {
+      cleanPhone = "62" + cleanPhone;
+    }
+    const messageText = `Halo Bpk/Ibu ${customer},\n\nKami dari *Biro Jasa SUN89* menginformasikan rincian tagihan pengurusan dokumen kendaraan Anda:\n\n• *Nomor Order*   : ${orderNo}\n• *Nomor Invoice* : ${invoiceNo}\n• *Nomor Polisi*  : ${String(nopol).toUpperCase()}\n• *Jenis Layanan* : ${layanan}\n• *Samsat*        : ${samsat}\n• *Total Tagihan* : ${formatRupiah(total)}\n• *Telah Dibayar* : ${formatRupiah(dibayar)}\n-----------------------------------------\n• *SISA TAGIHAN*  : *${formatRupiah(sisa)}*\n\nPembayaran dapat ditransfer ke rekening resmi:\n*Bank BCA*: 7175095764\n*a/n ANISA SUSANTI (Biro Jasa SUN89)*\n\nMohon kirimkan bukti transfer setelah pembayaran dilakukan. Terima kasih atas kepercayaan Anda menggunakan Biro Jasa SUN89.`;
+    const waUrl = `https://wa.me/${cleanPhone}?text=${encodeURIComponent(messageText)}`;
+    window.open(waUrl, "_blank");
+    toast.success(`Membuka WhatsApp untuk mengirim tagihan ke ${customer} (${phone})`);
+  };
+
+  // Void Payment Execution (Tahap 2)
+  const handleConfirmVoidPayment = async () => {
+    if (!voidTargetPayment) return;
+    if (!voidReasonText || voidReasonText.trim().length < 10) {
+      toast.error("Alasan pembatalan (Void) wajib diisi minimal 10 karakter sebagai bukti audit.");
+      return;
+    }
+    try {
+      setIsSubmittingVoid(true);
+      await voidInvoicePayment(voidTargetPayment.invoiceId, voidTargetPayment.paymentId, voidReasonText.trim());
+      toast.success(`Pembayaran ${formatRupiah(voidTargetPayment.nominal)} berhasil dibatalkan (Void) dan saldo kas disesuaikan.`);
+      setVoidTargetPayment(null);
+      setVoidReasonText("");
+
+      if (lunasTargetItem) {
+        const invoiceNum = lunasTargetItem.invoice || lunasTargetItem.invoiceNo || lunasTargetItem.orderNo;
+        if (invoiceNum) {
+          const token = localStorage.getItem("auth_token") || localStorage.getItem("sun89_auth_token") || "";
+          const res = await fetch(`${APP_CONFIG.apiBaseUrl}/finance/invoices/${encodeURIComponent(invoiceNum)}/payments`, {
+            headers: { Authorization: `Bearer ${token}` }
+          });
+          if (res.ok) {
+            const payload = await res.json();
+            if (payload?.success && Array.isArray(payload.data)) {
+              setTargetPayments(payload.data);
+            }
+          }
+        }
+      }
+    } catch (err: any) {
+      toast.error(err?.message || "Gagal membatalkan transaksi pembayaran.");
+    } finally {
+      setIsSubmittingVoid(false);
+    }
+  };
+
+  // Void Cashback Payout Execution (Tahap 2)
+  const handleConfirmVoidCashback = async () => {
+    if (!voidTargetCashback) return;
+    if (!voidReasonText || voidReasonText.trim().length < 10) {
+      toast.error("Alasan pembatalan (Void) wajib diisi minimal 10 karakter sebagai bukti audit.");
+      return;
+    }
+    try {
+      setIsSubmittingVoid(true);
+      await voidCashbackPayout(voidTargetCashback.invoiceId, voidReasonText.trim());
+      toast.success(`Pencairan cashback untuk ${voidTargetCashback.orderNo} berhasil dibatalkan (Void) dan kas kantor dikembalikan.`);
+      setPaidCashbackIds((prev) => {
+        const next = new Set(prev);
+        next.delete(voidTargetCashback.invoiceId);
+        next.delete(voidTargetCashback.orderNo);
+        return next;
+      });
+      setVoidTargetCashback(null);
+      setVoidReasonText("");
+    } catch (err: any) {
+      toast.error(err?.message || "Gagal membatalkan pencairan cashback.");
+    } finally {
+      setIsSubmittingVoid(false);
+    }
+  };
+
+  // Tahap 4: Fetch SPV Void Audit History
+  const handleOpenVoidHistory = async () => {
+    setIsVoidHistoryOpen(true);
+    setIsLoadingVoidHistory(true);
+    try {
+      const history = await getVoidAuditHistory();
+      setVoidHistoryData(history || { payments: [], cashbacks: [] });
+    } catch (err: any) {
+      toast.error(err?.message || "Gagal memuat log audit pembatalan.");
+    } finally {
+      setIsLoadingVoidHistory(false);
+    }
+  };
+
+  // Tahap 4: Step 8 Handover & Closing (Realize Profit into Laba Rugi)
+  const handleConfirmClosing = async () => {
+    if (!closingTargetItem || isSubmittingClosing) return;
+    try {
+      setIsSubmittingClosing(true);
+      const ordNo = closingTargetItem.orderNo || closingTargetItem.invoice || "";
+      let operatorName = "Finance SPV";
+      try {
+        const userObj = JSON.parse(localStorage.getItem("auth_user") || "{}");
+        operatorName = userObj.nama || userObj.username || "Finance SPV";
+      } catch {
+        // fallback
+      }
+
+      if (ordNo) {
+        orderStore.updateOrder(ordNo, {
+          currentStep: 8,
+          currentStageName: "Selesai (Arsip)" as any,
+          penerimaBerkas: closingPenerima.trim() || closingTargetItem.customer || "Customer",
+          catatanPenyerahan: closingNotes.trim() || "Penyerahan berkas fisik (STNK/BPKB) dan closing transaksi finansial",
+          tanggalSelesai: new Date().toISOString().split("T")[0],
+        } as any);
+      }
+
+      completeInvoice(closingTargetItem.id, operatorName);
+
+      toast.success(
+        `Transaksi ${ordNo} (${closingTargetItem.customer}) berhasil di-closing. Dokumen fisik telah diserahkan dan laba telah direalisasikan ke Laba Rugi.`
+      );
+      setClosingTargetItem(null);
+      setClosingPenerima("");
+      setClosingNotes("");
+    } catch (err: any) {
+      toast.error(err?.message || "Gagal memproses closing transaksi.");
+    } finally {
+      setIsSubmittingClosing(false);
+    }
+  };
+
+  // CSV Exporters
+  const handleExportBelumBayarCSV = () => {
+    const cols = [
+      { key: "tanggalMasukBerkas", label: "Tanggal Masuk" },
+      { key: "orderNo", label: "Nomor Order" },
+      { key: "nopol", label: "Nomor Polisi" },
+      { key: "customer", label: "Customer" },
+      { key: "phone", label: "No. HP / WA" },
+      { key: "pengurusan", label: "Layanan" },
+      { key: "totalTagihan", label: "Total Tagihan" },
+      { key: "uangMasuk", label: "Sudah Dibayar" },
+      { key: "sisaTagihan", label: "Sisa Tagihan" },
+      { key: "status", label: "Status" },
+    ];
+    exportToCSV({
+      title: "Laporan Piutang Belum & Kurang Bayar",
+      columns: cols,
+      data: belumBayarData,
+      filename: `Piutang_Belum_Bayar_SUN89_${new Date().toISOString().slice(0, 10)}.csv`,
+    });
+    toast.success("Data Belum & Kurang Bayar berhasil diekspor ke format CSV.");
+  };
+
+  const handleExportCashbackCSV = () => {
+    const cols = [
+      { key: "tanggalMasukBerkas", label: "Tanggal Masuk" },
+      { key: "orderNo", label: "Nomor Order" },
+      { key: "nopol", label: "Nomor Polisi" },
+      { key: "customer", label: "Customer" },
+      { key: "phone", label: "No. HP / WA" },
+      { key: "pengurusan", label: "Layanan" },
+      { key: "uangMasuk", label: "Uang Masuk" },
+      { key: "totalTagihan", label: "Total Tagihan" },
+      { key: "nominalKelebihan", label: "Kelebihan Bayar" },
+      { key: "status", label: "Status" },
+    ];
+    exportToCSV({
+      title: "Laporan Cashback & Kelebihan Bayar",
+      columns: cols,
+      data: cashbackPendingData.filter((item: any) => !dismissedCashbackIds.has(item.id)),
+      filename: `Cashback_Terpending_SUN89_${new Date().toISOString().slice(0, 10)}.csv`,
+    });
+    toast.success("Data Cashback Terpending berhasil diekspor ke format CSV.");
+  };
+
+  const handleExportProfitPendingCSV = () => {
+    const cols = [
+      { key: "tanggal", label: "Tanggal Order" },
+      { key: "orderNo", label: "Nomor Order" },
+      { key: "nopol", label: "Nomor Polisi" },
+      { key: "customer", label: "Customer" },
+      { key: "pengurusan", label: "Layanan" },
+      { key: "totalTagihan", label: "Total Tagihan" },
+      { key: "totalUangMasuk", label: "Total Terbayar" },
+      { key: "danaTitipanPajak", label: "Biaya Pokok Samsat" },
+      { key: "totalUangKeluarAktual", label: "Uang Keluar Aktual" },
+      { key: "selisihKasSementara", label: "Selisih Kas" },
+      { key: "estimasiProfit", label: "Estimasi Profit" },
+    ];
+    exportToCSV({
+      title: "Laporan Profit Terpending",
+      columns: cols,
+      data: profitPendingData,
+      filename: `Profit_Terpending_SUN89_${new Date().toISOString().slice(0, 10)}.csv`,
+    });
+    toast.success("Data Profit Terpending berhasil diekspor ke format CSV.");
+  };
+
+  // Reusable Dialog Renderers
+  const renderKwitansiModal = () => (
+    <KwitansiA5Dialog
+      open={!!printKwitansiData}
+      onOpenChange={(open) => {
+        if (!open) setPrintKwitansiData(null);
+      }}
+      data={printKwitansiData}
+    />
+  );
+
+  const renderVoucherModal = () => (
+    <VoucherRefundDialog
+      open={!!printVoucherData}
+      onOpenChange={(open) => {
+        if (!open) setPrintVoucherData(null);
+      }}
+      data={printVoucherData}
+    />
+  );
+
+  const renderVoidHistoryModal = () => (
+    <Dialog open={isVoidHistoryOpen} onOpenChange={setIsVoidHistoryOpen}>
+      <DialogContent className="border-border sm:max-w-4xl max-h-[90vh] overflow-y-auto bg-card">
+        <DialogHeader>
+          <div className="flex items-center justify-between pr-6">
+            <div className="flex items-center gap-2">
+              <div className="w-8 h-8 rounded-lg bg-destructive/10 flex items-center justify-center text-destructive">
+                <History className="w-4 h-4" />
+              </div>
+              <div>
+                <DialogTitle className="text-base font-semibold text-foreground">
+                  Log Audit Pembatalan Transaksi (Void & Storno Kas)
+                </DialogTitle>
+                <DialogDescription className="text-xs text-muted-foreground">
+                  Catatan pembatalan transaksi oleh SPV / Admin dengan pembukuan jurnal pembalik otomatis
+                </DialogDescription>
+              </div>
+            </div>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={handleOpenVoidHistory}
+              disabled={isLoadingVoidHistory}
+              className="h-7 text-xs px-2.5 gap-1 border-border"
+            >
+              {isLoadingVoidHistory ? <Loader2 className="w-3 h-3 animate-spin" /> : <History className="w-3 h-3" />}
+              <span>Segarkan</span>
+            </Button>
+          </div>
+        </DialogHeader>
+
+        <div className="space-y-3 pt-2">
+          <div className="flex items-center gap-2 border-b border-border pb-2">
+            <button
+              type="button"
+              onClick={() => setVoidHistoryTab("payments")}
+              className={`px-3 py-1.5 rounded-md text-xs font-semibold transition-colors ${
+                voidHistoryTab === "payments"
+                  ? "bg-destructive/10 text-destructive border border-destructive/20"
+                  : "text-muted-foreground hover:text-foreground"
+              }`}
+            >
+              Void Pembayaran Invoice ({voidHistoryData.payments?.length || 0})
+            </button>
+            <button
+              type="button"
+              onClick={() => setVoidHistoryTab("cashbacks")}
+              className={`px-3 py-1.5 rounded-md text-xs font-semibold transition-colors ${
+                voidHistoryTab === "cashbacks"
+                  ? "bg-destructive/10 text-destructive border border-destructive/20"
+                  : "text-muted-foreground hover:text-foreground"
+              }`}
+            >
+              Void Pencairan Cashback ({voidHistoryData.cashbacks?.length || 0})
+            </button>
+          </div>
+
+          {isLoadingVoidHistory ? (
+            <div className="p-8 flex flex-col items-center justify-center gap-2 text-muted-foreground">
+              <Loader2 className="w-6 h-6 animate-spin text-primary" />
+              <p className="text-xs">Memuat catatan log audit void...</p>
+            </div>
+          ) : voidHistoryTab === "payments" ? (
+            voidHistoryData.payments && voidHistoryData.payments.length > 0 ? (
+              <div className="overflow-x-auto border border-border rounded-lg">
+                <table className="w-full text-xs text-left border-collapse">
+                  <thead className="bg-muted/50 border-b border-border text-[11px] font-semibold text-muted-foreground">
+                    <tr>
+                      <th className="p-2.5">Waktu Void</th>
+                      <th className="p-2.5">No. Invoice / Order</th>
+                      <th className="p-2.5">Customer</th>
+                      <th className="p-2.5 text-right">Nominal Void</th>
+                      <th className="p-2.5">Dibatalkan Oleh</th>
+                      <th className="p-2.5">Alasan Pembatalan</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-border">
+                    {voidHistoryData.payments.map((p: any, idx: number) => (
+                      <tr key={p.payment_id || idx} className="hover:bg-muted/20">
+                        <td className="p-2.5 text-[11px] font-mono text-muted-foreground whitespace-nowrap">
+                          {p.voided_at || "-"}
+                        </td>
+                        <td className="p-2.5 font-mono font-semibold text-primary">
+                          {p.invoice_no || p.order_no || "-"}
+                        </td>
+                        <td className="p-2.5 font-medium text-foreground">{p.customer || "-"}</td>
+                        <td className="p-2.5 text-right font-mono font-bold text-destructive">
+                          {formatRupiah(p.nominal || 0)}
+                        </td>
+                        <td className="p-2.5">
+                          <span className="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-semibold bg-primary/10 text-primary border border-primary/20">
+                            {p.voided_by || "Supervisor"}
+                          </span>
+                        </td>
+                        <td className="p-2.5 text-muted-foreground max-w-xs truncate" title={p.void_reason}>
+                          {p.void_reason || "-"}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            ) : (
+              <div className="p-6 text-center text-xs text-muted-foreground border border-dashed border-border rounded-lg">
+                Belum ada catatan pembatalan pembayaran invoice (Void).
+              </div>
+            )
+          ) : (
+            voidHistoryData.cashbacks && voidHistoryData.cashbacks.length > 0 ? (
+              <div className="overflow-x-auto border border-border rounded-lg">
+                <table className="w-full text-xs text-left border-collapse">
+                  <thead className="bg-muted/50 border-b border-border text-[11px] font-semibold text-muted-foreground">
+                    <tr>
+                      <th className="p-2.5">Waktu Void</th>
+                      <th className="p-2.5">Target / Referensi</th>
+                      <th className="p-2.5">Dibatalkan Oleh</th>
+                      <th className="p-2.5">Role</th>
+                      <th className="p-2.5">Alasan Pembatalan / Keterangan</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-border">
+                    {voidHistoryData.cashbacks.map((c: any, idx: number) => (
+                      <tr key={c.id || idx} className="hover:bg-muted/20">
+                        <td className="p-2.5 text-[11px] font-mono text-muted-foreground whitespace-nowrap">
+                          {c.voided_at || "-"}
+                        </td>
+                        <td className="p-2.5 font-mono font-semibold text-primary">
+                          {c.invoice_no || "-"}
+                        </td>
+                        <td className="p-2.5">
+                          <span className="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-semibold bg-primary/10 text-primary border border-primary/20">
+                            {c.voided_by || "Supervisor"}
+                          </span>
+                        </td>
+                        <td className="p-2.5 text-[11px] text-muted-foreground uppercase">{c.user_role || "spv"}</td>
+                        <td className="p-2.5 text-muted-foreground max-w-sm truncate" title={c.void_reason}>
+                          {c.void_reason || "-"}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            ) : (
+              <div className="p-6 text-center text-xs text-muted-foreground border border-dashed border-border rounded-lg">
+                Belum ada catatan pembatalan pencairan cashback (Void).
+              </div>
+            )
+          )}
+        </div>
+
+        <DialogFooter className="mt-3">
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={() => setIsVoidHistoryOpen(false)}
+            className="h-8 text-xs font-medium"
+          >
+            Tutup
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+
+  const renderClosingModal = () => (
+    <AlertDialog
+      open={!!closingTargetItem}
+      onOpenChange={(open) => {
+        if (!open && !isSubmittingClosing) {
+          setClosingTargetItem(null);
+          setClosingPenerima("");
+          setClosingNotes("");
+        }
+      }}
+    >
+      <AlertDialogContent className="border-border sm:max-w-md bg-card">
+        <AlertDialogHeader>
+          <div className="flex items-center gap-2.5 text-emerald-600 mb-1">
+            <div className="w-9 h-9 rounded-full bg-emerald-500/10 flex items-center justify-center shrink-0">
+              <CheckCircle2 className="w-5 h-5 text-emerald-600" />
+            </div>
+            <div>
+              <AlertDialogTitle className="text-base font-semibold text-foreground">
+                Closing Berkas & Realisasi Laba
+              </AlertDialogTitle>
+              <p className="text-[11px] text-muted-foreground">
+                Tahap 8: Penyerahan Dokumen Fisik ke Customer
+              </p>
+            </div>
+          </div>
+          <AlertDialogDescription className="text-xs text-muted-foreground space-y-3 pt-2 text-left" asChild>
+            <div>
+              {closingTargetItem && (
+                <div className="p-3 rounded-lg border border-border/60 bg-muted/30 space-y-1.5 text-foreground text-xs">
+                  <div className="flex justify-between items-center">
+                    <span className="text-muted-foreground text-[11px]">No. Order:</span>
+                    <span className="font-mono font-semibold text-primary">{closingTargetItem.orderNo || closingTargetItem.invoice}</span>
+                  </div>
+                  <div className="flex justify-between items-center">
+                    <span className="text-muted-foreground text-[11px]">Customer & Nopol:</span>
+                    <span className="font-medium text-foreground">{closingTargetItem.customer} ({closingTargetItem.nopol || "-"})</span>
+                  </div>
+                  <div className="flex justify-between items-center">
+                    <span className="text-muted-foreground text-[11px]">Layanan:</span>
+                    <span className="text-foreground">{closingTargetItem.pengurusan || "Samsat"}</span>
+                  </div>
+                  <div className="flex justify-between items-center border-t border-border/40 pt-1.5">
+                    <span className="text-muted-foreground text-[11px]">Estimasi Laba Bersih:</span>
+                    <span className="font-mono font-bold text-emerald-600 dark:text-emerald-400">
+                      {formatRupiah(closingTargetItem.estimasiProfit || closingTargetItem.profit || 0)}
+                    </span>
+                  </div>
+                </div>
+              )}
+
+              <div className="p-2.5 rounded bg-blue-500/10 border border-blue-500/20 text-blue-900 dark:text-blue-300 text-[11px] leading-relaxed">
+                <p className="font-semibold flex items-center gap-1 mb-0.5">
+                  <AlertCircle className="w-3.5 h-3.5 shrink-0 text-blue-600" />
+                  Konsekuensi Transisi Akuntansi:
+                </p>
+                <ul className="list-disc list-inside space-y-0.5 pl-1">
+                  <li>Dokumen fisik (STNK/BPKB/Plat asli) diserahterimakan kepada customer.</li>
+                  <li>Transaksi selesai penuh dan keluar dari <strong>Profit Terpending</strong>.</li>
+                  <li>Estimasi laba bersih diakui secara definitif ke laporan <strong>Laba Rugi (Realized Profit)</strong>.</li>
+                </ul>
+              </div>
+
+              <div className="space-y-2 pt-1">
+                <div className="space-y-1">
+                  <Label className="text-[11px] font-semibold text-foreground">
+                    Nama Penerima Berkas Fisik <span className="text-destructive">*</span>
+                  </Label>
+                  <Input
+                    value={closingPenerima}
+                    onChange={(e) => setClosingPenerima(e.target.value)}
+                    placeholder="Nama customer / perwakilan yang mengambil berkas"
+                    className="h-8 text-xs text-foreground bg-input-background"
+                  />
+                </div>
+
+                <div className="space-y-1">
+                  <Label className="text-[11px] font-semibold text-foreground">
+                    Catatan Penyerahan <span className="text-muted-foreground font-normal">(Opsional)</span>
+                  </Label>
+                  <Input
+                    value={closingNotes}
+                    onChange={(e) => setClosingNotes(e.target.value)}
+                    placeholder="Contoh: Berkas asli STNK/BPKB diterima dalam kondisi lengkap"
+                    className="h-8 text-xs text-foreground bg-input-background"
+                  />
+                </div>
+              </div>
+            </div>
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+        <AlertDialogFooter className="mt-4 gap-2">
+          <AlertDialogCancel
+            disabled={isSubmittingClosing}
+            onClick={() => {
+              setClosingTargetItem(null);
+              setClosingPenerima("");
+              setClosingNotes("");
+            }}
+            className="h-8 text-xs px-3 font-medium"
+          >
+            Batal
+          </AlertDialogCancel>
+          <AlertDialogAction
+            disabled={isSubmittingClosing || !closingPenerima.trim()}
+            onClick={(e) => {
+              e.preventDefault();
+              handleConfirmClosing();
+            }}
+            className="h-8 text-xs px-3.5 bg-emerald-600 hover:bg-emerald-700 text-white font-semibold flex items-center gap-1.5 disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            {isSubmittingClosing ? (
+              <>
+                <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                <span>Memproses Closing...</span>
+              </>
+            ) : (
+              <>
+                <CheckCircle2 className="w-3.5 h-3.5" />
+                <span>Konfirmasi Serah Terima & Selesai</span>
+              </>
+            )}
+          </AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
+  );
 
   const { category } = useParams<{ category?: string }>();
   const activeCategoryLabel = category && DATA_PENJUALAN_CATEGORIES[category] ? DATA_PENJUALAN_CATEGORIES[category] : "Mutasi LD";
@@ -1833,6 +2476,30 @@ export function FinanceContent({ tab }: FinanceContentProps) {
 
     return (
       <div className="flex-1 flex flex-col min-h-0 space-y-4">
+        {/* Toolbar Rekonsiliasi & Tutup Kas */}
+        <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 bg-card p-3 rounded-xl border border-border shadow-xs">
+          <div className="flex items-center gap-2.5">
+            <div className="w-9 h-9 rounded-lg bg-primary/10 text-primary flex items-center justify-center font-bold">
+              <FileSpreadsheet className="w-5 h-5" />
+            </div>
+            <div>
+              <h2 className="text-sm font-semibold text-foreground">Buku Kas Kantor</h2>
+              <p className="text-xs text-muted-foreground">Pencatatan arus kas operasional harian dan rekonsiliasi kas fisik</p>
+            </div>
+          </div>
+          <div className="flex items-center gap-2 w-full sm:w-auto">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setIsRekonsiliasiOpen(true)}
+              className="h-8 text-xs font-semibold flex items-center gap-1.5 border-primary/30 text-primary hover:bg-primary/5"
+            >
+              <Printer className="w-3.5 h-3.5" />
+              <span>Rekonsiliasi & Tutup Kas Harian (A5)</span>
+            </Button>
+          </div>
+        </div>
+
         {renderSubTabHeader("Kas Kantor", "Kelola transaksi kas kantor")}
 
         {/* Level 3: Table */}
@@ -1897,6 +2564,22 @@ export function FinanceContent({ tab }: FinanceContentProps) {
             </div>
           </Card>
         </div>
+
+        <RekonsiliasiKasModal
+          open={isRekonsiliasiOpen}
+          onOpenChange={setIsRekonsiliasiOpen}
+          kasTransactions={kasKantorData}
+          currentUser={{
+            nama: (() => {
+              try {
+                const u = localStorage.getItem("auth_user");
+                if (u) return JSON.parse(u).nama || JSON.parse(u).name;
+              } catch {}
+              return "Kasir Operasional";
+            })(),
+            role: "finance",
+          }}
+        />
       </div>
     );
   }
@@ -2366,7 +3049,7 @@ export function FinanceContent({ tab }: FinanceContentProps) {
             return <span className="text-muted-foreground text-xs italic">-</span>;
           }
           const cleanPhone = phone.replace(/[^0-9]/g, "");
-          const waPhone = cleanPhone.startsWith("0") ? `62${cleanPhone.slice(1)}` : cleanPhone;
+          const waPhone = cleanPhone.startsWith("0") ? `62${cleanPhone.slice(1)}` : (cleanPhone.startsWith("8") ? `62${cleanPhone}` : cleanPhone);
           const sisa = formatRupiah(item.sisaTagihan ?? item.kekurangan ?? item.sisa ?? 0);
           const textMsg = encodeURIComponent(
             `Halo ${item.customer}, kami dari Biro Jasa SUN89 menginformasikan tagihan pengurusan ${item.pengurusan || item.jenisLayanan} (No. Polisi: ${item.nopol || "-"}, Order: ${item.orderNo || item.invoice || "-"}) memiliki sisa tagihan sebesar ${sisa}. Mohon konfirmasi jadwal pelunasan. Terima kasih.`
@@ -2487,6 +3170,28 @@ export function FinanceContent({ tab }: FinanceContentProps) {
             )}
             <Button
               type="button"
+              variant="outline"
+              size="sm"
+              className="h-6 px-2 text-[11px] gap-1 text-slate-700 dark:text-slate-300 border-slate-300 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800 font-medium whitespace-nowrap"
+              onClick={() => setPrintInvoiceData(item)}
+              title="Cetak Faktur Invoice Format A5"
+            >
+              <Printer className="w-3 h-3 text-slate-600 dark:text-slate-400" />
+              <span>Cetak</span>
+            </Button>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className="h-6 px-2 text-[11px] gap-1 text-emerald-600 dark:text-emerald-400 border-emerald-500/40 hover:bg-emerald-500/10 font-medium whitespace-nowrap"
+              onClick={() => handleSendWhatsAppTagihan(item)}
+              title="Kirim Invoice & Tagihan ke WhatsApp Customer"
+            >
+              <MessageCircle className="w-3 h-3 text-emerald-600 dark:text-emerald-400" />
+              <span>Kirim WA</span>
+            </Button>
+            <Button
+              type="button"
               variant="ghost"
               size="sm"
               className="h-6 px-2 text-[11px] text-muted-foreground hover:text-foreground hover:bg-muted"
@@ -2504,6 +3209,38 @@ export function FinanceContent({ tab }: FinanceContentProps) {
     return (
       <div className="flex-1 flex flex-col min-h-0 space-y-4">
         {renderSubTabHeader("Belum & Kurang Bayar", "Daftar tagihan customer yang memiliki sisa kewajiban pembayaran")}
+
+        {/* Toolbar Aksi SPV & Ekspor */}
+        <div className="flex flex-wrap items-center justify-between gap-2.5">
+          <div className="flex items-center gap-2">
+            {isSpvOrAdmin && (
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={handleOpenVoidHistory}
+                className="h-8 text-xs gap-1.5 border-border text-foreground hover:bg-muted font-medium"
+                title="Lihat riwayat audit pembatalan transaksi kas dan pembayaran (SPV & Admin)"
+              >
+                <History className="w-3.5 h-3.5 text-primary" />
+                <span>Log Audit Void</span>
+              </Button>
+            )}
+          </div>
+          <div className="flex items-center gap-2">
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={handleExportBelumBayarCSV}
+              className="h-8 text-xs gap-1.5 border-border text-foreground hover:bg-muted font-medium"
+              title="Ekspor daftar piutang belum bayar ke file CSV"
+            >
+              <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-600" />
+              <span>Ekspor CSV</span>
+            </Button>
+          </div>
+        </div>
 
         <Card className="p-4 sm:p-5 border border-border bg-card shadow-xs flex-1 flex flex-col min-h-0">
           <EnhancedTableWithDialogs
@@ -2640,7 +3377,41 @@ export function FinanceContent({ tab }: FinanceContentProps) {
                       )}
                     </div>
 
-                    {/* Input Nominal Pembayaran & Tombol Cepat Lunasi */}
+                    {/* Pilihan Opsi Multi-Termin: Lunasi 100% vs Cicilan / Sebagian */}
+                    <div className="grid grid-cols-2 gap-2 p-1 bg-muted/50 rounded-lg border border-border/60">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setLunasInstallmentMode("full");
+                          const curSisa = Number(lunasTargetItem.kekurangan ?? lunasTargetItem.sisa ?? 0);
+                          setLunasAmount(curSisa);
+                        }}
+                        className={`h-7 rounded text-[11px] font-semibold flex items-center justify-center gap-1.5 transition-colors ${
+                          lunasInstallmentMode === "full"
+                            ? "bg-background text-primary shadow-xs border border-border/80 font-bold"
+                            : "text-muted-foreground hover:text-foreground"
+                        }`}
+                      >
+                        <CheckCircle className="w-3 h-3 text-primary" />
+                        Lunasi Penuh (100%)
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setLunasInstallmentMode("partial");
+                        }}
+                        className={`h-7 rounded text-[11px] font-semibold flex items-center justify-center gap-1.5 transition-colors ${
+                          lunasInstallmentMode === "partial"
+                            ? "bg-background text-primary shadow-xs border border-border/80 font-bold"
+                            : "text-muted-foreground hover:text-foreground"
+                        }`}
+                      >
+                        <Receipt className="w-3 h-3 text-amber-500" />
+                        Cicilan / Termin Sebagian
+                      </button>
+                    </div>
+
+                    {/* Input Nominal Pembayaran & Kalkulator Sisa */}
                     <div className="space-y-1.5 pt-1">
                       <div className="flex items-center justify-between">
                         <label className="text-[11px] font-semibold text-foreground block">
@@ -2651,6 +3422,7 @@ export function FinanceContent({ tab }: FinanceContentProps) {
                           onClick={() => {
                             const curSisa = Number(lunasTargetItem.kekurangan ?? lunasTargetItem.sisa ?? 0);
                             setLunasAmount(curSisa);
+                            setLunasInstallmentMode("full");
                           }}
                           className="text-[10px] text-primary hover:underline font-semibold flex items-center gap-1"
                         >
@@ -2666,11 +3438,33 @@ export function FinanceContent({ tab }: FinanceContentProps) {
                           min="1"
                           max={Number(lunasTargetItem.kekurangan ?? lunasTargetItem.sisa ?? 0)}
                           value={lunasAmount || ""}
-                          onChange={(e) => setLunasAmount(Math.max(0, Number(e.target.value)))}
+                          onChange={(e) => {
+                            const val = Math.max(0, Number(e.target.value));
+                            setLunasAmount(val);
+                            const curSisa = Number(lunasTargetItem.kekurangan ?? lunasTargetItem.sisa ?? 0);
+                            if (val === curSisa) {
+                              setLunasInstallmentMode("full");
+                            } else {
+                              setLunasInstallmentMode("partial");
+                            }
+                          }}
                           placeholder="0"
                           className="w-full h-9 pl-9 pr-3 rounded-md border border-border bg-input-background text-xs text-foreground focus:outline-none focus:ring-1 focus:ring-primary font-mono font-semibold"
                         />
                       </div>
+                      {/* Kalkulator Sisa Berjalan */}
+                      {(() => {
+                        const curSisa = Number(lunasTargetItem.kekurangan ?? lunasTargetItem.sisa ?? 0);
+                        const sisaBerjalan = Math.max(0, curSisa - lunasAmount);
+                        return (
+                          <div className="flex justify-between items-center px-2 py-1 rounded bg-muted/40 border border-border/40 text-[11px]">
+                            <span className="text-muted-foreground">Sisa Tagihan Setelah Pembayaran Ini:</span>
+                            <span className={`font-mono font-bold ${sisaBerjalan === 0 ? "text-emerald-600 dark:text-emerald-400" : "text-rose-600 dark:text-rose-400"}`}>
+                              {formatRupiah(sisaBerjalan)} {sisaBerjalan === 0 ? "(Lunas Penuh)" : "(Kurang Bayar)"}
+                            </span>
+                          </div>
+                        );
+                      })()}
                       {(() => {
                         const curSisa = Number(lunasTargetItem.kekurangan ?? lunasTargetItem.sisa ?? 0);
                         if (lunasAmount > curSisa) {
@@ -2801,27 +3595,100 @@ export function FinanceContent({ tab }: FinanceContentProps) {
                         {isLoadingPayments && <Loader2 className="w-3 h-3 animate-spin text-muted-foreground" />}
                       </p>
                       {targetPayments.length > 0 ? (
-                        <div className="max-h-28 overflow-y-auto space-y-1 pr-1">
-                          {targetPayments.map((p: any, idx: number) => (
-                            <div
-                              key={p.id || idx}
-                              className="p-2 rounded bg-muted/40 border border-border/40 text-[11px] flex items-center justify-between gap-2"
-                            >
-                              <div className="flex flex-col">
-                                <span className="font-semibold text-foreground font-mono">
-                                  {formatRupiah(p.nominal || p.amount || 0)}
-                                </span>
-                                <span className="text-[10px] text-muted-foreground">
-                                  {p.tanggal_bayar || p.tanggal || "-"} • {p.metode_pembayaran || p.metodePembayaran || p.nama_bank || "Transfer"}
-                                </span>
+                        <div className="max-h-36 overflow-y-auto space-y-1.5 pr-1">
+                          {targetPayments.map((p: any, idx: number) => {
+                            const isVoid = Boolean(p.is_void || p.isVoid);
+                            return (
+                              <div
+                                key={p.id || idx}
+                                className={`p-2 rounded border text-[11px] flex items-center justify-between gap-2 transition-colors ${
+                                  isVoid ? "bg-destructive/5 border-destructive/20 opacity-60" : "bg-muted/40 border-border/40"
+                                }`}
+                              >
+                                <div className="flex flex-col">
+                                  <div className="flex items-center gap-1.5">
+                                    <span className={`font-semibold font-mono ${isVoid ? "line-through text-muted-foreground" : "text-foreground"}`}>
+                                      {formatRupiah(p.nominal || p.amount || 0)}
+                                    </span>
+                                    {isVoid && (
+                                      <span className="inline-flex items-center px-1.5 py-0.2 rounded text-[9px] font-bold bg-destructive/15 text-destructive border border-destructive/30">
+                                        BATAL (VOID)
+                                      </span>
+                                    )}
+                                  </div>
+                                  <span className="text-[10px] text-muted-foreground">
+                                    {p.tanggal_bayar || p.tanggal || "-"} • {p.metode_pembayaran || p.metodePembayaran || p.nama_bank || "Transfer"}
+                                    {p.keterangan ? ` • ${p.keterangan}` : ""}
+                                  </span>
+                                  {isVoid && p.void_reason && (
+                                    <span className="text-[9px] text-destructive/90 italic mt-0.5">
+                                      Alasan: {p.void_reason} {p.voided_by ? `(oleh: ${p.voided_by})` : ""}
+                                    </span>
+                                  )}
+                                </div>
+                                <div className="flex items-center gap-1.5">
+                                  {!isVoid && (
+                                    <>
+                                      <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[9px] font-semibold bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20">
+                                        {p.status_verifikasi || p.statusVerifikasi || "TERVERIFIKASI"}
+                                      </span>
+                                      <Button
+                                        type="button"
+                                        variant="outline"
+                                        size="sm"
+                                        className="h-6 px-1.5 text-[10px] gap-1 text-slate-700 dark:text-slate-300 border-slate-300 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800 font-medium whitespace-nowrap"
+                                        onClick={() => {
+                                          setPrintKwitansiData({
+                                            orderNo: lunasTargetItem.orderNo || lunasTargetItem.invoice || `ORD-${lunasTargetItem.id}`,
+                                            invoiceNo: lunasTargetItem.invoice || lunasTargetItem.invoiceNo || `INV/${(lunasTargetItem.orderNo || "").replace(/^ORD-/, "")}`,
+                                            kwitansiNo: `KW/${(lunasTargetItem.orderNo || "").replace(/^ORD-/, "")}/${p.id || "01"}`,
+                                            customer: lunasTargetItem.customer || "Pelanggan",
+                                            phone: lunasTargetItem.phone || (lunasTargetItem as any).nomorHp || "",
+                                            nopol: lunasTargetItem.nopol || "-",
+                                            layanan: lunasTargetItem.pengurusan || (lunasTargetItem as any).jenisLayanan || "Pengurusan Dokumen Kendaraan",
+                                            tanggal: p.tanggal_bayar || p.tanggal || new Date().toISOString().split("T")[0],
+                                            nominal: Number(p.nominal || p.amount || 0),
+                                            totalTagihan: Number(lunasTargetItem.totalTagihan || 0),
+                                            totalDibayar: Number(p.nominal || p.amount || 0),
+                                            sisaTagihan: Math.max(0, Number(lunasTargetItem.totalTagihan || 0) - Number(p.nominal || p.amount || 0)),
+                                            metodePembayaran: p.metode_pembayaran || p.metodePembayaran || "Transfer Bank",
+                                            catatan: p.keterangan || p.catatan || undefined,
+                                            kasirName: "Kasir SUN89",
+                                          });
+                                        }}
+                                        title="Cetak Kwitansi Tanda Terima Setoran (A5 Landscape)"
+                                      >
+                                        <Printer className="w-2.5 h-2.5 text-slate-600 dark:text-slate-400" />
+                                        <span>Kwitansi</span>
+                                      </Button>
+                                      {isSpvOrAdmin && (
+                                        <Button
+                                          type="button"
+                                          variant="outline"
+                                          size="sm"
+                                          className="h-6 px-1.5 text-[10px] gap-1 text-destructive hover:text-destructive hover:bg-destructive/10 border-destructive/30 font-medium whitespace-nowrap"
+                                          onClick={() => {
+                                            setVoidTargetPayment({
+                                              invoiceId: lunasTargetItem.id,
+                                              paymentId: p.id,
+                                              nominal: Number(p.nominal || p.amount || 0),
+                                              invoiceNo: lunasTargetItem.invoice || lunasTargetItem.invoiceNo || lunasTargetItem.orderNo || `INV-${lunasTargetItem.id}`,
+                                              orderNo: lunasTargetItem.orderNo,
+                                            });
+                                            setVoidReasonText("");
+                                          }}
+                                          title="Batalkan pembayaran ini (Storno kas & pulihkan sisa tagihan)"
+                                        >
+                                          <Undo2 className="w-2.5 h-2.5 text-destructive" />
+                                          <span>Void</span>
+                                        </Button>
+                                      )}
+                                    </>
+                                  )}
+                                </div>
                               </div>
-                              <div className="flex items-center gap-1.5">
-                                <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[9px] font-semibold bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20">
-                                  {p.status_verifikasi || p.statusVerifikasi || "TERVERIFIKASI"}
-                                </span>
-                              </div>
-                            </div>
-                          ))}
+                            );
+                          })}
                         </div>
                       ) : (
                         <p className="text-[11px] text-muted-foreground italic bg-muted/20 p-2 rounded border border-border/30">
@@ -2846,12 +3713,12 @@ export function FinanceContent({ tab }: FinanceContentProps) {
                 Batal
               </AlertDialogCancel>
               <AlertDialogAction
-                disabled={
+                disabled={Boolean(
                   isSubmittingLunas ||
                   isUploadingLunasProof ||
                   lunasAmount <= 0 ||
                   (lunasTargetItem && lunasAmount > Number(lunasTargetItem.kekurangan ?? lunasTargetItem.sisa ?? 0))
-                }
+                )}
                 onClick={(e) => {
                   e.preventDefault();
                   handleConfirmLunas();
@@ -2870,6 +3737,124 @@ export function FinanceContent({ tab }: FinanceContentProps) {
             </AlertDialogFooter>
           </AlertDialogContent>
         </AlertDialog>
+
+        {/* MODAL CETAK INVOICE A5 RESMI */}
+        <InvoiceA5Dialog
+          open={!!printInvoiceData}
+          onOpenChange={(open) => {
+            if (!open) setPrintInvoiceData(null);
+          }}
+          data={printInvoiceData}
+        />
+
+        {/* MODAL KONFIRMASI VOID / BATALKAN PEMBAYARAN (OTORISASI SPV & ADMIN) */}
+        <AlertDialog
+          open={!!voidTargetPayment}
+          onOpenChange={(open) => {
+            if (!open && !isSubmittingVoid) {
+              setVoidTargetPayment(null);
+              setVoidReasonText("");
+            }
+          }}
+        >
+          <AlertDialogContent className="w-full sm:max-w-md bg-card text-card-foreground border-destructive/30">
+            <AlertDialogHeader>
+              <div className="flex items-center gap-2.5 text-destructive mb-1">
+                <div className="w-9 h-9 rounded-full bg-destructive/10 flex items-center justify-center shrink-0">
+                  <AlertTriangle className="w-5 h-5 text-destructive" />
+                </div>
+                <div>
+                  <AlertDialogTitle className="text-sm font-semibold">
+                    Batalkan Pembayaran (Void / Storno)
+                  </AlertDialogTitle>
+                  <p className="text-[11px] text-muted-foreground">
+                    Otorisasi Khusus Supervisor / Administrator
+                  </p>
+                </div>
+              </div>
+              <AlertDialogDescription className="text-xs text-muted-foreground space-y-3 pt-2 text-left" asChild>
+                <div>
+                  <div className="p-3 rounded-lg border border-border/60 bg-muted/30 space-y-1.5 text-foreground text-xs">
+                    <div className="flex justify-between items-center">
+                      <span className="text-muted-foreground text-[11px]">Invoice / Order:</span>
+                      <span className="font-semibold font-mono">{voidTargetPayment?.invoiceNo}</span>
+                    </div>
+                    <div className="flex justify-between items-center">
+                      <span className="text-muted-foreground text-[11px]">Nominal Pembayaran:</span>
+                      <span className="font-bold font-mono text-destructive text-sm">
+                        {formatRupiah(voidTargetPayment?.nominal || 0)}
+                      </span>
+                    </div>
+                  </div>
+
+                  <div className="p-2.5 rounded bg-amber-500/10 border border-amber-500/20 text-amber-800 dark:text-amber-400 text-[11px] leading-relaxed">
+                    <p className="font-semibold flex items-center gap-1 mb-0.5">
+                      <AlertCircle className="w-3.5 h-3.5 shrink-0" />
+                      Konsekuensi Akuntansi:
+                    </p>
+                    <ul className="list-disc list-inside space-y-0.5 pl-1">
+                      <li>Jurnal pembalik (Kredit) otomatis dibukukan di Kas Kantor.</li>
+                      <li>Sisa tagihan (kekurangan) invoice bertambah kembali senilai nominal ini.</li>
+                      <li>Status pelunasan order disesuaikan kembali menjadi Kurang / Belum Bayar.</li>
+                    </ul>
+                  </div>
+
+                  <div className="space-y-1.5 pt-1">
+                    <Label className="text-[11px] font-semibold text-foreground flex items-center justify-between">
+                      <span>Alasan Pembatalan / Void <span className="text-destructive">*</span></span>
+                      <span className={`text-[10px] ${voidReasonText.trim().length < 10 ? "text-destructive font-medium" : "text-muted-foreground"}`}>
+                        {voidReasonText.trim().length}/10 karakter min
+                      </span>
+                    </Label>
+                    <Textarea
+                      rows={3}
+                      placeholder="Contoh: Salah klik pembayaran, bukti mutasi rekening fiktif/dibatalkan bank..."
+                      value={voidReasonText}
+                      onChange={(e) => setVoidReasonText(e.target.value)}
+                      className="text-xs text-foreground bg-input-background resize-none"
+                      disabled={isSubmittingVoid}
+                    />
+                  </div>
+                </div>
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            <AlertDialogFooter className="mt-3 gap-2">
+              <AlertDialogCancel
+                disabled={isSubmittingVoid}
+                onClick={() => {
+                  setVoidTargetPayment(null);
+                  setVoidReasonText("");
+                }}
+                className="h-8 text-xs px-3 font-medium"
+              >
+                Tutup
+              </AlertDialogCancel>
+              <AlertDialogAction
+                disabled={isSubmittingVoid || !voidReasonText || voidReasonText.trim().length < 10}
+                onClick={(e) => {
+                  e.preventDefault();
+                  handleConfirmVoidPayment();
+                }}
+                className="h-8 text-xs px-3.5 bg-destructive hover:bg-destructive/90 text-destructive-foreground font-semibold flex items-center gap-1.5 disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {isSubmittingVoid ? (
+                  <>
+                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                    <span>Membatalkan...</span>
+                  </>
+                ) : (
+                  <>
+                    <Undo2 className="w-3.5 h-3.5" />
+                    <span>Eksekusi Void</span>
+                  </>
+                )}
+              </AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
+
+        {renderKwitansiModal()}
+        {renderVoidHistoryModal()}
       </div>
     );
   }
@@ -3081,6 +4066,21 @@ export function FinanceContent({ tab }: FinanceContentProps) {
                 type="button"
                 variant="outline"
                 size="sm"
+                className="h-6 px-2 text-[11px] gap-1 text-emerald-600 hover:text-emerald-700 hover:bg-emerald-50 dark:hover:bg-emerald-950/40 border-emerald-500/40 font-semibold whitespace-nowrap"
+                onClick={() => {
+                  setClosingTargetItem(item);
+                  setClosingPenerima(item.customer || "");
+                  setClosingNotes("");
+                }}
+                title="Penyerahan berkas fisik STNK/BPKB ke customer & Realisasikan Profit ke Laba Rugi"
+              >
+                <CheckCircle2 className="w-3 h-3 text-emerald-600" />
+                <span>Closing & Selesai</span>
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
                 className="h-6 px-2 text-[11px] gap-1 text-primary hover:text-primary hover:bg-primary/5 border-primary/40 font-medium whitespace-nowrap"
                 onClick={() => {
                   const targetUrl = ordNo ? `/order/tracking?orderNo=${encodeURIComponent(ordNo)}` : `/order/tracking`;
@@ -3111,6 +4111,21 @@ export function FinanceContent({ tab }: FinanceContentProps) {
     return (
       <div className="flex-1 flex flex-col min-h-0 space-y-4">
         {renderSubTabHeader("Profit Terpending", "Transaksi lunas yang proses pengerjaannya sedang berjalan")}
+
+        {/* Toolbar Ekspor Profit Terpending */}
+        <div className="flex flex-wrap items-center justify-end gap-2.5">
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={handleExportProfitPendingCSV}
+            className="h-8 text-xs gap-1.5 border-border text-foreground hover:bg-muted font-medium"
+            title="Ekspor daftar profit terpending ke file CSV"
+          >
+            <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-600" />
+            <span>Ekspor CSV</span>
+          </Button>
+        </div>
 
         <Card className="p-4 sm:p-5 border border-border bg-card shadow-xs flex-1 flex flex-col min-h-0">
           <EnhancedTableWithDialogs
@@ -3159,6 +4174,10 @@ export function FinanceContent({ tab }: FinanceContentProps) {
             <p className="text-xs text-muted-foreground mt-0.5">Menunggu pengerjaan tuntas</p>
           </Card>
         </div>
+
+        {renderClosingModal()}
+        {renderKwitansiModal()}
+        {renderVoidHistoryModal()}
       </div>
     );
   }
@@ -3219,7 +4238,7 @@ export function FinanceContent({ tab }: FinanceContentProps) {
             return <span className="text-muted-foreground text-xs italic">-</span>;
           }
           const cleanPhone = phone.replace(/[^0-9]/g, "");
-          const waPhone = cleanPhone.startsWith("0") ? `62${cleanPhone.slice(1)}` : cleanPhone;
+          const waPhone = cleanPhone.startsWith("0") ? `62${cleanPhone.slice(1)}` : (cleanPhone.startsWith("8") ? `62${cleanPhone}` : cleanPhone);
           const sisaKelebihan = formatRupiah(item.nominalKelebihan || item.jumlahCashback || 0);
           const textMsg = encodeURIComponent(
             `Halo ${item.customer}, kami dari Biro Jasa SUN89 menginformasikan ada pengembalian dana / kelebihan bayar pengurusan ${item.pengurusan || item.jenisLayanan} (No. Polisi: ${item.nopol || "-"}, Order: ${item.orderNo || item.invoice || "-"}) sebesar ${sisaKelebihan}. Mohon konfirmasi rekening tujuan pengembalian. Terima kasih.`
@@ -3302,17 +4321,78 @@ export function FinanceContent({ tab }: FinanceContentProps) {
           return (
             <div className="flex items-center gap-1.5" onClick={(e) => e.stopPropagation()}>
               {isPaid ? (
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  className="h-6 px-2.5 text-[11px] gap-1 text-emerald-600 hover:text-emerald-700 hover:bg-emerald-50 dark:hover:bg-emerald-950/40 border-emerald-500/40 font-semibold whitespace-nowrap"
-                  onClick={() => setSelesaiInfoItem(item)}
-                  title="Selesaikan transaksi cashback yang sudah dicairkan"
+                <>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    className="h-6 px-2.5 text-[11px] gap-1 text-emerald-600 hover:text-emerald-700 hover:bg-emerald-50 dark:hover:bg-emerald-950/40 border-emerald-500/40 font-semibold whitespace-nowrap"
+                    onClick={() => setSelesaiInfoItem(item)}
+                    title="Selesaikan transaksi cashback yang sudah dicairkan"
+                  >
+                    <CheckCircle className="w-3 h-3 text-emerald-600" />
+                    <span>Selesai</span>
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    className="h-6 px-2 text-[11px] gap-1 text-slate-700 dark:text-slate-300 border-slate-300 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800 font-medium whitespace-nowrap"
+                    onClick={() => {
+                      setPrintVoucherData({
+                        orderNo: item.orderNo || item.invoice || `ORD-${item.id}`,
+                        invoiceNo: item.invoice || (item.orderNo ? `INV/${item.orderNo.replace(/^ORD-/, "")}` : "INV-001"),
+                        voucherNo: `VCR-REF/${(item.orderNo || `ORD-${item.id}`).replace(/^ORD-/, "")}`,
+                        customer: item.customer || "Konsumen",
+                        phone: item.phone || item.nomorHp || "",
+                        nopol: item.nopol || "-",
+                        layanan: item.pengurusan || item.jenisLayanan || "Pengurusan Dokumen Kendaraan",
+                        tanggal: item.tanggalMasukBerkas || item.tanggal || new Date().toISOString().split("T")[0],
+                        nominal: Number(item.nominalKelebihan || item.jumlahCashback || 0),
+                        metode: "Transfer Bank",
+                        bank: item.bank || "BCA",
+                        noRekening: item.noRekening || "-",
+                        namaRekening: item.customer || "Konsumen",
+                        catatan: "Bukti Voucher Pengeluaran Kas (Refund)",
+                        approvedBy: "Supervisor Finansial",
+                        kasirName: "Kasir SUN89",
+                      });
+                    }}
+                    title="Cetak Voucher Pengeluaran Kas (Bukti Refund A5)"
+                  >
+                    <Printer className="w-3 h-3 text-slate-600 dark:text-slate-400" />
+                    <span>Voucher</span>
+                  </Button>
+                  {isSpvOrAdmin && (
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      className="h-6 px-1.5 text-[10px] gap-1 text-destructive hover:text-destructive hover:bg-destructive/10 border-destructive/30 font-medium whitespace-nowrap"
+                      onClick={() => {
+                        setVoidTargetCashback({
+                          invoiceId: item.id,
+                          nominal: Number(item.nominalKelebihan || item.jumlahCashback || 0),
+                          orderNo: item.orderNo || item.invoice || `INV-${item.id}`,
+                          customer: item.customer || "Konsumen"
+                        });
+                        setVoidReasonText("");
+                      }}
+                      title="Batalkan pencairan cashback (Koreksi kas kantor dan pulihkan status)"
+                    >
+                      <Undo2 className="w-2.5 h-2.5 text-destructive" />
+                      <span>Void</span>
+                    </Button>
+                  )}
+                </>
+              ) : item.isPayoutGated ? (
+                <div 
+                  className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-medium bg-amber-500/10 text-amber-700 dark:text-amber-400 border border-amber-500/20 cursor-not-allowed select-none whitespace-nowrap"
+                  title={`Pencairan belum dapat diproses: ${item.payoutGatingReason || "Menunggu persetujuan Supervisi (Stage 6)"}`}
                 >
-                  <CheckCircle className="w-3 h-3 text-emerald-600" />
-                  <span>Selesai</span>
-                </Button>
+                  <Lock className="w-3 h-3 shrink-0 text-amber-600 dark:text-amber-400" />
+                  <span>{!item.hasFinalCost ? "Biaya Final Belum Ada" : "Menunggu Supervisi"}</span>
+                </div>
               ) : (
                 <Button
                   type="button"
@@ -3346,6 +4426,39 @@ export function FinanceContent({ tab }: FinanceContentProps) {
     return (
       <div className="flex-1 flex flex-col min-h-0 space-y-4">
         {renderSubTabHeader("Cashback Terpending", "Kewajiban pengembalian kelebihan bayar kepada customer")}
+        
+        {/* Toolbar Aksi SPV & Ekspor Cashback */}
+        <div className="flex flex-wrap items-center justify-between gap-2.5">
+          <div className="flex items-center gap-2">
+            {isSpvOrAdmin && (
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={handleOpenVoidHistory}
+                className="h-8 text-xs gap-1.5 border-border text-foreground hover:bg-muted font-medium"
+                title="Lihat riwayat audit pembatalan transaksi kas dan pembayaran (SPV & Admin)"
+              >
+                <History className="w-3.5 h-3.5 text-primary" />
+                <span>Log Audit Void</span>
+              </Button>
+            )}
+          </div>
+          <div className="flex items-center gap-2">
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={handleExportCashbackCSV}
+              className="h-8 text-xs gap-1.5 border-border text-foreground hover:bg-muted font-medium"
+              title="Ekspor daftar cashback terpending ke file CSV"
+            >
+              <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-600" />
+              <span>Ekspor CSV</span>
+            </Button>
+          </div>
+        </div>
+
         <Card className="p-4 sm:p-5 border border-border bg-card shadow-xs flex-1 flex flex-col min-h-0">
           <EnhancedTableWithDialogs
             columns={cashbackPendingColumns}
@@ -3950,6 +5063,119 @@ export function FinanceContent({ tab }: FinanceContentProps) {
             </DialogFooter>
           </DialogContent>
         </Dialog>
+
+        {/* MODAL KONFIRMASI VOID / BATALKAN PENCAIRAN CASHBACK (OTORISASI SPV & ADMIN) */}
+        <AlertDialog
+          open={!!voidTargetCashback}
+          onOpenChange={(open) => {
+            if (!open && !isSubmittingVoid) {
+              setVoidTargetCashback(null);
+              setVoidReasonText("");
+            }
+          }}
+        >
+          <AlertDialogContent className="w-full sm:max-w-md bg-card text-card-foreground border-destructive/30">
+            <AlertDialogHeader>
+              <div className="flex items-center gap-2.5 text-destructive mb-1">
+                <div className="w-9 h-9 rounded-full bg-destructive/10 flex items-center justify-center shrink-0">
+                  <AlertTriangle className="w-5 h-5 text-destructive" />
+                </div>
+                <div>
+                  <AlertDialogTitle className="text-sm font-semibold">
+                    Batalkan Pencairan Cashback (Void)
+                  </AlertDialogTitle>
+                  <p className="text-[11px] text-muted-foreground">
+                    Otorisasi Khusus Supervisor / Administrator
+                  </p>
+                </div>
+              </div>
+              <AlertDialogDescription className="text-xs text-muted-foreground space-y-3 pt-2 text-left" asChild>
+                <div>
+                  <div className="p-3 rounded-lg border border-border/60 bg-muted/30 space-y-1.5 text-foreground text-xs">
+                    <div className="flex justify-between items-center">
+                      <span className="text-muted-foreground text-[11px]">No Order / Transaksi:</span>
+                      <span className="font-semibold font-mono">{voidTargetCashback?.orderNo}</span>
+                    </div>
+                    <div className="flex justify-between items-center">
+                      <span className="text-muted-foreground text-[11px]">Penerima Cashback:</span>
+                      <span className="font-semibold">{voidTargetCashback?.customer}</span>
+                    </div>
+                    <div className="flex justify-between items-center">
+                      <span className="text-muted-foreground text-[11px]">Nominal Pencairan:</span>
+                      <span className="font-bold font-mono text-destructive text-sm">
+                        {formatRupiah(voidTargetCashback?.nominal || 0)}
+                      </span>
+                    </div>
+                  </div>
+
+                  <div className="p-2.5 rounded bg-amber-500/10 border border-amber-500/20 text-amber-800 dark:text-amber-400 text-[11px] leading-relaxed">
+                    <p className="font-semibold flex items-center gap-1 mb-0.5">
+                      <AlertCircle className="w-3.5 h-3.5 shrink-0" />
+                      Konsekuensi Akuntansi:
+                    </p>
+                    <ul className="list-disc list-inside space-y-0.5 pl-1">
+                      <li>Jurnal pembalik (Debit) otomatis dibukukan di Kas Kantor (memulihkan kas keluar).</li>
+                      <li>Status cashback dikembalikan menjadi Pending (belum dicairkan).</li>
+                      <li>Tindakan dicatat dalam jejak audit immutable.</li>
+                    </ul>
+                  </div>
+
+                  <div className="space-y-1.5 pt-1">
+                    <Label className="text-[11px] font-semibold text-foreground flex items-center justify-between">
+                      <span>Alasan Pembatalan / Void <span className="text-destructive">*</span></span>
+                      <span className={`text-[10px] ${voidReasonText.trim().length < 10 ? "text-destructive font-medium" : "text-muted-foreground"}`}>
+                        {voidReasonText.trim().length}/10 karakter min
+                      </span>
+                    </Label>
+                    <Textarea
+                      rows={3}
+                      placeholder="Contoh: Kesalahan transfer rekening customer, pengembalian dibatalkan atau direvisi..."
+                      value={voidReasonText}
+                      onChange={(e) => setVoidReasonText(e.target.value)}
+                      className="text-xs text-foreground bg-input-background resize-none"
+                      disabled={isSubmittingVoid}
+                    />
+                  </div>
+                </div>
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            <AlertDialogFooter className="mt-3 gap-2">
+              <AlertDialogCancel
+                disabled={isSubmittingVoid}
+                onClick={() => {
+                  setVoidTargetCashback(null);
+                  setVoidReasonText("");
+                }}
+                className="h-8 text-xs px-3 font-medium"
+              >
+                Tutup
+              </AlertDialogCancel>
+              <AlertDialogAction
+                disabled={isSubmittingVoid || !voidReasonText || voidReasonText.trim().length < 10}
+                onClick={(e) => {
+                  e.preventDefault();
+                  handleConfirmVoidCashback();
+                }}
+                className="h-8 text-xs px-3.5 bg-destructive hover:bg-destructive/90 text-destructive-foreground font-semibold flex items-center gap-1.5 disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {isSubmittingVoid ? (
+                  <>
+                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                    <span>Membatalkan...</span>
+                  </>
+                ) : (
+                  <>
+                    <Undo2 className="w-3.5 h-3.5" />
+                    <span>Eksekusi Void</span>
+                  </>
+                )}
+              </AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
+
+        {renderVoucherModal()}
+        {renderVoidHistoryModal()}
       </div>
     );
   }

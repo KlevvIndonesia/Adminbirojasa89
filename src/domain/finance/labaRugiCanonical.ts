@@ -164,6 +164,15 @@ export function computeCanonicalLabaRugi(
 
   if (Array.isArray(invoices) && invoices.length > 0) {
     invoices.forEach((inv) => {
+      // QC-01 & QC-04 Fix: Exclude cancelled invoices from business revenue
+      if (
+        inv.status === "CANCELLED" ||
+        inv.billingStatus === "CANCELLED" ||
+        Boolean((inv as any).isCancelled)
+      ) {
+        return;
+      }
+
       const uangMasuk = Number(inv.terbayar ?? inv.dibayar ?? 0);
       const biayaSamsat = Number(inv.biayaSamsat ?? (inv as any).biaya_samsat ?? 0);
       const profit = Number(inv.profit ?? (inv as any).profit_final ?? Math.max(0, uangMasuk - biayaSamsat));

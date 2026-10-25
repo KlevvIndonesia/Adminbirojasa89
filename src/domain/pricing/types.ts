@@ -118,6 +118,8 @@ export interface OrderCostBreakdownItem {
   code?: string;
   name: string;
   amount: number;
+  actualCost?: number;
+  notes?: string;
   category?: "Samsat" | "Jasa" | "Operasional" | "Pajak";
   source: "HargaDasarSamsat" | "BiayaLayanan" | "Kendaraan" | "Operasional";
   isRequired?: boolean;

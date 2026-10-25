@@ -23,6 +23,7 @@ import {
 import { sanitizeEstimationTemplate } from "../../../src/app/data/estimationStore";
 import { WILAYAH_ADMINISTRATIF_LIST, SAMSAT_OFFICES_514 } from "./wilayahData";
 import { CANONICAL_PERMISSIONS } from "../config/defaultPermissions";
+import { CANONICAL_SERVICES } from "./schema";
 
 export function seedDatabase(): void {
   // 1. Seed Users if table is empty
@@ -281,6 +282,13 @@ export function seedDatabase(): void {
     samsatTx();
   }
 
+  // Ensure fallback samsat office placeholder exists for non-mutasi orders
+  db.prepare(`
+    INSERT OR IGNORE INTO samsat_offices (
+      id, name, wilayah, alamat, kode_kabupaten_kota, is_verified, status_aktif, updated_at
+    ) VALUES ('-', 'Bukan Layanan Mutasi', 'Nasional', '-', '31.75', 1, 1, datetime('now'))
+  `).run();
+
   // 6. Seed default notification_settings if empty
   const notifCountStmt = db.prepare("SELECT COUNT(*) as count FROM notification_settings");
   const notifCount = (notifCountStmt.get() as { count: number }).count;
@@ -330,6 +338,323 @@ export function seedDatabase(): void {
     }
   } catch (err) {
     console.error("Error seeding payment_methods:", err);
+  }
+
+  // 9. Seed canonical services if empty
+  try {
+    const svcCountStmt = db.prepare("SELECT COUNT(*) as count FROM services");
+    const svcCount = (svcCountStmt.get() as { count: number }).count;
+    if (svcCount === 0) {
+      const insertSvc = db.prepare(`
+        INSERT INTO services (
+          id, kode_layanan, nama_layanan, kategori, memerlukan_samsat_tujuan, deskripsi, status_aktif, urutan, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
+      `);
+      for (const svc of CANONICAL_SERVICES) {
+        insertSvc.run(
+          svc.id,
+          svc.kode_layanan,
+          svc.nama_layanan,
+          svc.kategori,
+          svc.memerlukan_samsat_tujuan,
+          svc.deskripsi,
+          svc.status_aktif,
+          svc.urutan
+        );
+      }
+    }
+  } catch (err) {
+    console.error("Error seeding services in seed.ts:", err);
+  }
+
+  // 10. Seed/Migrate Employees & Employee Accounts from users if empty
+  try {
+    const empCountStmt = db.prepare("SELECT COUNT(*) as count FROM employees");
+    const empCount = (empCountStmt.get() as { count: number }).count;
+    if (empCount === 0) {
+      const usersStmt = db.prepare("SELECT id, email, password_hash, password_salt, nama, jabatan, status FROM users");
+      const userRows = usersStmt.all() as any[];
+
+      const insertEmp = db.prepare(`
+        INSERT OR IGNORE INTO employees (
+          id, nik_ktp, nama_lengkap, no_hp, tgl_lahir, wilayah, alamat_domisili, jabatan, gaji_pokok, status_karyawan, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
+      `);
+
+      const insertAcc = db.prepare(`
+        INSERT OR IGNORE INTO employee_accounts (
+          id, employee_id, email, password_hash, password_salt, role, status_aktif, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
+      `);
+
+      for (const u of userRows) {
+        const empId = `EMP-${String(u.id).padStart(4, "0")}`;
+        const nik = `317508${String(100000 + u.id)}0001`;
+        const phone = `0812${String(80000000 + u.id)}`;
+        const gaji = u.jabatan === "SVP" ? 12000000 : u.jabatan === "FINANCE" ? 7500000 : u.jabatan === "MESSENGER" ? 5000000 : 6500000;
+        const role = (u.jabatan || "admin").toLowerCase();
+
+        insertEmp.run(
+          empId,
+          nik,
+          u.nama,
+          phone,
+          "1990-05-12",
+          "DKI Jakarta",
+          `Jl. Radjiman Widyodiningrat No. ${u.id * 10}, Cakung, Jakarta Timur`,
+          u.jabatan || "Staff",
+          gaji,
+          u.status === "Aktif" ? "TETAP" : "NONAKTIF"
+        );
+
+        insertAcc.run(
+          `ACCT-${empId}`,
+          empId,
+          u.email,
+          u.password_hash,
+          u.password_salt,
+          role,
+          u.status === "Aktif" ? 1 : 0
+        );
+      }
+    }
+  } catch (err) {
+    console.error("Error migrating/seeding employees and accounts:", err);
+  }
+
+  // 11. Seed Initial Demo Customers & Accounts if empty
+  try {
+    const custCountStmt = db.prepare("SELECT COUNT(*) as count FROM customers");
+    const custCount = (custCountStmt.get() as { count: number }).count;
+    if (custCount === 0) {
+      const insertCust = db.prepare(`
+        INSERT OR IGNORE INTO customers (
+          id, tipe_pelanggan, nama_lengkap, nomor_wa, email,
+          provinsi, kota_kabupaten, kecamatan, desa_kelurahan, rt_rw, no_rumah, patokan, detail_alamat, link_google_maps,
+          created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
+      `);
+
+      insertCust.run(
+        "CUST-0001",
+        "PERUSAHAAN_PT",
+        "PT Mitra Graha Sentosa",
+        "081298765432",
+        "procurement@mitragraha.co.id",
+        "DKI Jakarta",
+        "Kota Adm. Jakarta Timur",
+        "Jatinegara",
+        "Bidara Cina",
+        "004/007",
+        "No. 45",
+        "Seberang Halte Busway Bidara Cina",
+        "Gedung Graha Sentosa Lantai 3, Jl. Otto Iskandardinata",
+        "https://maps.google.com/?q=-6.2341,106.8672"
+      );
+
+      insertCust.run(
+        "CUST-0002",
+        "PERORANGAN",
+        "Hendrawan Pratama",
+        "081311223344",
+        "hendrawan.pratama@gmail.com",
+        "DKI Jakarta",
+        "Kota Adm. Jakarta Selatan",
+        "Tebet",
+        "Tebet Barat",
+        "002/005",
+        "No. 18B",
+        "Dekat Pintu Barat Tebet Eco Park",
+        "Rumah pagar hitam samping warung kopi",
+        "https://maps.google.com/?q=-6.2392,106.8524"
+      );
+
+      // Seed portal customer account for CUST-0002
+      const { hash: custHash, salt: custSalt } = hashPassword("klien123");
+      db.prepare(`
+        INSERT OR IGNORE INTO customer_accounts (
+          id, customer_id, email, password_hash, password_salt, status_akun, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, 'AKTIF', datetime('now'), datetime('now'))
+      `).run("ACCT-CUST-0002", "CUST-0002", "hendrawan.pratama@gmail.com", custHash, custSalt);
+    }
+  } catch (err) {
+    console.error("Error seeding customers:", err);
+  }
+
+  // 12. Seed Harga Dasar Samsat if empty
+  try {
+    const hdsCountStmt = db.prepare("SELECT COUNT(*) as count FROM harga_dasar_samsat");
+    const hdsCount = (hdsCountStmt.get() as { count: number }).count;
+    if (hdsCount === 0) {
+      const insertHds = db.prepare(`
+        INSERT OR IGNORE INTO harga_dasar_samsat (
+          id, nama_item, kategori, tipe_kendaraan, biaya_dasar, deskripsi, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
+      `);
+
+      const hdsItems = [
+        { id: "PNBP-STNK-R4", nama: "Penerbitan STNK Baru / 5 Tahun R4", kat: "PNBP_STNK", tipe: "R4", biaya: 200000, desc: "PP RI No. 76 Tahun 2020 tentang PNBP Polri" },
+        { id: "PNBP-STNK-R2", nama: "Penerbitan STNK Baru / 5 Tahun R2", kat: "PNBP_STNK", tipe: "R2", biaya: 100000, desc: "PP RI No. 76 Tahun 2020 tentang PNBP Polri" },
+        { id: "PNBP-TNKB-R4", nama: "Penerbitan Plat Nomor TNKB R4", kat: "PNBP_TNKB", tipe: "R4", biaya: 100000, desc: "PP RI No. 76 Tahun 2020 tentang PNBP Polri" },
+        { id: "PNBP-TNKB-R2", nama: "Penerbitan Plat Nomor TNKB R2", kat: "PNBP_TNKB", tipe: "R2", biaya: 60000, desc: "PP RI No. 76 Tahun 2020 tentang PNBP Polri" },
+        { id: "PNBP-BPKB-R4", nama: "Penerbitan Buku BPKB Baru / Ganti Pemilik R4", kat: "PNBP_BPKB", tipe: "R4", biaya: 375000, desc: "PP RI No. 76 Tahun 2020 tentang PNBP Polri" },
+        { id: "PNBP-BPKB-R2", nama: "Penerbitan Buku BPKB Baru / Ganti Pemilik R2", kat: "PNBP_BPKB", tipe: "R2", biaya: 225000, desc: "PP RI No. 76 Tahun 2020 tentang PNBP Polri" },
+        { id: "SWDKLLJ-POKOK-R4", nama: "Sumbangan Wajib Dana Kecelakaan Lalu Lintas Jalan R4", kat: "SWDKLLJ", tipe: "R4", biaya: 143000, desc: "PMK No. 16/PMK.010/2017" },
+        { id: "SWDKLLJ-POKOK-R2", nama: "Sumbangan Wajib Dana Kecelakaan Lalu Lintas Jalan R2", kat: "SWDKLLJ", tipe: "R2", biaya: 35000, desc: "PMK No. 16/PMK.010/2017" },
+        { id: "SWDKLLJ-DENDA-R4", nama: "Denda Maksimal SWDKLLJ R4", kat: "SWDKLLJ", tipe: "R4", biaya: 100000, desc: "PMK No. 16/PMK.010/2017" },
+        { id: "SWDKLLJ-DENDA-R2", nama: "Denda Maksimal SWDKLLJ R2", kat: "SWDKLLJ", tipe: "R2", biaya: 32000, desc: "PMK No. 16/PMK.010/2017" },
+        { id: "CEK-FISIK-R4", nama: "Biaya Cek Fisik dan Legalisir Berkas R4", kat: "CEK_FISIK", tipe: "R4", biaya: 25000, desc: "Administrasi cek fisik dan legalisir berkas Samsat" },
+        { id: "CEK-FISIK-R2", nama: "Biaya Cek Fisik dan Legalisir Berkas R2", kat: "CEK_FISIK", tipe: "R2", biaya: 10000, desc: "Administrasi cek fisik dan legalisir berkas Samsat" },
+      ];
+
+      for (const item of hdsItems) {
+        insertHds.run(item.id, item.nama, item.kat, item.tipe, item.biaya, item.desc);
+      }
+    }
+  } catch (err) {
+    console.error("Error seeding harga_dasar_samsat:", err);
+  }
+
+  // 13. Seed Aturan Estimasi if empty
+  try {
+    const estRulesCountStmt = db.prepare("SELECT COUNT(*) as count FROM aturan_estimasi");
+    const estRulesCount = (estRulesCountStmt.get() as { count: number }).count;
+    if (estRulesCount === 0) {
+      const insertRule = db.prepare(`
+        INSERT OR IGNORE INTO aturan_estimasi (
+          id, nama_formula, service_id, koefisien_denda, denda_swdkllj_formula, aturan_pemutihan_json, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
+      `);
+
+      const rules = [
+        { id: "EST-PERP-1TH", nama: "Formula Standar PKB 1 Tahun", svc: "svc-perp-1th", koef: 0.48, swd: "SWDKLLJ Pokok + Denda SWDKLLJ jika lewat jatuh tempo" },
+        { id: "EST-PERP-5TH", nama: "Formula PKB 5 Tahun & Ganti Plat", svc: "svc-perp-5th", koef: 0.48, swd: "SWDKLLJ Pokok + Denda SWDKLLJ + PNBP STNK & TNKB" },
+        { id: "EST-MUT-ASAL", nama: "Formula Mutasi Asal Samsat Satu Daerah", svc: "svc-mut-asal", koef: 0.48, swd: "Pencabutan berkas & fiskal antar-Samsat" },
+        { id: "EST-MUT-ANTAR", nama: "Formula Mutasi Antar Daerah / Provinsi", svc: "svc-mut-antar", koef: 0.48, swd: "Fiskal antar-daerah & pendaftaran Samsat tujuan" },
+        { id: "EST-BALIK-NAMA", nama: "Formula Bea Balik Nama (BBN-KB)", svc: "svc-balik-nama", koef: 0.48, swd: "BBN-KB II (1% NJKB) + PNBP BPKB & STNK" },
+        { id: "EST-TARIK-BERKAS", nama: "Formula Tarik Berkas Arsip", svc: "svc-tarik-berkas", koef: 0.48, swd: "Administrasi penarikan berkas induk" },
+        { id: "EST-DUPLIKAT-STNK", nama: "Formula Duplikat STNK Hilang", svc: "svc-duplikat-stnk", koef: 0.48, swd: "Laporan kehilangan & penerbitan duplikat PNBP" },
+      ];
+
+      for (const r of rules) {
+        insertRule.run(r.id, r.nama, r.svc, r.koef, r.swd, JSON.stringify({ pemutihanAktif: false }));
+      }
+    }
+  } catch (err) {
+    console.error("Error seeding aturan_estimasi:", err);
+  }
+
+  // 14. Seed Biaya Layanan if empty
+  try {
+    const blCountStmt = db.prepare("SELECT COUNT(*) as count FROM biaya_layanan");
+    const blCount = (blCountStmt.get() as { count: number }).count;
+    if (blCount === 0) {
+      const insertBl = db.prepare(`
+        INSERT OR IGNORE INTO biaya_layanan (
+          id, service_id, nama_skema, biaya_jasa_reguler, biaya_pengurusan_khusus,
+          biaya_antar_jemput, biaya_antar_saja, biaya_jemput_saja, opsen_pkb_daerah, biaya_lainnya_json,
+          created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
+      `);
+
+      const blItems = [
+        { id: "BL-PERP-1TH", svc: "svc-perp-1th", nama: "Tarif Standar Perpanjangan 1 Tahun", reg: 150000, exp: 250000, aj: 50000, as: 25000, js: 25000, opsen: 0.66 },
+        { id: "BL-PERP-5TH", svc: "svc-perp-5th", nama: "Tarif Standar Perpanjangan 5 Tahun", reg: 300000, exp: 450000, aj: 50000, as: 25000, js: 25000, opsen: 0.66 },
+        { id: "BL-MUT-ASAL", svc: "svc-mut-asal", nama: "Tarif Mutasi Asal / Satu Daerah", reg: 500000, exp: 750000, aj: 50000, as: 25000, js: 25000, opsen: 0.66 },
+        { id: "BL-MUT-ANTAR", svc: "svc-mut-antar", nama: "Tarif Mutasi Antar Daerah / Keluar", reg: 1000000, exp: 1500000, aj: 100000, as: 50000, js: 50000, opsen: 0.66 },
+        { id: "BL-BALIK-NAMA", svc: "svc-balik-nama", nama: "Tarif Bea Balik Nama (BBN)", reg: 500000, exp: 750000, aj: 50000, as: 25000, js: 25000, opsen: 0.66 },
+        { id: "BL-TARIK-BERKAS", svc: "svc-tarik-berkas", nama: "Tarif Tarik Berkas Samsat", reg: 350000, exp: 500000, aj: 50000, as: 25000, js: 25000, opsen: 0.66 },
+        { id: "BL-DUPLIKAT-STNK", svc: "svc-duplikat-stnk", nama: "Tarif Pengurusan Duplikat STNK", reg: 400000, exp: 600000, aj: 50000, as: 25000, js: 25000, opsen: 0.66 },
+      ];
+
+      for (const bl of blItems) {
+        insertBl.run(bl.id, bl.svc, bl.nama, bl.reg, bl.exp, bl.aj, bl.as, bl.js, bl.opsen, "{}");
+      }
+    }
+  } catch (err) {
+    console.error("Error seeding biaya_layanan:", err);
+  }
+
+  // 15. Seed Master Proses Samsat if empty
+  try {
+    const mpsCountStmt = db.prepare("SELECT COUNT(*) as count FROM master_proses_samsat");
+    const mpsCount = (mpsCountStmt.get() as { count: number }).count;
+    if (mpsCount === 0) {
+      const insertMps = db.prepare(`
+        INSERT OR IGNORE INTO master_proses_samsat (
+          id, service_id, nama_proses, urutan, estimasi_durasi_menit, deskripsi_klien, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
+      `);
+
+      const processes = [
+        // Perpanjangan 1 Tahun
+        { id: "PRC-P1T-01", svc: "svc-perp-1th", nama: "Cek Kelengkapan Berkas & Validasi Nopol", urutan: 1, durasi: 15, desc: "Pengecekan kelengkapan STNK dan KTP asli pemohon" },
+        { id: "PRC-P1T-02", svc: "svc-perp-1th", nama: "Pendaftaran Loket Penetapan Pajak PKB", urutan: 2, durasi: 30, desc: "Penyerahan berkas ke loket pendaftaran dan penetapan pokok PKB" },
+        { id: "PRC-P1T-03", svc: "svc-perp-1th", nama: "Pembayaran Kasir Bank Samsat", urutan: 3, durasi: 20, desc: "Realisasi pembayaran PKB dan SWDKLLJ di loket kasir Samsat" },
+        { id: "PRC-P1T-04", svc: "svc-perp-1th", nama: "Pencetakan Notice Pajak & Pengesahan STNK", urutan: 4, durasi: 15, desc: "Pencetakan lembar SKKP / Notice Pajak dan stempel pengesahan STNK" },
+        { id: "PRC-P1T-05", svc: "svc-perp-1th", nama: "Pengambilan Berkas Selesai", urutan: 5, durasi: 10, desc: "Pengambilan berkas pengesahan di loket serah terima Samsat" },
+
+        // Perpanjangan 5 Tahun
+        { id: "PRC-P5T-01", svc: "svc-perp-5th", nama: "Cek Fisik Kendaraan & Gesek Nomor Rangka/Mesin", urutan: 1, durasi: 25, desc: "Pelaksanaan cek fisik kendaraan dan legalisir stiker gesek" },
+        { id: "PRC-P5T-02", svc: "svc-perp-5th", nama: "Pendaftaran Loket 5 Tahunan & Penetapan", urutan: 2, durasi: 35, desc: "Pendaftaran berkas 5 tahunan di loket penetapan Samsat" },
+        { id: "PRC-P5T-03", svc: "svc-perp-5th", nama: "Pembayaran Kasir Bank Samsat & PNBP", urutan: 3, durasi: 20, desc: "Pembayaran PKB, SWDKLLJ, PNBP STNK, dan PNBP TNKB di kasir" },
+        { id: "PRC-P5T-04", svc: "svc-perp-5th", nama: "Pencetakan Lembar STNK Baru & SKKP", urutan: 4, durasi: 25, desc: "Penerbitan dan pencetakan buku lembar STNK baru 5 tahunan" },
+        { id: "PRC-P5T-05", svc: "svc-perp-5th", nama: "Pencetakan Plat Nomor TNKB Baru di Workshop", urutan: 5, durasi: 30, desc: "Pencetakan sepasang plat nomor TNKB baru di workshop Samsat" },
+        { id: "PRC-P5T-06", svc: "svc-perp-5th", nama: "Serah Terima Berkas & Plat Nomor Selesai", urutan: 6, durasi: 10, desc: "Pemeriksaan akhir dan penyerahan STNK baru beserta plat nomor" },
+
+        // Mutasi Keluar / Antar Daerah
+        { id: "PRC-MUT-01", svc: "svc-mut-antar", nama: "Cek Fisik Bantuan & Pengambilan Arsip Induk", urutan: 1, durasi: 40, desc: "Penggesekan nomor mesin/rangka dan pencabutan berkas arsip induk" },
+        { id: "PRC-MUT-02", svc: "svc-mut-antar", nama: "Pendaftaran Loket Mutasi Keluar / Cabut Berkas", urutan: 2, durasi: 45, desc: "Pendaftaran mutasi keluar dan verifikasi surat jalan" },
+        { id: "PRC-MUT-03", svc: "svc-mut-antar", nama: "Penerbitan Surat Keterangan Fiskal Antar Daerah", urutan: 3, durasi: 30, desc: "Penerbitan lembar fiskal pelunasan pajak daerah" },
+        { id: "PRC-MUT-04", svc: "svc-mut-antar", nama: "Penerbitan Surat Pengantar Mutasi Polda / Samsat Tujuan", urutan: 4, durasi: 30, desc: "Penyerahan amplop bersegel berkas mutasi keluar untuk Samsat tujuan" },
+      ];
+
+      for (const p of processes) {
+        insertMps.run(p.id, p.svc, p.nama, p.urutan, p.durasi, p.desc);
+      }
+    }
+  } catch (err) {
+    console.error("Error seeding master_proses_samsat:", err);
+  }
+
+  // 16. Seed Messengers if empty (linking to EMP-0004 & EMP-0005)
+  try {
+    const msgCountStmt = db.prepare("SELECT COUNT(*) as count FROM messengers");
+    const msgCount = (msgCountStmt.get() as { count: number }).count;
+    if (msgCount === 0) {
+      const insertMsg = db.prepare(`
+        INSERT OR IGNORE INTO messengers (
+          id, employee_id, plat_motor_operasional, wilayah_tugas_utama, status_tugas, created_at
+        ) VALUES (?, ?, ?, ?, ?, datetime('now'))
+      `);
+
+      insertMsg.run("MSG-0001", "EMP-0004", "B 3456 TAA", "Jakarta Timur & Bekasi", "STANDBY");
+      insertMsg.run("MSG-0002", "EMP-0005", "B 6789 TBB", "Jakarta Selatan & Depok", "STANDBY");
+    }
+  } catch (err) {
+    console.error("Error seeding messengers:", err);
+  }
+
+  // 17. Seed Initial Kas Kantor Ledger Opening Balance if empty
+  try {
+    const kasCountStmt = db.prepare("SELECT COUNT(*) as count FROM kas_kantor");
+    const kasCount = (kasCountStmt.get() as { count: number }).count;
+    if (kasCount === 0) {
+      const insertKas = db.prepare(`
+        INSERT INTO kas_kantor (
+          tanggal, keterangan, status, debit, kredit, saldo, penanggung_jawab, kategori, penanggung_jawab_employee_id, created_at
+        ) VALUES (date('now'), ?, 'DEBIT', ?, 0, ?, ?, 'MODAL_AWAL', ?, datetime('now'))
+      `);
+      insertKas.run(
+        "Saldo Awal Modal Kas Kantor Operasional",
+        15000000,
+        15000000,
+        "Finance User",
+        "EMP-0003"
+      );
+    }
+  } catch (err) {
+    console.error("Error seeding initial kas_kantor ledger:", err);
   }
 }
 

@@ -12,7 +12,7 @@ import { ApiOrderProvider } from "../api/apiOrderProvider";
 
 export interface IOrderRepository {
   getActiveOrders(): Record<StageName, OperationalOrder[]>;
-  getAllFlat(): OperationalOrder[];
+  getAllFlat(archived?: boolean): OperationalOrder[];
   getByOrderNo(orderNo: string): OperationalOrder | undefined;
   getByStage(stage: StageName): OperationalOrder[];
   getArchivedOrders(): OperationalOrder[];
@@ -24,6 +24,7 @@ export interface IOrderRepository {
   rollbackOrder(orderNo: string, targetStage: StageName, updates?: Partial<OperationalOrder>): boolean;
   archiveOrder(orderNo: string): boolean;
   deleteArchivedOrder(orderNo: string): boolean;
+  deleteOrder?(orderNo: string): boolean | Promise<boolean>;
   clearArchivedOrders(): boolean;
   cancelOrder?(orderNo: string, reason?: string): boolean | Promise<boolean>;
   verifyPayment(orderNo: string, verifierName?: string, confirmedAmount?: number, notes?: string, proofPayload?: any): boolean;
@@ -145,6 +146,13 @@ export class OrderRepository implements IOrderRepository {
   public deleteArchivedOrder(orderNo: string): boolean {
     if (typeof (this.provider as any).deleteArchivedOrder === "function") {
       return (this.provider as any).deleteArchivedOrder(orderNo);
+    }
+    return false;
+  }
+
+  public deleteOrder(orderNo: string): boolean | Promise<boolean> {
+    if (typeof (this.provider as any).deleteOrder === "function") {
+      return (this.provider as any).deleteOrder(orderNo);
     }
     return false;
   }

@@ -158,7 +158,36 @@ export class DocumentTicketService {
       }
     }
 
+    // Safety bounds: prevent unbounded growth under heavy ticket generation
+    if (this.usedTickets.size > 5000) {
+      const keysToDelete = Array.from(this.usedTickets.keys()).slice(0, 1000);
+      for (const k of keysToDelete) {
+        this.usedTickets.delete(k);
+      }
+    }
+
     return count;
+  }
+
+  /**
+   * Automated / explicit sweep alias for expired and spent tickets.
+   */
+  public sweepExpiredTickets(): number {
+    return this.sweepExpired();
+  }
+
+  /**
+   * Diagnostic helper: get count of currently active tickets.
+   */
+  public getActiveTicketCount(): number {
+    return this.tickets.size;
+  }
+
+  /**
+   * Diagnostic helper: get count of recorded consumed tickets.
+   */
+  public getUsedTicketCount(): number {
+    return this.usedTickets.size;
   }
 
   /**

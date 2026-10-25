@@ -1,7 +1,7 @@
 import React, { useRef } from "react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from "./ui/dialog";
 import { Button } from "./ui/button";
-import { Printer, Download, CheckCircle2, ShieldAlert } from "lucide-react";
+import { Printer, Download, CheckCircle2, ShieldAlert, MessageCircle } from "lucide-react";
 import { toast } from "sonner";
 import { LOGO_SUN89_BASE64 } from "../assets/logoSun89Base64";
 import { formatRupiah, formatDateDDMMYYYY } from "../utils/financeFormatters";
@@ -42,15 +42,15 @@ export function InvoiceA5Dialog({ open, onOpenChange, data }: InvoiceA5DialogPro
 
   // Normalize incoming fields
   const customer = data["Nama Customer"] || data.customer || "Pelanggan Umum";
-  const namaPemilik = data["Nama"] || data.namaPemilik || customer;
+  const namaPemilik = data["Nama Pemilik (STNK/BPKB)"] || data["Nama"] || data.namaPemilik || customer;
   const nopol = data["Plat No"] || data.nopol || "-";
   const layanan = data["Jenis Pengurusan"] || data.layanan || data.jenisLayanan || "Pengurusan Samsat";
-  const samsat = data["Samsat"] || data.wilayahSamsatAsal || data.samsat || "Samsat Jawa Barat / DKI";
+  const samsat = data["Samsat Asal"] || data["Samsat"] || data.wilayahSamsatAsal || data.samsat || "Samsat DKI Jakarta";
   
-  const rawTanggal = data["Tanggal Masuk Berkas"] || data["Tanggal Invoice"] || data.tanggal || data.createdAt || new Date().toISOString();
+  const rawTanggal = data["Tanggal Masuk Berkas"] || data.tanggal || data.createdAt || new Date().toISOString();
   const tanggalStr = formatDateDDMMYYYY(rawTanggal);
 
-  const orderNo = data.orderNo || (typeof data.id === "string" && data.id.startsWith("ord:") ? data.id.slice(4) : (data["No Invoice"] || `ORD-${data.id || "001"}`));
+  const orderNo = data.orderNo || data["Nomor Order"] || data["No Order"] || (typeof data.id === "string" && data.id.startsWith("ord:") ? data.id.slice(4) : (data["No Invoice"] || `ORD-${data.id || "001"}`));
   const invoiceNo = data["No Invoice"] || data.invoice || data.invoiceNo || (orderNo ? `INV/${orderNo.replace(/^ORD-/, "")}` : "INV-001");
 
   // Financial figures
@@ -58,11 +58,15 @@ export function InvoiceA5Dialog({ open, onOpenChange, data }: InvoiceA5DialogPro
     ? data["Uang Masuk dari Konsumen"] 
     : (data.dibayar ?? data.terbayar ?? 0);
 
-  const sisa = typeof data.Kekurangan === "number"
+  const sisa = typeof data["Sisa Tagihan"] === "number"
+    ? data["Sisa Tagihan"]
+    : typeof data.Kekurangan === "number"
     ? data.Kekurangan
     : (data.sisaTagihan ?? data.sisa ?? data.kurang ?? 0);
 
-  const total = (typeof data.totalBiaya === "number" && data.totalBiaya > 0)
+  const total = (typeof data["Total Tagihan Konsumen"] === "number" && data["Total Tagihan Konsumen"] > 0)
+    ? data["Total Tagihan Konsumen"]
+    : (typeof data.totalBiaya === "number" && data.totalBiaya > 0)
     ? data.totalBiaya
     : (typeof data.totalTagihan === "number" && data.totalTagihan > 0)
     ? data.totalTagihan
@@ -73,9 +77,11 @@ export function InvoiceA5Dialog({ open, onOpenChange, data }: InvoiceA5DialogPro
   const isLunas = kurang <= 0;
 
   // Breakdown items
-  const biayaJasa = data.biayaJasa || Math.round(total * 0.25) || 150000;
+  const biayaJasa = data["Biaya Jasa"] || data.biayaJasa || Math.round(total * 0.25) || 150000;
   const swdkllj = data.swdkllj || (total > 300000 ? 143000 : 35000);
-  const pkb = data.pkb || Math.max(0, total - biayaJasa - swdkllj);
+  const pkb = data["Biaya Pokok Samsat"] || data.pkb || Math.max(0, total - biayaJasa - swdkllj);
+
+  const phone = data.nomorHP || data.noHp || data["No HP / WhatsApp"] || data.phone || "";
 
   const handlePrint = () => {
     window.print();
@@ -87,10 +93,27 @@ export function InvoiceA5Dialog({ open, onOpenChange, data }: InvoiceA5DialogPro
     toast.info("Gunakan opsi 'Save as PDF' / 'Simpan sebagai PDF' di jendela cetak browser.");
   };
 
+  const handleSendWhatsApp = () => {
+    if (!phone || !phone.trim() || phone === "-") {
+      toast.warning("Nomor WhatsApp konsumen tidak tersedia pada data transaksi ini.");
+      return;
+    }
+    let cleanPhone = phone.replace(/[^0-9]/g, "");
+    if (cleanPhone.startsWith("0")) {
+      cleanPhone = "62" + cleanPhone.slice(1);
+    } else if (cleanPhone.startsWith("8")) {
+      cleanPhone = "62" + cleanPhone;
+    }
+    const messageText = `Halo Bpk/Ibu ${customer},\n\nKami dari *Biro Jasa SUN89* menginformasikan rincian tagihan pengurusan dokumen kendaraan Anda:\n\n• *Nomor Order*   : ${orderNo}\n• *Nomor Invoice* : ${invoiceNo}\n• *Nomor Polisi*  : ${nopol.toUpperCase()}\n• *Jenis Layanan* : ${layanan}\n• *Samsat*        : ${samsat}\n• *Total Tagihan* : ${formatRupiah(total)}\n• *Telah Dibayar* : ${formatRupiah(dibayar)}\n-----------------------------------------\n• *SISA TAGIHAN*  : *${formatRupiah(kurang)}*\n\nPembayaran dapat ditransfer ke rekening resmi:\n*Bank BCA*: 7175095764\n*a/n ANISA SUSANTI (Biro Jasa SUN89)*\n\nMohon kirimkan bukti transfer setelah pembayaran dilakukan. Terima kasih atas kepercayaan Anda menggunakan Biro Jasa SUN89.`;
+    const waUrl = `https://wa.me/${cleanPhone}?text=${encodeURIComponent(messageText)}`;
+    window.open(waUrl, "_blank");
+    toast.success(`Membuka WhatsApp untuk mengirim tagihan ke ${customer} (${phone})`);
+  };
+
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="w-full sm:max-w-2xl max-h-[92dvh] flex flex-col p-4 sm:p-5 bg-card text-card-foreground overflow-hidden">
-        <DialogHeader className="print:hidden pb-2 border-b border-border/70 shrink-0">
+      <DialogContent className="w-full sm:max-w-2xl max-h-[92dvh] flex flex-col p-0 bg-card text-card-foreground overflow-hidden">
+        <DialogHeader className="print:hidden p-4 sm:p-5 pb-3 border-b border-border/70 sticky top-0 bg-card z-10 shrink-0">
           <div className="flex items-center justify-between">
             <DialogTitle className="text-sm font-semibold flex items-center gap-2">
               <Printer className="w-4 h-4 text-primary" />
@@ -104,7 +127,7 @@ export function InvoiceA5Dialog({ open, onOpenChange, data }: InvoiceA5DialogPro
         </DialogHeader>
 
         {/* Scrollable Container on Screen */}
-        <div className="flex-1 overflow-y-auto my-2 p-1 bg-muted/30 rounded-lg flex justify-center">
+        <div className="flex-1 overflow-y-auto p-4 bg-muted/30 flex justify-center">
           {/* Printable A5 Sheet Container */}
           <div
             id="invoice-a5-print-area"
@@ -286,11 +309,22 @@ export function InvoiceA5Dialog({ open, onOpenChange, data }: InvoiceA5DialogPro
         </div>
 
         {/* Action Buttons in Modal Footer */}
-        <DialogFooter className="print:hidden pt-2 border-t border-border/70 flex items-center justify-between sm:justify-between shrink-0">
+        <DialogFooter className="print:hidden p-4 sm:p-5 pt-3 border-t border-border/70 sticky bottom-0 bg-card z-10 flex items-center justify-between sm:justify-between shrink-0">
           <Button variant="outline" size="sm" onClick={() => onOpenChange(false)} className="h-8 text-xs">
             Tutup
           </Button>
           <div className="flex items-center gap-2">
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={handleSendWhatsApp}
+              className="h-8 text-xs gap-1.5 text-emerald-600 border-emerald-500/40 hover:bg-emerald-50 dark:hover:bg-emerald-950/40 hover:text-emerald-700 font-semibold"
+              title="Kirim rincian tagihan faktur ke WhatsApp customer"
+            >
+              <MessageCircle className="w-3.5 h-3.5" />
+              <span>Kirim ke WhatsApp</span>
+            </Button>
             <Button variant="outline" size="sm" onClick={handleDownload} className="h-8 text-xs gap-1.5">
               <Download className="w-3.5 h-3.5" />
               <span>Unduh PDF</span>

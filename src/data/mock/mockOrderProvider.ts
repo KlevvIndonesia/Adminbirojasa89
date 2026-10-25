@@ -22,6 +22,7 @@ export interface IOrderDataProvider {
   rollbackOrder(orderNo: string, targetStage: StageName, updates: Partial<OperationalOrder>): boolean;
   archiveOrder(orderNo: string): boolean;
   deleteArchivedOrder?(orderNo: string): boolean;
+  deleteOrder?(orderNo: string): boolean | Promise<boolean>;
   clearArchivedOrders?(): boolean;
   cancelOrder?(orderNo: string, reason?: string): boolean | Promise<boolean>;
   verifyPayment?(orderNo: string, verifierName?: string, confirmedAmount?: number, notes?: string): boolean;
@@ -208,6 +209,29 @@ export class MockOrderProvider implements IOrderDataProvider {
       return true;
     }
     return false;
+  }
+
+  public deleteOrder(orderNo: string): boolean {
+    const cleanNo = (orderNo || "").trim().toUpperCase();
+    let deleted = false;
+    for (const stage of STAGES) {
+      const initialLen = this.activeOrders[stage]?.length ?? 0;
+      this.activeOrders[stage] = (this.activeOrders[stage] || []).filter(
+        (o) => (o.orderNo || "").toUpperCase() !== cleanNo
+      );
+      if (this.activeOrders[stage].length < initialLen) {
+        deleted = true;
+      }
+    }
+    const archIdx = this.archivedOrders.findIndex((o) => (o.orderNo || "").toUpperCase() === cleanNo);
+    if (archIdx !== -1) {
+      this.archivedOrders.splice(archIdx, 1);
+      deleted = true;
+    }
+    if (deleted) {
+      this.notify();
+    }
+    return deleted;
   }
 
   public clearArchivedOrders(): boolean {

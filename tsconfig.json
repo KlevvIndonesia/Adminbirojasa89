@@ -23,8 +23,7 @@
       "@/*": ["./src/app/*"],
       "@app/*": ["./src/app/*"],
       "@domain/*": ["./src/domain/*"],
-      "@data/*": ["./src/data/*"],
-      "@api/*": ["./src/api/*"]
+      "@data/*": ["./src/data/*"]
     }
   },
   "include": ["src", "vite.config.ts"]

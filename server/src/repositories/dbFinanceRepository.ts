@@ -21,6 +21,7 @@ export class DbFinanceRepository {
     const overpayment = Number(r.overpayment ?? parsed.overpayment ?? 0);
     const cashback = Number(r.cashback_nominal ?? parsed.cashback ?? 0);
     const profit = Number(r.profit_final ?? parsed.profit ?? 0);
+    const serviceId = r.service_id !== null && r.service_id !== undefined ? String(r.service_id) : (parsed.serviceId || parsed.service_id || undefined);
 
     return {
       ...parsed,
@@ -30,6 +31,8 @@ export class DbFinanceRepository {
       orderNo: r.order_no,
       customer: r.customer,
       layanan: r.layanan,
+      serviceId,
+      service_id: serviceId,
       status: r.status as any,
       totalTagihan,
       total_tagihan: totalTagihan,
@@ -98,9 +101,10 @@ export class DbFinanceRepository {
     const biayaAntarJemput = Number((invoice as any).biayaAntarJemput ?? (existing as any)?.biayaAntarJemput ?? 0);
     const namaPenerimaKeluar = (invoice as any).namaPenerimaKeluar || (existing as any)?.namaPenerimaKeluar || null;
     const alasanPending = (invoice as any).alasan_pending || (invoice as any).alasan || (existing as any)?.alasan_pending || (existing as any)?.alasan || null;
+    const serviceId = (invoice as any).serviceId || (invoice as any).service_id || (existing as any)?.serviceId || (existing as any)?.service_id || null;
 
     if (existing) {
-      const merged: InvoiceBillingRecord = { ...existing, ...invoice };
+      const merged: InvoiceBillingRecord = { ...existing, ...invoice, serviceId: serviceId || undefined, service_id: serviceId || undefined };
       const stmt = db.prepare(`
         UPDATE finance_invoices SET
           invoice_no = ?,
@@ -125,6 +129,7 @@ export class DbFinanceRepository {
           nama_penerima_keluar = ?,
           alasan_pending = ?,
           data_json = ?,
+          service_id = ?,
           updated_at = datetime('now')
         WHERE id = ?
       `);
@@ -151,6 +156,7 @@ export class DbFinanceRepository {
         namaPenerimaKeluar,
         alasanPending,
         JSON.stringify(merged),
+        serviceId,
         existing.id
       );
       return existing.id;
@@ -163,8 +169,8 @@ export class DbFinanceRepository {
         overpayment, settlement_condition, refund_status,
         cashback_nominal, cashback_status, profit_final, profit_status,
         biaya_jasa, biaya_antar_jemput, nama_penerima_keluar,
-        alasan_pending, data_json, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+        alasan_pending, data_json, service_id, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
     `);
 
     const res = stmt.run(
@@ -189,7 +195,8 @@ export class DbFinanceRepository {
       biayaAntarJemput,
       namaPenerimaKeluar,
       alasanPending,
-      JSON.stringify(invoice)
+      JSON.stringify(invoice),
+      serviceId
     );
 
     const insertedId = Number(res.lastInsertRowid);
@@ -223,11 +230,15 @@ export class DbFinanceRepository {
     const cashbackNominal = Number(merged.cashback || 0);
     const cashbackStatus = (merged.cashbackStatus || (cashbackNominal > 0 ? "PENDING" : "APPROVED")) as string;
     const profitFinal = Number(merged.profit || 0);
-    const profitStatus = (merged.profitStatus || (dibayar >= totalTagihan ? "REALIZED" : "PENDING")) as string;
+    const profitStatus = (updates.profitStatus || (updates as any).profit_status || (updates.billingStatus === "COMPLETED" ? "REALIZED" : (existing.profitStatus || "PENDING"))) as string;
     const alasanPending = (updates as any).alasan_pending || (updates as any).alasan || (existing as any).alasan_pending || (existing as any).alasan || null;
+    const serviceId = (updates as any).serviceId || (updates as any).service_id || (existing as any).serviceId || (existing as any).service_id || null;
+    const resolvedLayanan = updates.layanan || existing.layanan;
 
     const stmt = db.prepare(`
       UPDATE finance_invoices SET
+        layanan = ?,
+        service_id = ?,
         status = ?,
         dibayar = ?,
         sisa = ?,
@@ -247,6 +258,8 @@ export class DbFinanceRepository {
     `);
 
     const res = stmt.run(
+      resolvedLayanan,
+      serviceId,
       merged.status,
       dibayar,
       sisa,
@@ -260,11 +273,38 @@ export class DbFinanceRepository {
       profitFinal,
       profitStatus,
       alasanPending,
-      JSON.stringify(merged),
+      JSON.stringify({ ...merged, serviceId: serviceId || undefined, service_id: serviceId || undefined }),
       id
     );
 
     return res.changes > 0;
+  }
+
+  /**
+   * Checks if an invoice has recorded payment entries.
+   */
+  public hasPayments(invoiceNo: string): boolean {
+    const row = db
+      .prepare("SELECT COUNT(*) AS count FROM invoice_payments WHERE invoice_no = ?")
+      .get(invoiceNo) as { count: number } | undefined;
+    return Boolean(row && row.count > 0);
+  }
+
+  /**
+   * Deletes an invoice with cascade deletion safeguard.
+   * Strictly refuses deletion if verified payments exist to prevent cascading data loss.
+   */
+  public deleteInvoice(id: number): boolean {
+    const inv = this.getInvoiceById(id);
+    if (!inv) return false;
+
+    if (this.hasPayments(inv.invoiceNo)) {
+      throw new Error(`INVOICE_HAS_PAYMENTS: Cannot delete invoice '${inv.invoiceNo}' because it has recorded payments.`);
+    }
+
+    const stmt = db.prepare("DELETE FROM finance_invoices WHERE id = ?");
+    const result = stmt.run(id);
+    return result.changes > 0;
   }
 
   // ─── INVOICE PAYMENTS REPOSITORY METHODS ────────────────────────────────────
@@ -282,6 +322,21 @@ export class DbFinanceRepository {
   public getAllPayments(): any[] {
     const stmt = db.prepare("SELECT * FROM invoice_payments ORDER BY id DESC");
     return stmt.all();
+  }
+
+  public getInvoicePaymentById(paymentId: number): any {
+    const stmt = db.prepare("SELECT * FROM invoice_payments WHERE id = ?");
+    return stmt.get(paymentId);
+  }
+
+  public updateInvoicePayment(paymentId: number, updates: Partial<any>): boolean {
+    const fields = Object.keys(updates);
+    if (fields.length === 0) return true;
+    const setClause = fields.map((f) => `${f} = ?`).join(", ");
+    const values = fields.map((f) => updates[f]);
+    const stmt = db.prepare(`UPDATE invoice_payments SET ${setClause} WHERE id = ?`);
+    const res = stmt.run(...values, paymentId);
+    return res.changes > 0;
   }
 
   public recordInvoicePayment(data: {

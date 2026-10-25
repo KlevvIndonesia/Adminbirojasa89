@@ -231,12 +231,12 @@ export function checkDisallowedSignatures(buffer: Buffer): void {
 
   // Windows PE (EXE / DLL)
   if (buffer.length >= 2 && buffer[0] === MZ_EXE[0] && buffer[1] === MZ_EXE[1]) {
-    throw new ApiError(400, "EXECUTABLE_NOT_ALLOWED", "Berkas executable Windows (.exe/.dll) dilarang untuk diunggah.");
+    throw new ApiError(400, "INVALID_FILE_SIGNATURE", "Format berkas tidak didukung atau isi berkas tidak valid: Berkas executable Windows (.exe/.dll) dilarang untuk diunggah.");
   }
 
   // Linux ELF
   if (buffer.length >= 4 && buffer.subarray(0, 4).equals(ELF_BIN)) {
-    throw new ApiError(400, "EXECUTABLE_NOT_ALLOWED", "Berkas binary Linux ELF dilarang untuk diunggah.");
+    throw new ApiError(400, "INVALID_FILE_SIGNATURE", "Format berkas tidak didukung atau isi berkas tidak valid: Berkas binary Linux ELF dilarang untuk diunggah.");
   }
 
   // Mach-O Binaries & Java Class
@@ -247,23 +247,23 @@ export function checkDisallowedSignatures(buffer: Buffer): void {
     (buffer.length >= 4 && buffer.subarray(0, 4).equals(MACHO_CIGAM_64)) ||
     (buffer.length >= 4 && buffer.subarray(0, 4).equals(JAVA_CLASS))
   ) {
-    throw new ApiError(400, "EXECUTABLE_NOT_ALLOWED", "Berkas binary eksekusi dilarang untuk diunggah.");
+    throw new ApiError(400, "INVALID_FILE_SIGNATURE", "Format berkas tidak didukung atau isi berkas tidak valid: Berkas binary eksekusi dilarang untuk diunggah.");
   }
 
   // Archives (ZIP / RAR / 7z)
   if (buffer.length >= 4 && buffer.subarray(0, 4).equals(ZIP_SIG)) {
-    throw new ApiError(400, "ARCHIVE_NOT_ALLOWED", "Berkas arsip ZIP tidak diizinkan. Harap unggah dokumen langsung (PDF/JPEG/PNG/WEBP).");
+    throw new ApiError(400, "INVALID_FILE_SIGNATURE", "Format berkas tidak didukung atau isi berkas tidak valid: Berkas arsip ZIP tidak diizinkan. Harap unggah dokumen langsung (PDF/JPEG/PNG/WEBP).");
   }
   if (buffer.length >= 4 && buffer.subarray(0, 4).equals(RAR_SIG)) {
-    throw new ApiError(400, "ARCHIVE_NOT_ALLOWED", "Berkas arsip RAR tidak diizinkan.");
+    throw new ApiError(400, "INVALID_FILE_SIGNATURE", "Format berkas tidak didukung atau isi berkas tidak valid: Berkas arsip RAR tidak diizinkan.");
   }
   if (buffer.length >= 4 && buffer.subarray(0, 4).equals(SEVEN_Z_SIG)) {
-    throw new ApiError(400, "ARCHIVE_NOT_ALLOWED", "Berkas arsip 7-Zip tidak diizinkan.");
+    throw new ApiError(400, "INVALID_FILE_SIGNATURE", "Format berkas tidak didukung atau isi berkas tidak valid: Berkas arsip 7-Zip tidak diizinkan.");
   }
 
   // Shell script shebang
   if (buffer.length >= 2 && buffer[0] === 0x23 && buffer[1] === 0x21) {
-    throw new ApiError(400, "SCRIPT_NOT_ALLOWED", "Berkas skrip shell dilarang untuk diunggah.");
+    throw new ApiError(400, "INVALID_FILE_SIGNATURE", "Format berkas tidak didukung atau isi berkas tidak valid: Berkas skrip shell dilarang untuk diunggah.");
   }
 }
 
@@ -338,8 +338,73 @@ export function sanitizeAndValidateFileName(
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// COMPREHENSIVE ENTRY POINT
+// COMPREHENSIVE ENTRY POINT & PUBLIC HELPERS
 // ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Inspects binary magic bytes and returns the authoritative MIME type,
+ * or null if unrecognized or matching disallowed malicious signatures.
+ */
+export function detectMagicMimeType(buffer: Buffer): AllowedMimeType | null {
+  if (!buffer || buffer.length < 3) return null;
+
+  // Disallowed executable and archive signatures check
+  if (buffer.length >= 2 && buffer[0] === MZ_EXE[0] && buffer[1] === MZ_EXE[1]) {
+    return null;
+  }
+  if (buffer.length >= 4 && buffer.subarray(0, 4).equals(ELF_BIN)) {
+    return null;
+  }
+  if (
+    buffer.length >= 4 &&
+    (buffer.subarray(0, 4).equals(MACHO_32) ||
+      buffer.subarray(0, 4).equals(MACHO_64) ||
+      buffer.subarray(0, 4).equals(MACHO_CIGAM_32) ||
+      buffer.subarray(0, 4).equals(MACHO_CIGAM_64) ||
+      buffer.subarray(0, 4).equals(JAVA_CLASS) ||
+      buffer.subarray(0, 4).equals(ZIP_SIG) ||
+      buffer.subarray(0, 4).equals(RAR_SIG) ||
+      buffer.subarray(0, 4).equals(SEVEN_Z_SIG))
+  ) {
+    return null;
+  }
+
+  // PDF: %PDF (0x25 0x50 0x44 0x46)
+  if (buffer.length >= 4 && buffer.subarray(0, 4).equals(PDF_MAGIC)) {
+    return "application/pdf";
+  }
+
+  // PNG: 89 50 4E 47 0D 0A 1A 0A
+  if (buffer.length >= 8 && buffer.subarray(0, 8).equals(PNG_MAGIC)) {
+    return "image/png";
+  }
+
+  // JPEG / JPG: FF D8 FF
+  if (buffer.length >= 3 && buffer[0] === JPEG_SOI[0] && buffer[1] === JPEG_SOI[1] && buffer[2] === 0xFF) {
+    return "image/jpeg";
+  }
+
+  // WEBP: RIFF....WEBP (0x52 0x49 0x46 0x46 ... 0x57 0x45 0x42 0x50)
+  if (
+    buffer.length >= 12 &&
+    buffer.subarray(0, 4).equals(RIFF_HEADER) &&
+    buffer.subarray(8, 12).equals(WEBP_HEADER)
+  ) {
+    return "image/webp";
+  }
+
+  return null;
+}
+
+/**
+ * Sanitizes filename by stripping path traversal components and forbidden characters.
+ */
+export function sanitizeFileName(name: string): string {
+  if (!name || typeof name !== "string") return "dokumen";
+  const base = path.basename(name).trim();
+  const cleanChars = base.replace(/[\x00-\x1F\x7F<>:"/\\|?*;&$`~]/g, "_").trim();
+  return cleanChars.replace(/\.\./g, "_").replace(/_+/g, "_");
+}
 
 /**
  * Comprehensive entry point for document upload validation:
@@ -356,7 +421,7 @@ export function validateUploadedDocument(
 ): FileValidationResult {
   // 1. Enforce size limits
   if (!buffer || buffer.length === 0) {
-    throw new ApiError(400, "EMPTY_FILE", "Berkas upload kosong (0 bytes).");
+    throw new ApiError(400, "EMPTY_FILE", "Berkas tidak boleh kosong (0 bytes).");
   }
 
   if (buffer.length > CONFIG.MAX_FILE_SIZE_BYTES) {
@@ -371,35 +436,73 @@ export function validateUploadedDocument(
   // 2. Reject known malicious binary / script signatures
   checkDisallowedSignatures(buffer);
 
-  // 3. Detect format and execute dedicated structural validation
-  let canonicalMime: AllowedMimeType;
+  // 3. Inspect binary magic bytes
+  const detectedMime = detectMagicMimeType(buffer);
+
+  // Check client extension against binary signature
+  const clientExt = path.extname(originalName || "").toLowerCase().trim();
+  if (clientExt === ".pdf" && detectedMime !== "application/pdf") {
+    throw new ApiError(
+      400,
+      "INVALID_FILE_SIGNATURE",
+      "Format berkas tidak didukung atau isi berkas tidak valid: Berkas berekstensi .pdf tetapi tanda tangan biner bukan format PDF (%PDF)."
+    );
+  }
+  if ((clientExt === ".jpg" || clientExt === ".jpeg") && detectedMime !== "image/jpeg") {
+    throw new ApiError(
+      400,
+      "INVALID_FILE_SIGNATURE",
+      "Format berkas tidak didukung atau isi berkas tidak valid: Berkas berekstensi JPEG/JPG tetapi tanda tangan biner bukan penanda awal JPEG (0xFFD8FF)."
+    );
+  }
+  if (clientExt === ".png" && detectedMime !== "image/png") {
+    throw new ApiError(
+      400,
+      "INVALID_FILE_SIGNATURE",
+      "Format berkas tidak didukung atau isi berkas tidak valid: Berkas berekstensi .png tetapi tanda tangan biner bukan signature PNG."
+    );
+  }
+  if (clientExt === ".webp" && detectedMime !== "image/webp") {
+    throw new ApiError(
+      400,
+      "INVALID_FILE_SIGNATURE",
+      "Format berkas tidak didukung atau isi berkas tidak valid: Berkas berekstensi .webp tetapi tanda tangan biner bukan container WebP."
+    );
+  }
+
+  if (!detectedMime) {
+    throw new ApiError(
+      400,
+      "INVALID_FILE_SIGNATURE",
+      "Format berkas tidak didukung atau isi berkas tidak valid: Hanya berkas PDF, JPEG, PNG, dan WebP yang diizinkan."
+    );
+  }
+
+  // 4. Dedicated structural validation
+  let canonicalMime: AllowedMimeType = detectedMime;
   let canonicalExt: AllowedExtension;
 
-  if (buffer.length >= 4 && buffer.subarray(0, 4).equals(PDF_MAGIC)) {
+  if (detectedMime === "application/pdf") {
     validatePdfStructure(buffer);
-    canonicalMime = "application/pdf";
     canonicalExt = ".pdf";
-  } else if (buffer.length >= 8 && buffer.subarray(0, 8).equals(PNG_MAGIC)) {
+  } else if (detectedMime === "image/png") {
     validatePngStructure(buffer);
-    canonicalMime = "image/png";
     canonicalExt = ".png";
-  } else if (buffer.length >= 3 && buffer[0] === JPEG_SOI[0] && buffer[1] === JPEG_SOI[1] && buffer[2] === 0xFF) {
+  } else if (detectedMime === "image/jpeg") {
     validateJpegStructure(buffer);
-    canonicalMime = "image/jpeg";
     canonicalExt = ".jpg";
-  } else if (buffer.length >= 12 && buffer.subarray(0, 4).equals(RIFF_HEADER) && buffer.subarray(8, 12).equals(WEBP_HEADER)) {
+  } else if (detectedMime === "image/webp") {
     validateWebpStructure(buffer);
-    canonicalMime = "image/webp";
     canonicalExt = ".webp";
   } else {
     throw new ApiError(
       400,
-      "UNSUPPORTED_FORMAT",
-      "Format berkas tidak didukung atau isi berkas rusak. Hanya berkas PDF, JPEG, PNG, dan WebP yang diizinkan."
+      "INVALID_FILE_SIGNATURE",
+      "Format berkas tidak didukung."
     );
   }
 
-  // 4. Verify reported MIME type from client to prevent MIME-spoofing
+  // 5. Verify reported MIME type from client to prevent MIME-spoofing
   if (reportedMime) {
     const normReported = reportedMime.toLowerCase().trim();
     const isMimeCompatible =
@@ -417,7 +520,7 @@ export function validateUploadedDocument(
     }
   }
 
-  // 5. Sanitize original filename and enforce matching extension
+  // 6. Sanitize original filename and enforce matching extension
   const sanitizedOriginalName = sanitizeAndValidateFileName(originalName, canonicalExt);
 
   return {

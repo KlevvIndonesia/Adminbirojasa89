@@ -36,6 +36,14 @@ import {
   projectOrderToContractRow,
   deriveStatusPengerjaan,
   deriveStatusPembayaran,
+  initialPerpanjangan1TahunContract,
+  initialPerpanjangan5TahunContract,
+  initialMutasiAsalContract,
+  initialMutasiAntarDaerahContract,
+  initialBalikNamaContract,
+  initialTarikBerkasContract,
+  initialDuplikatSTNKContract,
+  initialLainnyaContract,
   initialMutasiLDContract,
   initialMutasiASContract,
   initialBBNContract,
@@ -287,12 +295,21 @@ class FinanceStore {
   private unsubscribeRepo?: () => void;
   private unsubscribeOrderRepo?: () => void;
   private orderCreator: OrderCreatorFn | null = null;
+  private deletedOrderNos: Set<string> = new Set();
 
   public setOrderCreator(creator: OrderCreatorFn): void {
     this.orderCreator = creator;
   }
 
   constructor() {
+    try {
+      if (typeof window !== "undefined" && window.localStorage) {
+        const stored = JSON.parse(localStorage.getItem("sun89_deleted_order_nos") || "[]");
+        if (Array.isArray(stored)) {
+          stored.forEach((no) => this.deletedOrderNos.add(String(no).trim().toUpperCase()));
+        }
+      }
+    } catch {}
     this.isApiMode = APP_CONFIG.dataProvider === "api";
     if (this.isApiMode) {
       this.invoices = [];
@@ -302,6 +319,14 @@ class FinanceStore {
       this.profitData = [];
       this.labaRugiData = [];
       this.contractDatasets = {
+        "perpanjangan-1-tahun": [],
+        "perpanjangan-5-tahun": [],
+        "mutasi-asal": [],
+        "mutasi-antar-daerah": [],
+        "balik-nama": [],
+        "tarik-berkas": [],
+        "duplikat-stnk": [],
+        "lainnya": [],
         "mutasi-ld": [],
         "mutasi-as": [],
         bbn: [],
@@ -344,6 +369,14 @@ class FinanceStore {
       this.profitData = [];
       this.labaRugiData = [];
       this.contractDatasets = {
+        "perpanjangan-1-tahun": [],
+        "perpanjangan-5-tahun": [],
+        "mutasi-asal": [],
+        "mutasi-antar-daerah": [],
+        "balik-nama": [],
+        "tarik-berkas": [],
+        "duplikat-stnk": [],
+        "lainnya": [],
         "mutasi-ld": [],
         "mutasi-as": [],
         bbn: [],
@@ -365,6 +398,14 @@ class FinanceStore {
       this.profitData = [...rawProfitData];
       this.labaRugiData = [...rawLabaRugiData];
       this.contractDatasets = {
+        "perpanjangan-1-tahun": [...initialPerpanjangan1TahunContract],
+        "perpanjangan-5-tahun": [...initialPerpanjangan5TahunContract],
+        "mutasi-asal": [...initialMutasiAsalContract],
+        "mutasi-antar-daerah": [...initialMutasiAntarDaerahContract],
+        "balik-nama": [...initialBalikNamaContract],
+        "tarik-berkas": [...initialTarikBerkasContract],
+        "duplikat-stnk": [...initialDuplikatSTNKContract],
+        "lainnya": [...initialLainnyaContract],
         "mutasi-ld": [...initialMutasiLDContract],
         "mutasi-as": [...initialMutasiASContract],
         bbn: [...initialBBNContract],
@@ -442,6 +483,14 @@ class FinanceStore {
 
   // Contract Datasets for DataPenjualan
   private contractDatasets: Record<PenjualanContractCategory, any[]> = {
+    "perpanjangan-1-tahun": [...initialPerpanjangan1TahunContract],
+    "perpanjangan-5-tahun": [...initialPerpanjangan5TahunContract],
+    "mutasi-asal": [...initialMutasiAsalContract],
+    "mutasi-antar-daerah": [...initialMutasiAntarDaerahContract],
+    "balik-nama": [...initialBalikNamaContract],
+    "tarik-berkas": [...initialTarikBerkasContract],
+    "duplikat-stnk": [...initialDuplikatSTNKContract],
+    "lainnya": [...initialLainnyaContract],
     "mutasi-ld": [...initialMutasiLDContract],
     "mutasi-as": [...initialMutasiASContract],
     bbn: [...initialBBNContract],
@@ -584,7 +633,7 @@ class FinanceStore {
               Boolean((ord as any).isArchived) ||
               ord.currentStageName === "Selesai" ||
               ord.currentStageName === "Selesai (Arsip)" ||
-              (ord.settlementCondition && ord.settlementCondition !== "PENDING_FINALIZATION");
+              Boolean(ord.settlementCondition && ord.settlementCondition !== "PENDING_FINALIZATION");
           }
         } else {
           isOrderCompleted = inv.status === "Lunas" && inv.billingStatus === "COMPLETED";
@@ -688,18 +737,26 @@ class FinanceStore {
           return false;
         }
 
-        // Exclude cancelled invoices/orders
-        if (
+        const ord = inv.orderNo ? orderRepository.getByOrderNo(inv.orderNo) : null;
+        const isCancelled =
           inv.status === "CANCELLED" ||
           inv.billingStatus === "CANCELLED" ||
-          Boolean((inv as any).isCancelled)
-        ) {
-          return false;
-        }
+          Boolean((inv as any).isCancelled) ||
+          Boolean(ord && (ord.currentStageName === "Dibatalkan" || (ord as any).isCancelled));
 
-        const ord = inv.orderNo ? orderRepository.getByOrderNo(inv.orderNo) : null;
-        if (ord && (ord.currentStageName === "Dibatalkan" || Boolean((ord as any).isCancelled))) {
-          return false;
+        const paid = Number(ord?.payment?.dibayar ?? inv.terbayar ?? inv.dibayar ?? 0);
+        const overpaymentFromInv = Number(inv.overpayment || 0);
+
+        // QC-01 Fix: If order is cancelled and customer has deposited funds, it MUST appear in Cashback Terpending for refund!
+        if (isCancelled) {
+          const refundable = overpaymentFromInv > 0 ? overpaymentFromInv : paid;
+          if (refundable <= 0 || inv.refundStatus === "PROCESSED") {
+            return false;
+          }
+          const key = inv.orderNo || `inv:${inv.id}`;
+          if (seenOrders.has(key)) return false;
+          seenOrders.add(key);
+          return true;
         }
 
         const biayaPokok = (inv.biayaSamsat !== undefined && inv.biayaSamsat !== null)
@@ -710,11 +767,9 @@ class FinanceStore {
           : (Number((inv as any)?.biayaJasa) || Number(inv.profit) || 0);
         const biayaAntarJemput = Number(ord?.biayaAntarJemput ?? (inv as any)?.biayaAntarJemput ?? 0);
 
-        const total = (biayaPokok > 0 || biayaJasa > 0 || biayaAntarJemput > 0)
-          ? (biayaPokok + biayaJasa + biayaAntarJemput)
-          : (Number(ord?.payment?.totalBiaya) || Number(inv.totalTagihan) || 0);
+        const total = Number(inv.totalTagihan || ord?.payment?.totalBiaya) ||
+          (biayaPokok + biayaJasa + biayaAntarJemput);
 
-        const paid = Number(ord?.payment?.dibayar ?? inv.terbayar ?? inv.dibayar ?? 0);
         const overpayment = Math.max(0, paid - total);
         const legacyCashback = Number(inv.cashback) || 0;
 
@@ -733,32 +788,65 @@ class FinanceStore {
       })
       .map((inv) => {
         const ord = inv.orderNo ? orderRepository.getByOrderNo(inv.orderNo) : null;
-
-        const biayaPokok = (inv.biayaSamsat !== undefined && inv.biayaSamsat !== null)
-          ? Number(inv.biayaSamsat)
-          : (Number(ord?.pkb || 0) + Number(ord?.swdkllj || 0) + Number(ord?.dendaSwdkllj || 0));
-        const biayaJasa = (ord?.biayaJasa !== undefined && ord?.biayaJasa !== null)
-          ? Number(ord.biayaJasa)
-          : (Number((inv as any)?.biayaJasa) || Number(inv.profit) || 0);
-        const biayaAntarJemput = Number(ord?.biayaAntarJemput ?? (inv as any)?.biayaAntarJemput ?? 0);
-
-        const total = (biayaPokok > 0 || biayaJasa > 0 || biayaAntarJemput > 0)
-          ? (biayaPokok + biayaJasa + biayaAntarJemput)
-          : (Number(ord?.payment?.totalBiaya) || Number(inv.totalTagihan) || 0);
+        const isCancelled =
+          inv.status === "CANCELLED" ||
+          inv.billingStatus === "CANCELLED" ||
+          Boolean((inv as any).isCancelled) ||
+          Boolean(ord && (ord.currentStageName === "Dibatalkan" || (ord as any).isCancelled));
 
         const paid = Number(ord?.payment?.dibayar ?? inv.terbayar ?? inv.dibayar ?? 0);
-        const overpayment = Math.max(0, paid - total);
-        const komisi = (Number(inv.cashback) > 0 && inv.cashbackStatus !== "REALIZED") ? Number(inv.cashback) : 0;
+        const biayaPokok = isCancelled ? 0 : ((inv.biayaSamsat !== undefined && inv.biayaSamsat !== null)
+          ? Number(inv.biayaSamsat)
+          : (Number(ord?.pkb || 0) + Number(ord?.swdkllj || 0) + Number(ord?.dendaSwdkllj || 0)));
+        const biayaJasa = isCancelled ? 0 : ((ord?.biayaJasa !== undefined && ord?.biayaJasa !== null)
+          ? Number(ord.biayaJasa)
+          : (Number((inv as any)?.biayaJasa) || Number(inv.profit) || 0));
+        const biayaAntarJemput = isCancelled ? 0 : Number(ord?.biayaAntarJemput ?? (inv as any)?.biayaAntarJemput ?? 0);
+
+        const total = isCancelled ? 0 : (Number(inv.totalTagihan || ord?.payment?.totalBiaya) ||
+          (biayaPokok + biayaJasa + biayaAntarJemput));
+
+        const overpayment = isCancelled ? (Number(inv.overpayment) || paid) : Math.max(0, paid - total);
+        const komisi = isCancelled ? 0 : ((Number(inv.cashback) > 0 && inv.cashbackStatus !== "REALIZED") ? Number(inv.cashback) : 0);
 
         const orderNo = inv.orderNo || ord?.orderNo || "-";
         const nopol = ord?.nopol || inv.nopol || "-";
         const customer = ord?.customer || inv.customer || "-";
         const phone = ord?.nomorHP || (inv as any)?.phone || (inv as any)?.noHP || "-";
         const tanggalMasukBerkas = ord?.tanggalMasukBerkas || (inv as any)?.tanggalMasukBerkas || inv.tanggal || "-";
-        const pengurusan = ord?.layanan || inv.jenisLayanan || inv.layanan || "Layanan Samsat";
+        const pengurusan = isCancelled
+          ? `${ord?.layanan || inv.jenisLayanan || inv.layanan || "Layanan Samsat"} (Dibatalkan - Refund)`
+          : (ord?.layanan || inv.jenisLayanan || inv.layanan || "Layanan Samsat");
 
         const totalKewajiban = overpayment > 0 ? overpayment : komisi;
         const statusCashback = (inv as any).statusCashback || ((inv.refundStatus === "PROCESSED" || inv.cashbackStatus === "REALIZED") ? "Dibayar" : "Pending");
+
+        const currentStep = Number(ord?.currentStep ?? (inv as any)?.currentStep ?? 1);
+        const currentStageName = ord?.currentStageName || (inv as any)?.currentStageName || "Verifikasi";
+        const hasFinalCost = isCancelled ? true : (ord ? Boolean(
+          ord.isVerified ||
+          (typeof (ord as any).finalCost === "number" && (ord as any).finalCost > 0) ||
+          ord.documentApproval?.stage5Verified ||
+          (ord.currentStep !== undefined && ord.currentStep >= 6)
+        ) : true);
+
+        const isSupervisiApproved = isCancelled ? true : (ord ? Boolean(
+          ord.approvedBySpv ||
+          ord.documentApproval?.stage6Approved ||
+          (ord.currentStep !== undefined && ord.currentStep >= 7)
+        ) : true);
+
+        const isPayoutGated = isCancelled ? false : (!hasFinalCost || !isSupervisiApproved);
+        let payoutGatingReason = isCancelled ? "Pengembalian dana titipan pembatalan order (Refund)" : "";
+        if (!isCancelled) {
+          if (!hasFinalCost && !isSupervisiApproved) {
+            payoutGatingReason = "Biaya final belum ditetapkan & belum disetujui Supervisi";
+          } else if (!hasFinalCost) {
+            payoutGatingReason = "Biaya final belum ditetapkan (Stage 5)";
+          } else if (!isSupervisiApproved) {
+            payoutGatingReason = "Menunggu persetujuan Supervisi (Stage 6)";
+          }
+        }
 
         return {
           ...inv,
@@ -780,6 +868,12 @@ class FinanceStore {
           cashback: totalKewajiban,
           status: statusCashback,
           statusCashback,
+          currentStep,
+          currentStageName,
+          hasFinalCost,
+          isSupervisiApproved,
+          isPayoutGated,
+          payoutGatingReason,
           alasanPending: (inv as any)?.alasan_pending || (inv as any)?.alasan || (ord as any)?.alasanPending || (overpayment > 0 ? "Kelebihan pembayaran konsumen yang perlu dikembalikan" : "Komisi rekanan"),
           riwayatPembayaran: ord?.payment?.riwayatKoreksiPembayaran || [],
         };
@@ -812,9 +906,8 @@ class FinanceStore {
           : (Number((inv as any)?.biayaJasa) || Number(inv.profit) || 0);
         const biayaAntarJemput = Number(ord?.biayaAntarJemput ?? (inv as any)?.biayaAntarJemput ?? 0);
 
-        const total = (biayaPokok > 0 || biayaJasa > 0 || biayaAntarJemput > 0)
-          ? (biayaPokok + biayaJasa + biayaAntarJemput)
-          : (Number(ord?.payment?.totalBiaya) || Number(inv.totalTagihan) || 0);
+        const total = Number(inv.totalTagihan || ord?.payment?.totalBiaya) ||
+          (biayaPokok + biayaJasa + biayaAntarJemput);
 
         const paid = Number(ord?.payment?.dibayar ?? inv.terbayar ?? inv.dibayar ?? 0);
         const remaining = Math.max(0, total - paid);
@@ -840,9 +933,8 @@ class FinanceStore {
           : (Number((inv as any)?.biayaJasa) || Number(inv.profit) || 0);
         const biayaAntarJemput = Number(ord?.biayaAntarJemput ?? (inv as any)?.biayaAntarJemput ?? 0);
 
-        const total = (biayaPokok > 0 || biayaJasa > 0 || biayaAntarJemput > 0)
-          ? (biayaPokok + biayaJasa + biayaAntarJemput)
-          : (Number(ord?.payment?.totalBiaya) || Number(inv.totalTagihan) || 0);
+        const total = Number(inv.totalTagihan || ord?.payment?.totalBiaya) ||
+          (biayaPokok + biayaJasa + biayaAntarJemput);
 
         const paid = Number(ord?.payment?.dibayar ?? inv.terbayar ?? inv.dibayar ?? 0);
         const remaining = Math.max(0, total - paid);
@@ -978,7 +1070,6 @@ class FinanceStore {
         Status: inv.status,
         "Status Pembayaran": inv.status,
         "No Invoice": inv.invoice,
-        "Tanggal Invoice": inv.tanggal,
         "Tanda Terima": inv.tandaTerima || "-",
         BPKB: inv.bpkb || "Ada",
         "TTB BPKB": inv.ttbBPKB || "-",
@@ -1009,7 +1100,6 @@ class FinanceStore {
         Status: "Pending",
         "Status Pembayaran": "Lunas",
         "No Invoice": inv.invoice,
-        "Tanggal Invoice": inv.tanggal,
         "Tanda Terima": inv.tandaTerima || "-",
         Alasan: inv.alasan || "Menunggu proses Samsat & biaya final",
       }));
@@ -1038,24 +1128,34 @@ class FinanceStore {
         Status: "Pending",
         "Status Pembayaran": "Lunas",
         "No Invoice": inv.invoice,
-        "Tanggal Invoice": inv.tanggal,
         "Tanda Terima": inv.tandaTerima || "-",
         "Jumlah Cashback": inv.jumlahCashback,
         "Cashback Persen": inv.cashbackPersen || "3.5%",
       }));
     }
 
-    // Operational categories: "mutasi-ld" | "mutasi-as" | "bbn" | "perpanjangan-pajak" | "lain-lain"
+    // Operational categories: 7 Canonical Services (with legacy fallback)
+    const legacyRedirectMap: Record<string, string> = {
+      "mutasi-ld": "mutasi-antar-daerah",
+      "mutasi-as": "mutasi-asal",
+      bbn: "balik-nama",
+      "perpanjangan-pajak": "perpanjangan-1-tahun",
+      "lain-lain": "tarik-berkas",
+    };
+    const targetCategory = legacyRedirectMap[category] || category;
+
     const rawAllOrders = orderRepository.getAllFlat();
     const seenOrderNos = new Set<string>();
     const allOrders = rawAllOrders.filter((o) => {
       if (!o.orderNo) return true;
+      const cleanUpper = o.orderNo.toUpperCase();
+      if (this.deletedOrderNos.has(cleanUpper)) return false;
       if (seenOrderNos.has(o.orderNo)) return false;
       seenOrderNos.add(o.orderNo);
       return true;
     });
     const matchingOrders = allOrders.filter(
-      (order) => resolveOrderSalesCategory(order.layanan) === category
+      (order) => resolveOrderSalesCategory(order.layanan, (order as any).serviceId) === targetCategory
     );
 
     const archivedOrders = typeof orderRepository.getArchivedOrders === "function" ? orderRepository.getArchivedOrders() : [];
@@ -1073,7 +1173,10 @@ class FinanceStore {
       return projectOrderToContractRow(order, linkedInvoice, isArchived);
     });
 
-    const manualOrFixtureData = this.contractDatasets[category] || [];
+    const manualOrFixtureData = [
+      ...(this.contractDatasets[targetCategory as PenjualanContractCategory] || []),
+      ...(targetCategory !== category ? (this.contractDatasets[category] || []) : []),
+    ];
 
     if (this.isApiMode) {
       // In API Mode: ONLY show live projected orders and any runtime additions (no mock fixtures)
@@ -1263,7 +1366,8 @@ class FinanceStore {
 
     // If there is still unpaid balance, record it as cash received
     if (remainingBalance > 0) {
-      return this.recordPayment(invoiceId, remainingBalance, options);
+      void this.recordPayment(invoiceId, remainingBalance, options);
+      return true;
     }
 
     // If already fully paid financially, ensure profit and cashback are marked REALIZED
@@ -1426,6 +1530,8 @@ class FinanceStore {
         kategori: "PENGELUARAN",
         tipe: "OPERASIONAL",
         keterangan: `Pencairan cashback / refund: ${options?.penerima || "Konsumen"} (${isCashFallback ? "Tunai - Kas Kantor" : options?.bank || "Transfer"})`,
+        debit: 0,
+        kredit: payoutNominal,
         masuk: 0,
         keluar: payoutNominal,
         total: Math.max(0, lastTotal - payoutNominal),
@@ -1530,14 +1636,64 @@ class FinanceStore {
     return true;
   }
 
+  public async voidInvoicePayment(invoiceId: number | string, paymentId: number, reason: string): Promise<boolean> {
+    if (this.isApiMode && typeof (financeRepository as any).voidInvoicePayment === "function") {
+      try {
+        await (financeRepository as any).voidInvoicePayment(Number(invoiceId), paymentId, reason);
+        this.syncFromRepository();
+        return true;
+      } catch (err) {
+        console.error("voidInvoicePayment in financeStore failed:", err);
+        throw err;
+      }
+    }
+    const idx = this.invoices.findIndex((inv) => inv.id === invoiceId || inv.invoice === String(invoiceId) || inv.invoiceNo === String(invoiceId));
+    if (idx !== -1) {
+      this.invoices[idx].status = "Belum Lunas";
+      this.notify();
+    }
+    return true;
+  }
+
+  public async voidCashbackPayout(invoiceId: number | string, reason: string): Promise<boolean> {
+    if (this.isApiMode && typeof (financeRepository as any).voidCashbackPayout === "function") {
+      try {
+        await (financeRepository as any).voidCashbackPayout(Number(invoiceId), reason);
+        this.syncFromRepository();
+        return true;
+      } catch (err) {
+        console.error("voidCashbackPayout in financeStore failed:", err);
+        throw err;
+      }
+    }
+    const idx = this.invoices.findIndex((inv) => inv.id === invoiceId || inv.invoice === String(invoiceId) || inv.invoiceNo === String(invoiceId));
+    if (idx !== -1) {
+      this.invoices[idx].refundStatus = "PENDING";
+      this.invoices[idx].cashbackStatus = "PENDING";
+      this.notify();
+    }
+    return true;
+  }
+
+  public async getVoidAuditHistory(): Promise<{ payments: any[]; cashbacks: any[] }> {
+    if (this.isApiMode && typeof (financeRepository as any).getVoidAuditHistory === "function") {
+      try {
+        return await (financeRepository as any).getVoidAuditHistory();
+      } catch (err) {
+        console.error("getVoidAuditHistory failed:", err);
+      }
+    }
+    return { payments: [], cashbacks: [] };
+  }
+
   /**
    * Update an invoice when costs are recalculated from operational Order (e.g. Stage 5 Verifikasi Ulang)
    * Prevents revenue leakage and synchronizes remaining balance deterministically.
    */
   public updateInvoiceFromOrder(
     orderNo: string,
-    updates: {
-      totalTagihan: number;
+    updates: Partial<InvoiceBillingRecord> & {
+      totalTagihan?: number;
       biayaSamsat?: number;
       profit?: number;
       costItems?: any[];
@@ -1546,6 +1702,13 @@ class FinanceStore {
       overpayment?: number;
       dueTrigger?: PaymentDueTrigger;
       collectionStatus?: CollectionState;
+      terbayar?: number;
+      dibayar?: number;
+      sisa?: number;
+      status?: PaymentStatus;
+      alasan_pending?: string;
+      alasanPending?: string;
+      alasan?: string;
     }
   ): InvoiceBillingRecord | null {
     const idx = this.invoices.findIndex((inv) => inv.orderNo === orderNo);
@@ -1624,7 +1787,20 @@ class FinanceStore {
    * Synchronize an Invoice update into the matching Penjualan contract datasets
    */
   private syncContractRowFromInvoice(record: InvoiceBillingRecord): void {
-    const categories: PenjualanContractCategory[] = ["mutasi-ld", "mutasi-as", "bbn", "perpanjangan-pajak", "lain-lain"];
+    const categories: PenjualanContractCategory[] = [
+      "perpanjangan-1-tahun",
+      "perpanjangan-5-tahun",
+      "mutasi-asal",
+      "mutasi-antar-daerah",
+      "balik-nama",
+      "tarik-berkas",
+      "duplikat-stnk",
+      "mutasi-ld",
+      "mutasi-as",
+      "bbn",
+      "perpanjangan-pajak",
+      "lain-lain",
+    ];
     categories.forEach((cat) => {
       const dataset = this.contractDatasets[cat];
       const foundIdx = dataset.findIndex(
@@ -2035,6 +2211,14 @@ class FinanceStore {
       const order = orderRepository.getByOrderNo(orderNo);
       if (order) {
         const orderUpdates: Partial<OperationalOrder> = {};
+        
+        // 1. Informasi Berkas
+        const tglBerkasVal = updatedFields["Tanggal Masuk Berkas"] ?? updatedFields.tanggalMasukBerkas ?? updatedFields.tanggal_masuk_berkas;
+        if (tglBerkasVal !== undefined) {
+          orderUpdates.tanggalMasukBerkas = tglBerkasVal;
+          (orderUpdates as any).tanggal_masuk_berkas = tglBerkasVal;
+        }
+
         const custVal = updatedFields["Nama Customer"] ?? updatedFields["Customer"];
         if (custVal !== undefined) {
           orderUpdates.customer = custVal.trim();
@@ -2051,27 +2235,262 @@ class FinanceStore {
         if (serviceVal !== undefined) {
           orderUpdates.layanan = serviceVal.trim();
         }
-        const samsatVal = updatedFields["Samsat"] ?? updatedFields["Wilayah Samsat Asal"];
+        const samsatVal = updatedFields["Samsat Asal"] ?? updatedFields["Samsat"] ?? updatedFields["Wilayah Samsat Asal"] ?? updatedFields.samsatAsal;
         if (samsatVal !== undefined) {
           orderUpdates.wilayahSamsatAsal = samsatVal.trim();
+          (orderUpdates as any).samsat_asal = samsatVal.trim();
+        }
+        const samsatTujuanVal = updatedFields["Samsat Tujuan"] ?? updatedFields.wilayahSamsatTujuan ?? updatedFields.samsatTujuan;
+        if (samsatTujuanVal !== undefined) {
+          orderUpdates.wilayahSamsatTujuan = samsatTujuanVal.trim();
+          (orderUpdates as any).samsat_tujuan = samsatTujuanVal.trim();
         }
         if (updatedFields["R4 / R2"]) {
           orderUpdates.jenisKendaraan = updatedFields["R4 / R2"] === "R2" ? "Motor" : "Mobil";
         }
-        if (updatedFields["BPKB"] && order.clientDocuments) {
-          const bpkbVal = updatedFields["BPKB"] === "Ada" ? "Sudah Tersedia" : "Belum Tersedia";
-          orderUpdates.clientDocuments = {
-            ...order.clientDocuments,
-            BPKB: {
-              ...(order.clientDocuments.BPKB || { name: "BPKB Asli" }),
-              status: bpkbVal,
-            },
-          };
+        if (updatedFields["Status Kepemilikan"]) {
+          orderUpdates.kepemilikanKendaraan = updatedFields["Status Kepemilikan"];
+          (orderUpdates as any).statusKepemilikan = updatedFields["Status Kepemilikan"];
+        }
+        const phoneVal = updatedFields["Nomor HP"] ?? updatedFields["No HP"] ?? updatedFields.phone;
+        if (phoneVal !== undefined) {
+          orderUpdates.nomorHP = phoneVal.trim();
         }
 
-        // Phase 9.2: Derived status fields (Status Pengerjaan, Status Pembayaran, No Invoice, Profit, dsb.)
-        // MUST NOT be mutated arbitrarily from a generic table cell edit!
-        // Derived statuses must always follow canonical domain lifecycle.
+        // 2. Structured 9-Part Address
+        const hasAnyAddr = Boolean(
+          updatedFields.detailAlamat || updatedFields["Detail Alamat"] ||
+          updatedFields.kota || updatedFields["Kota/Kabupaten"] ||
+          updatedFields.kecamatan || updatedFields["Kecamatan"] ||
+          updatedFields.kelurahan || updatedFields["Kelurahan/Desa"] ||
+          updatedFields.rtRw || updatedFields["RT/RW"] ||
+          updatedFields.nomorRumah || updatedFields["Nomor Rumah"] ||
+          updatedFields.patokan || updatedFields["Patokan"] ||
+          updatedFields.linkLokasi || updatedFields["Link Lokasi"] ||
+          updatedFields.provinsi || updatedFields["Provinsi"] ||
+          updatedFields["Alamat"] || updatedFields.alamat
+        );
+        if (hasAnyAddr) {
+          const detail = (updatedFields.detailAlamat ?? updatedFields["Detail Alamat"] ?? order.alamatPenjemputan?.detail ?? "").trim();
+          const kota = (updatedFields.kota ?? updatedFields["Kota/Kabupaten"] ?? order.alamatPenjemputan?.kota ?? "").trim();
+          const kecamatan = (updatedFields.kecamatan ?? updatedFields["Kecamatan"] ?? order.alamatPenjemputan?.kecamatan ?? "").trim();
+          const kelurahan = (updatedFields.kelurahan ?? updatedFields["Kelurahan/Desa"] ?? order.alamatPenjemputan?.kelurahan ?? "").trim();
+          const rtRw = (updatedFields.rtRw ?? updatedFields["RT/RW"] ?? order.alamatPenjemputan?.rtRw ?? "").trim();
+          const nomor = (updatedFields.nomorRumah ?? updatedFields["Nomor Rumah"] ?? order.alamatPenjemputan?.nomor ?? "").trim();
+          const landmark = (updatedFields.patokan ?? updatedFields["Patokan"] ?? order.alamatPenjemputan?.landmark ?? "").trim();
+          const mapsUrl = (updatedFields.linkLokasi ?? updatedFields["Link Lokasi"] ?? order.alamatPenjemputan?.mapsUrl ?? "").trim();
+          const provinsi = (updatedFields.provinsi ?? updatedFields["Provinsi"] ?? (order.alamatPenjemputan as any)?.provinsi ?? "").trim();
+
+          orderUpdates.alamatPenjemputan = {
+            detail: detail || "",
+            kota: kota || "",
+            kecamatan: kecamatan || "",
+            kelurahan: kelurahan || "",
+            rtRw: rtRw || "",
+            nomor: nomor || "",
+            landmark: landmark || "",
+            mapsUrl: mapsUrl || "",
+            ...(provinsi ? { provinsi } : {}),
+          } as any;
+          orderUpdates.alamatPengantaran = { ...orderUpdates.alamatPenjemputan } as any;
+          (orderUpdates as any).alamat = updatedFields["Alamat"] || [
+            detail,
+            nomor ? `No. ${nomor}` : '',
+            rtRw ? `RT/RW ${rtRw}` : '',
+            kelurahan ? `Kel. ${kelurahan}` : '',
+            kecamatan ? `Kec. ${kecamatan}` : '',
+            kota,
+            provinsi
+          ].filter(Boolean).join(', ');
+        }
+
+        // 3. Rincian Keuangan & Komponen Biaya
+        if (updatedFields["Biaya Jasa"] !== undefined || updatedFields.biayaJasa !== undefined) {
+          const jasaVal = Number(updatedFields["Biaya Jasa"] ?? updatedFields.biayaJasa) || 0;
+          orderUpdates.biayaJasa = jasaVal;
+          (orderUpdates as any).biaya_jasa = jasaVal;
+        }
+        if (updatedFields["Biaya Antar Jemput"] !== undefined || updatedFields.biayaAntarJemput !== undefined) {
+          const antarVal = Number(updatedFields["Biaya Antar Jemput"] ?? updatedFields.biayaAntarJemput) || 0;
+          (orderUpdates as any).biayaAntarJemput = antarVal;
+          (orderUpdates as any).biaya_antar_jemput = antarVal;
+        }
+        if (updatedFields["Biaya Lainnya"] !== undefined || updatedFields.biayaLainnya !== undefined) {
+          const lainnyaVal = Number(updatedFields["Biaya Lainnya"] ?? updatedFields.biayaLainnya) || 0;
+          (orderUpdates as any).biayaLainnya = lainnyaVal;
+          (orderUpdates as any).biaya_lainnya = lainnyaVal;
+        }
+        if (updatedFields["Biaya Pokok Samsat"] !== undefined || updatedFields.biayaSamsat !== undefined || updatedFields.uangKeluar !== undefined) {
+          const samsatVal = Number(updatedFields["Biaya Pokok Samsat"] ?? updatedFields.biayaSamsat ?? updatedFields.uangKeluar) || 0;
+          (orderUpdates as any).biayaSamsat = samsatVal;
+          (orderUpdates as any).biaya_samsat = samsatVal;
+          (orderUpdates as any).uangKeluar = samsatVal;
+          orderUpdates.pkb = samsatVal;
+        }
+        if (updatedFields["Total Tagihan Konsumen"] !== undefined || updatedFields.totalTagihan !== undefined || updatedFields.totalBiaya !== undefined) {
+          const totalVal = Number(updatedFields["Total Tagihan Konsumen"] ?? updatedFields.totalTagihan ?? updatedFields.totalBiaya) || 0;
+          orderUpdates.totalEstimasi = totalVal;
+          (orderUpdates as any).totalBiaya = totalVal;
+          (orderUpdates as any).total_biaya = totalVal;
+          if (!order.payment) order.payment = {} as any;
+          if (order.payment) {
+            order.payment.totalBiaya = totalVal;
+            order.payment.totalEstimasi = totalVal;
+          }
+        }
+        if (updatedFields["Uang Masuk dari Konsumen"] !== undefined || updatedFields.uangMasuk !== undefined) {
+          const masukVal = Number(updatedFields["Uang Masuk dari Konsumen"] ?? updatedFields.uangMasuk) || 0;
+          (orderUpdates as any).uangMasuk = masukVal;
+          if (!order.payment) order.payment = {} as any;
+          if (order.payment) {
+            order.payment.dibayar = masukVal;
+            const curTot = order.payment.totalBiaya || Number(updatedFields["Total Tagihan Konsumen"]) || 0;
+            order.payment.kurang = Math.max(0, curTot - masukVal);
+          }
+        }
+
+        if (updatedFields["Tanggal Uang Masuk"] !== undefined || updatedFields.tanggalUangMasuk !== undefined) {
+          const tglMasukVal = updatedFields["Tanggal Uang Masuk"] || updatedFields.tanggalUangMasuk;
+          (orderUpdates as any).tanggalUangMasuk = tglMasukVal;
+        }
+        if (updatedFields["Tanggal Uang Keluar"] !== undefined || updatedFields.tanggalPengeluaranSamsat !== undefined || updatedFields.tanggalUangKeluar !== undefined) {
+          const tglKeluarVal = updatedFields["Tanggal Uang Keluar"] || updatedFields.tanggalPengeluaranSamsat || updatedFields.tanggalUangKeluar;
+          (orderUpdates as any).tanggalPengeluaranSamsat = tglKeluarVal;
+          (orderUpdates as any).tanggalUangKeluar = tglKeluarVal;
+        }
+
+        // 4. Faktur, BPKB & Dokumen Fisik
+        if (updatedFields["No Invoice"] !== undefined || updatedFields.noInvoice !== undefined) {
+          const invVal = (updatedFields["No Invoice"] || updatedFields.noInvoice || "").trim();
+          (orderUpdates as any).noInvoice = invVal;
+          if (order.payment) order.payment.invoiceNo = invVal;
+        }
+        if (updatedFields["BPKB"] !== undefined || updatedFields["Dokumen BPKB"] !== undefined || updatedFields.bpkb !== undefined) {
+          const bpkbVal = updatedFields["BPKB"] || updatedFields["Dokumen BPKB"] || updatedFields.bpkb;
+          (orderUpdates as any).bpkb = bpkbVal;
+          (orderUpdates as any).dokumenBPKB = bpkbVal;
+          if (order.clientDocuments) {
+            const isAda = bpkbVal === "Ada" ? "Sudah Tersedia" : "Belum Tersedia";
+            orderUpdates.clientDocuments = {
+              ...order.clientDocuments,
+              BPKB: {
+                ...(order.clientDocuments.BPKB || { name: "BPKB Asli" }),
+                status: isAda,
+              },
+            };
+          }
+        }
+        if (updatedFields["Status Pengerjaan"]) {
+          (orderUpdates as any).statusPengerjaan = updatedFields["Status Pengerjaan"];
+          (orderUpdates as any).salesSnapshotStatus = updatedFields["Status Pengerjaan"];
+        }
+        if (updatedFields["Tanda Terima"] !== undefined || updatedFields["Nomor Tanda Terima"] !== undefined) {
+          const ttVal = updatedFields["Tanda Terima"] || updatedFields["Nomor Tanda Terima"];
+          (orderUpdates as any).tandaTerima = ttVal;
+          (orderUpdates as any).nomorTandaTerima = ttVal;
+        }
+        if (updatedFields["TTB BPKB"] !== undefined || updatedFields["Nomor TTB BPKB"] !== undefined || updatedFields.ttbBPKB !== undefined) {
+          const ttbVal = updatedFields["TTB BPKB"] || updatedFields["Nomor TTB BPKB"] || updatedFields.ttbBPKB;
+          (orderUpdates as any).ttbBPKB = ttbVal;
+          (orderUpdates as any).nomorTTBBPKB = ttbVal;
+        }
+        if (updatedFields["Staf Pengirim"] !== undefined || updatedFields.stafPengirim !== undefined) {
+          (orderUpdates as any).stafPengirim = updatedFields["Staf Pengirim"] || updatedFields.stafPengirim;
+        }
+        if (updatedFields["Nama Penerima"] !== undefined || updatedFields.namaPenerima !== undefined) {
+          (orderUpdates as any).namaPenerima = updatedFields["Nama Penerima"] || updatedFields.namaPenerima;
+          (orderUpdates as any).namaPenerimaKeluar = updatedFields["Nama Penerima"] || updatedFields.namaPenerima;
+        }
+        if (updatedFields["Nomor Rekening Pengirim"] !== undefined || updatedFields.noRekeningPengirim !== undefined) {
+          (orderUpdates as any).noRekeningPengirim = updatedFields["Nomor Rekening Pengirim"] || updatedFields.noRekeningPengirim;
+          if (order.payment) {
+            order.payment.noRekening = updatedFields["Nomor Rekening Pengirim"] || updatedFields.noRekeningPengirim;
+          }
+        }
+        if (updatedFields["Nomor Rekening Penerima"] !== undefined || updatedFields.noRekeningPenerima !== undefined) {
+          (orderUpdates as any).noRekeningPenerima = updatedFields["Nomor Rekening Penerima"] || updatedFields.noRekeningPenerima;
+        }
+        if (updatedFields["Keterangan"] !== undefined || updatedFields.catatanOrder !== undefined) {
+          const catVal = updatedFields["Keterangan"] || updatedFields.catatanOrder;
+          orderUpdates.catatanOrder = catVal;
+          (orderUpdates as any).catatan = catVal;
+        }
+        if (updatedFields["Keterangan Dokumen BPKB"] !== undefined) {
+          (orderUpdates as any).keteranganDokumenBPKB = updatedFields["Keterangan Dokumen BPKB"];
+        }
+
+        // 5. Lampiran Dokumen Sync
+        if (Array.isArray(updatedFields.dokumenAwal) || Array.isArray(updatedFields.dokumenAkhir)) {
+          const docsAwal = Array.isArray(updatedFields.dokumenAwal) ? updatedFields.dokumenAwal : [];
+          const docsAkhir = Array.isArray(updatedFields.dokumenAkhir) ? updatedFields.dokumenAkhir : [];
+          const rekapDocs: any[] = [
+            ...docsAwal.map((d: any) => ({
+              id: d.id,
+              orderId: orderNo,
+              phase: "BEFORE" as const,
+              documentType: "OTHER" as const,
+              label: d.customName || d.name || "Dokumen Masuk",
+              fileType: (d.mimeType?.includes("pdf") || (d.name || "").toLowerCase().endsWith(".pdf")) ? "PDF" as const : "IMAGE" as const,
+              fileUrl: d.fileUrl || "",
+              uploadedAt: d.createdAt || new Date().toISOString(),
+              uploadedBy: "Admin",
+            })),
+            ...docsAkhir.map((d: any) => ({
+              id: d.id,
+              orderId: orderNo,
+              phase: "AFTER" as const,
+              documentType: "OTHER" as const,
+              label: d.customName || d.name || "Dokumen Keluar",
+              fileType: (d.mimeType?.includes("pdf") || (d.name || "").toLowerCase().endsWith(".pdf")) ? "PDF" as const : "IMAGE" as const,
+              fileUrl: d.fileUrl || "",
+              uploadedAt: d.createdAt || new Date().toISOString(),
+              uploadedBy: "Admin",
+            })),
+          ];
+          (orderUpdates as any).rekapDocuments = rekapDocs;
+          orderUpdates.rekapDocuments = rekapDocs;
+        }
+
+        // Also update linked invoice in local cache
+        const linkedInv = this.invoices.find((i) => i.orderNo === orderNo || (order.payment?.invoiceNo && (i.invoice === order.payment.invoiceNo || i.invoiceNo === order.payment.invoiceNo)));
+        if (linkedInv) {
+          if (updatedFields["Nama Customer"]) linkedInv.customer = updatedFields["Nama Customer"];
+          if (updatedFields["Plat No"]) linkedInv.nopol = updatedFields["Plat No"];
+          if (updatedFields["Jenis Pengurusan"]) linkedInv.jenisLayanan = updatedFields["Jenis Pengurusan"];
+          if (updatedFields["No Invoice"] || updatedFields.noInvoice) {
+            const newInvNo = updatedFields["No Invoice"] || updatedFields.noInvoice;
+            linkedInv.invoice = newInvNo;
+            linkedInv.invoiceNo = newInvNo;
+          }
+          if (updatedFields["Tanggal Masuk Berkas"]) linkedInv.tanggal = updatedFields["Tanggal Masuk Berkas"];
+          if (updatedFields["Total Tagihan Konsumen"] !== undefined) linkedInv.totalTagihan = Number(updatedFields["Total Tagihan Konsumen"]) || 0;
+          if (updatedFields["Biaya Pokok Samsat"] !== undefined) linkedInv.biayaSamsat = Number(updatedFields["Biaya Pokok Samsat"]) || 0;
+          if (updatedFields["Biaya Lainnya"] !== undefined) (linkedInv as any).biayaLainnya = Number(updatedFields["Biaya Lainnya"]) || 0;
+          if (updatedFields["Biaya Antar Jemput"] !== undefined) (linkedInv as any).biayaAntarJemput = Number(updatedFields["Biaya Antar Jemput"]) || 0;
+          if (updatedFields["Uang Masuk dari Konsumen"] !== undefined) {
+            linkedInv.terbayar = Number(updatedFields["Uang Masuk dari Konsumen"]) || 0;
+            linkedInv.sisa = Math.max(0, linkedInv.totalTagihan - linkedInv.terbayar);
+            linkedInv.status = derivePaymentStatus(linkedInv.totalTagihan, linkedInv.terbayar);
+          }
+          const curUangMasuk = linkedInv.terbayar || 0;
+          const curSamsat = linkedInv.biayaSamsat || 0;
+          const curLainnya = Number((linkedInv as any).biayaLainnya || 0);
+          linkedInv.profit = Math.max(0, curUangMasuk - curSamsat - curLainnya);
+          if (updatedFields["Tanda Terima"]) linkedInv.tandaTerima = updatedFields["Tanda Terima"];
+          if (updatedFields["TTB BPKB"]) linkedInv.ttbBPKB = updatedFields["TTB BPKB"];
+        }
+
+        // Update dataset row in memory
+        const dataset = this.contractDatasets[category];
+        if (dataset) {
+          const idx = dataset.findIndex((d: any) => d.id === id || d.orderNo === orderNo || d["Nomor Order"] === orderNo);
+          if (idx !== -1) {
+            dataset[idx] = {
+              ...dataset[idx],
+              ...updatedFields,
+            };
+          }
+        }
 
         orderRepository.updateOrder(orderNo, orderUpdates);
         this.notify();
@@ -2101,8 +2520,36 @@ class FinanceStore {
     return true;
   }
 
+  public preserveOrderInContractDataset(order: any): void {
+    if (!order) return;
+    try {
+      const cat = resolveOrderSalesCategory(order.layanan);
+      const row = projectOrderToContractRow(order, this.invoices.find((i) => i.orderNo === order.orderNo));
+      if (this.contractDatasets[cat]) {
+        const idx = this.contractDatasets[cat].findIndex(
+          (r: any) => r["Nomor Order"] === order.orderNo || r.orderNo === order.orderNo || r.id === `ord:${order.orderNo}`
+        );
+        if (idx !== -1) {
+          this.contractDatasets[cat][idx] = { ...this.contractDatasets[cat][idx], ...row };
+        } else {
+          this.contractDatasets[cat].push(row);
+        }
+        this.notify();
+      }
+    } catch {
+      // safe fallback
+    }
+  }
+
   public addContractData(category: PenjualanContractCategory, rows: any[]): boolean {
     const isOperational = [
+      "perpanjangan-1-tahun",
+      "perpanjangan-5-tahun",
+      "mutasi-asal",
+      "mutasi-antar-daerah",
+      "balik-nama",
+      "tarik-berkas",
+      "duplikat-stnk",
       "mutasi-ld",
       "mutasi-as",
       "bbn",
@@ -2118,15 +2565,21 @@ class FinanceStore {
         const customer = (row["Nama Customer"] || row.customer || "").trim();
         const nopol = (row["Plat No"] || row.nopol || "").trim();
         const defaultLayanan =
-          category === "mutasi-ld"
-            ? "Mutasi Luar Daerah"
-            : category === "mutasi-as"
-            ? "Mutasi Antar Samsat"
-            : category === "bbn"
+          category === "perpanjangan-1-tahun" || category === "perpanjangan-pajak"
+            ? "Perpanjangan 1 Tahun"
+            : category === "perpanjangan-5-tahun"
+            ? "Perpanjangan 5 Tahun"
+            : category === "mutasi-asal" || category === "mutasi-as"
+            ? "Mutasi Asal Samsat"
+            : category === "mutasi-antar-daerah" || category === "mutasi-ld"
+            ? "Mutasi Antar Daerah"
+            : category === "balik-nama" || category === "bbn"
             ? "Balik Nama"
-            : category === "perpanjangan-pajak"
-            ? "Perpanjangan Pajak"
-            : "Lain-Lain";
+            : category === "tarik-berkas" || category === "lain-lain"
+            ? "Tarik Berkas"
+            : category === "duplikat-stnk"
+            ? "Duplikat STNK"
+            : "Perpanjangan 1 Tahun";
         const layanan = (row["Jenis Pengurusan"] || row.layanan || defaultLayanan).trim();
         const phone = (row["Nomor HP"] || row["No HP"] || row.nomorHP || row.phone || "").trim();
         const alamat = (row["Alamat"] || row.alamat || "").trim();
@@ -2141,12 +2594,6 @@ class FinanceStore {
           console.warn("[FinanceStore] addContractData validation failed: valid customer phone required (no dummy defaults)", row);
           return false;
         }
-
-        // Address validation is required for standard orders, but exempt for mutasi-ld where address fields are removed from the form
-        if (category !== "mutasi-ld" && (!alamat || alamat.toLowerCase().includes("loket kantor"))) {
-          console.warn("[FinanceStore] addContractData validation failed: valid customer address required (no dummy defaults)", row);
-          return false;
-        }
       }
 
       // 2. Create canonical orders
@@ -2154,15 +2601,21 @@ class FinanceStore {
         const customer = (row["Nama Customer"] || row.customer || "").trim();
         const nopol = (row["Plat No"] || row.nopol || "").trim();
         const defaultLayanan =
-          category === "mutasi-ld"
-            ? "Mutasi Luar Daerah"
-            : category === "mutasi-as"
-            ? "Mutasi Antar Samsat"
-            : category === "bbn"
+          category === "perpanjangan-1-tahun" || category === "perpanjangan-pajak"
+            ? "Perpanjangan 1 Tahun"
+            : category === "perpanjangan-5-tahun"
+            ? "Perpanjangan 5 Tahun"
+            : category === "mutasi-asal" || category === "mutasi-as"
+            ? "Mutasi Asal Samsat"
+            : category === "mutasi-antar-daerah" || category === "mutasi-ld"
+            ? "Mutasi Antar Daerah"
+            : category === "balik-nama" || category === "bbn"
             ? "Balik Nama"
-            : category === "perpanjangan-pajak"
-            ? "Perpanjangan Pajak"
-            : "Lain-Lain";
+            : category === "tarik-berkas" || category === "lain-lain"
+            ? "Tarik Berkas"
+            : category === "duplikat-stnk"
+            ? "Duplikat STNK"
+            : "Perpanjangan 1 Tahun";
         const layanan = (row["Jenis Pengurusan"] || row.layanan || defaultLayanan).trim();
         const phone = (row["Nomor HP"] || row["No HP"] || row.nomorHP || row.phone || "").trim();
         const alamat = (row["Alamat"] || row.alamat || "").trim();
@@ -2174,17 +2627,22 @@ class FinanceStore {
         const uangKeluar = Number(row["Biaya Pokok Samsat"] || row["Uang Keluar dari Biro Jasa"] || row.uangKeluar) || 0;
         const biayaJasa = Number(row["Biaya Jasa"] || row.biayaJasa) || 0;
         const biayaAntarJemput = Number(row["Biaya Antar Jemput"] || row.biayaAntarJemput) || 0;
-        const totalTagihan = Number(row["Total Tagihan Konsumen"] || row.totalTagihan) || (biayaJasa > 0 || uangKeluar > 0 ? (uangKeluar + biayaJasa + biayaAntarJemput) : (uangMasuk > 0 ? uangMasuk : 1500000));
-        const profit = Number(row["Profit"] || row.profit) || Math.max(0, totalTagihan - uangKeluar);
+        const biayaLainnya = Number(row["Biaya Lainnya"] || row.biayaLainnya) || 0;
+        const totalTagihan = Number(row["Total Tagihan Konsumen"] || row.totalTagihan) || (biayaJasa > 0 || uangKeluar > 0 || biayaLainnya > 0 ? (uangKeluar + biayaJasa + biayaAntarJemput + biayaLainnya) : (uangMasuk > 0 ? uangMasuk : 1500000));
+        const profit = Number(row["Profit"] !== undefined ? row["Profit"] : (row.profit !== undefined ? row.profit : (uangMasuk - uangKeluar - biayaLainnya)));
         const cashback = Math.max(0, uangMasuk - totalTagihan);
         const bpkb = row["BPKB"] || row.bpkb || "Ada";
-        const isMutasiLD = category === "mutasi-ld";
-        const namaPenerimaKeluar = (row["Nama Rekening/Penerima"] || row["Nama Pemilik Rekening Keluar"] || row.namaPenerimaKeluar || "").trim();
+        const isMutasiLD = category === "mutasi-ld" || category === "mutasi-antar-daerah";
+        const namaPenerimaKeluar = (row["Nama Rekening/Penerima"] || row["Nama Pemilik Rekening Keluar"] || row.namaPenerimaKeluar || row["Nama Penerima"] || row.namaPenerima || "").trim();
+        const stafPengirim = (row["Staf Pengirim"] || row.stafPengirim || "").trim();
+        const namaPenerima = (row["Nama Penerima"] || row.namaPenerima || namaPenerimaKeluar || "").trim();
+        const noRekeningPengirim = (row["Nomor Rekening Pengirim"] || row.noRekeningPengirim || row["Nomor Rekening Masuk"] || row.noRekeningMasuk || "").trim();
+        const noRekeningPenerima = (row["Nomor Rekening Penerima"] || row.noRekeningPenerima || "").trim();
         const bankUangKeluar = row["Bank Uang Keluar"] || "";
         const metodePembayaranKeluar = row["Metode Pembayaran Keluar"] || "";
         const metodePembayaranMasuk = row["Metode Pembayaran Masuk"] || "Transfer Bank";
         const bankUangMasuk = row["Bank Uang Masuk"] || "BCA";
-        const noRekeningMasuk = row["Nomor Rekening Masuk"] || "";
+        const noRekeningMasuk = noRekeningPengirim || row["Nomor Rekening Masuk"] || "";
         const namaRekeningMasuk = row["Nama Pemilik Rekening Masuk"] || "";
 
         // Structured Address with backward-compatible single string
@@ -2252,6 +2710,10 @@ class FinanceStore {
 
         if (this.orderCreator) {
           const res = this.orderCreator({
+            orderNo: row["Nomor Order"] || row.orderNo,
+            tanggalMasukBerkas: row["Tanggal Masuk Berkas"] || row.tanggalMasukBerkas,
+            tanggalUangMasuk: row["Tanggal Uang Masuk"] || row.tanggalUangMasuk,
+            catatanOrder: row["Keterangan"] || row.catatan || row.catatanOrder,
             customer,
             nopol,
             layanan,
@@ -2263,6 +2725,7 @@ class FinanceStore {
             jenisKendaraan,
             biayaJasa: biayaJasa || profit,
             biayaAntarJemput,
+            biayaLainnya,
             totalEstimasi: totalTagihan,
             uangMasuk,
             uangKeluar,
@@ -2286,11 +2749,14 @@ class FinanceStore {
             bankUangKeluar,
             metodePembayaranKeluar,
             tanggalPengeluaranSamsat: row["Tanggal Uang Keluar"] || "",
-            tanggalUangMasuk: row["Tanggal Uang Masuk"] || "",
             metodePembayaranMasuk,
             bankUangMasuk,
             noRekeningMasuk,
             namaRekeningMasuk,
+            stafPengirim,
+            namaPenerima,
+            noRekeningPengirim,
+            noRekeningPenerima,
           });
           if (res === false) return false;
           if (res && typeof res === "object" && res.orderNo) {
@@ -2316,8 +2782,13 @@ class FinanceStore {
             (res as any).biayaSamsat = uangKeluar;
             (res as any).biayaJasa = biayaJasa || profit;
             (res as any).biayaAntarJemput = biayaAntarJemput;
+            (res as any).biayaLainnya = biayaLainnya;
             (res as any).namaPenerimaKeluar = namaPenerimaKeluar;
             (res as any).namaPemilikRekeningKeluar = namaPenerimaKeluar;
+            (res as any).stafPengirim = stafPengirim;
+            (res as any).namaPenerima = namaPenerima;
+            (res as any).noRekeningPengirim = noRekeningPengirim;
+            (res as any).noRekeningPenerima = noRekeningPenerima;
             (res as any).bankUangKeluar = bankUangKeluar;
             (res as any).metodePembayaranKeluar = metodePembayaranKeluar;
             (res as any).tanggalPengeluaranSamsat = row["Tanggal Uang Keluar"] || "";
@@ -2351,12 +2822,18 @@ class FinanceStore {
               res.alamatPengantaran = { ...res.alamatPenjemputan };
             }
 
-            orderRepository.updateOrder?.(finalOrderNo, res);
+            const mutableUpdates: any = {
+              alamatPenjemputan: res.alamatPenjemputan,
+              alamatPengantaran: res.alamatPengantaran,
+              salesSnapshotStatus: statusPengerjaan,
+              catatanOrder: res.catatanOrder,
+            };
+            orderRepository.updateOrder?.(finalOrderNo, mutableUpdates);
           }
         } else {
           // Direct canonical creation fallback if orderCreator not yet wired
           const allOrders = [
-            ...orderRepository.getAllFlat(false),
+            ...orderRepository.getAllFlat(),
             ...(typeof orderRepository.getArchivedOrders === "function" ? orderRepository.getArchivedOrders() : [])
           ];
           const existingNums = allOrders
@@ -2494,8 +2971,13 @@ class FinanceStore {
           (newOrder as any).biayaSamsat = uangKeluar;
           (newOrder as any).biayaJasa = biayaJasa || profit;
           (newOrder as any).biayaAntarJemput = biayaAntarJemput;
+          (newOrder as any).biayaLainnya = biayaLainnya;
           (newOrder as any).namaPenerimaKeluar = namaPenerimaKeluar;
           (newOrder as any).namaPemilikRekeningKeluar = namaPenerimaKeluar;
+          (newOrder as any).stafPengirim = stafPengirim;
+          (newOrder as any).namaPenerima = namaPenerima;
+          (newOrder as any).noRekeningPengirim = noRekeningPengirim;
+          (newOrder as any).noRekeningPenerima = noRekeningPenerima;
           (newOrder as any).bankUangKeluar = bankUangKeluar;
           (newOrder as any).metodePembayaranKeluar = metodePembayaranKeluar;
           (newOrder as any).tanggalPengeluaranSamsat = row["Tanggal Uang Keluar"] || "";
@@ -2520,12 +3002,17 @@ class FinanceStore {
           invRecord.tandaTerima = tandaTerima;
           invRecord.ttbBPKB = ttbBPKB;
           invRecord.biayaSamsat = uangKeluar;
+          (invRecord as any).biayaLainnya = biayaLainnya;
           invRecord.profit = profit;
           invRecord.cashback = cashback;
           invRecord.status = statusPembayaranVal as any;
           (invRecord as any).biayaJasa = biayaJasa || profit;
           (invRecord as any).biayaAntarJemput = biayaAntarJemput;
           (invRecord as any).namaPenerimaKeluar = namaPenerimaKeluar;
+          (invRecord as any).stafPengirim = stafPengirim;
+          (invRecord as any).namaPenerima = namaPenerima;
+          (invRecord as any).noRekeningPengirim = noRekeningPengirim;
+          (invRecord as any).noRekeningPenerima = noRekeningPenerima;
           (invRecord as any).bankUangKeluar = bankUangKeluar;
           (invRecord as any).metodePembayaranKeluar = metodePembayaranKeluar;
 
@@ -2558,16 +3045,109 @@ class FinanceStore {
       console.warn(`[FinanceStore] Penghapusan dilarang pada submenu ${category}. Gunakan alur operasional resmi.`);
       return false;
     }
-    // Projected orders cannot be destructively hard-deleted from Data Penjualan tab
+
+    let cleanOrderNo: string | null = null;
     if (typeof id === "string" && id.startsWith("ord:")) {
-      console.warn(`[FinanceStore] Cannot hard delete canonical operational order (${id}). Gunakan alur cancelSalesOrder.`);
-      return false;
+      cleanOrderNo = id.slice(4).trim().toUpperCase();
+    } else if (typeof id === "string" && id.toUpperCase().startsWith("ORD-")) {
+      cleanOrderNo = id.trim().toUpperCase();
     }
-    const dataset = this.contractDatasets[category];
-    if (!dataset) return false;
-    this.contractDatasets[category] = dataset.filter((d: any) => d.id !== id && String(d.id) !== String(id));
+
+    if (cleanOrderNo) {
+      this.deletedOrderNos.add(cleanOrderNo);
+      try {
+        if (typeof window !== "undefined" && window.localStorage) {
+          const stored = JSON.parse(localStorage.getItem("sun89_deleted_order_nos") || "[]");
+          if (!stored.includes(cleanOrderNo)) {
+            stored.push(cleanOrderNo);
+            localStorage.setItem("sun89_deleted_order_nos", JSON.stringify(stored));
+          }
+        }
+      } catch {}
+    }
+
+    // Filter out from contract datasets across all categories
+    for (const cat of Object.keys(this.contractDatasets) as PenjualanContractCategory[]) {
+      const dataset = this.contractDatasets[cat];
+      if (Array.isArray(dataset)) {
+        this.contractDatasets[cat] = dataset.filter((d: any) => {
+          if (d.id === id || String(d.id) === String(id)) return false;
+          if (cleanOrderNo) {
+            const rowOrderNo = (d.orderNo || d["Nomor Order"] || d["No Order"] || "").toUpperCase();
+            if (rowOrderNo === cleanOrderNo) return false;
+          }
+          return true;
+        });
+      }
+    }
+
+    // Filter out from invoices
+    if (cleanOrderNo) {
+      this.invoices = this.invoices.filter((inv) => {
+        if (inv.id === id || String(inv.id) === String(id)) return false;
+        if ((inv.orderNo || "").toUpperCase() === cleanOrderNo) return false;
+        if ((inv.invoiceNo || "").toUpperCase() === cleanOrderNo) return false;
+        return true;
+      });
+    } else {
+      this.invoices = this.invoices.filter((inv) => inv.id !== id && String(inv.id) !== String(id));
+    }
+
+    // Attempt removal from underlying orderRepository provider
+    if (cleanOrderNo) {
+      try {
+        const provider: any = (orderRepository as any).provider || (orderRepository as any).getProvider?.();
+        if (provider) {
+          if (provider.activeOrders) {
+            for (const stage of Object.keys(provider.activeOrders)) {
+              if (Array.isArray(provider.activeOrders[stage])) {
+                provider.activeOrders[stage] = provider.activeOrders[stage].filter(
+                  (o: any) => (o.orderNo || "").toUpperCase() !== cleanOrderNo
+                );
+              }
+            }
+          }
+          if (Array.isArray(provider.archivedOrders)) {
+            provider.archivedOrders = provider.archivedOrders.filter(
+              (o: any) => (o.orderNo || "").toUpperCase() !== cleanOrderNo
+            );
+          }
+          if (typeof provider.notify === "function") {
+            provider.notify();
+          }
+        }
+        if (typeof (orderRepository as any).deleteOrder === "function") {
+          (orderRepository as any).deleteOrder(cleanOrderNo);
+        } else if (typeof (orderRepository as any).deleteArchivedOrder === "function") {
+          (orderRepository as any).deleteArchivedOrder(cleanOrderNo);
+        }
+      } catch (err) {
+        console.warn("[FinanceStore] Error removing order from provider during hard delete:", err);
+      }
+    }
+
     this.notify();
     return true;
+  }
+
+  public async deleteContractDataAsync(category: PenjualanContractCategory, id: number | string): Promise<boolean> {
+    const success = this.deleteContractData(category, id);
+    let cleanOrderNo: string | null = null;
+    if (typeof id === "string" && id.startsWith("ord:")) {
+      cleanOrderNo = id.slice(4).trim().toUpperCase();
+    } else if (typeof id === "string" && id.toUpperCase().startsWith("ORD-")) {
+      cleanOrderNo = id.trim().toUpperCase();
+    }
+    if (cleanOrderNo) {
+      try {
+        if (typeof (orderRepository as any).deleteOrder === "function") {
+          await (orderRepository as any).deleteOrder(cleanOrderNo);
+        }
+      } catch (err) {
+        console.warn("[FinanceStore] Error awaiting backend hard delete:", err);
+      }
+    }
+    return success;
   }
 
   public async cancelSalesOrder(orderNo: string, reason?: string): Promise<boolean> {
@@ -2580,9 +3160,15 @@ class FinanceStore {
       const inv = this.invoices.find((i) => (i.orderNo && i.orderNo.toUpperCase() === cleanNo) || (i.invoiceNo && i.invoiceNo.toUpperCase() === cleanNo));
       if (inv) {
         inv.status = "CANCELLED" as any;
-        inv.billingStatus = "CANCELLED";
+        inv.billingStatus = "CANCELLED" as any;
         (inv as any).isCancelled = true;
         (inv as any).cancellationReason = reason;
+        const paid = Number(inv.dibayar ?? inv.terbayar ?? 0);
+        if (paid > 0) {
+          inv.overpayment = paid;
+          inv.refundStatus = "PENDING" as any;
+          inv.settlementCondition = "OVERPAID" as any;
+        }
       }
       // Update matching rows across contract datasets
       for (const cat of Object.keys(this.contractDatasets) as PenjualanContractCategory[]) {
@@ -2842,6 +3428,7 @@ export function useFinanceStore() {
     updateContractData: financeStore.updateContractData.bind(financeStore),
     addContractData: financeStore.addContractData.bind(financeStore),
     deleteContractData: financeStore.deleteContractData.bind(financeStore),
+    cancelSalesOrder: financeStore.cancelSalesOrder.bind(financeStore),
 
     // Operations
     recordPayment: financeStore.recordPayment.bind(financeStore),
@@ -2864,6 +3451,9 @@ export function useFinanceStore() {
     updateInvoiceFromOrder: financeStore.updateInvoiceFromOrder.bind(financeStore),
     processRefund: financeStore.processRefund.bind(financeStore),
     processCashbackPayment: financeStore.processCashbackPayment.bind(financeStore),
+    voidInvoicePayment: financeStore.voidInvoicePayment.bind(financeStore),
+    voidCashbackPayout: financeStore.voidCashbackPayout.bind(financeStore),
+    getVoidAuditHistory: financeStore.getVoidAuditHistory.bind(financeStore),
     dismissCashback: financeStore.dismissCashback.bind(financeStore),
     onPaymentSync: financeStore.onPaymentSync.bind(financeStore),
 

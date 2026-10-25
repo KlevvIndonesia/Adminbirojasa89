@@ -7,6 +7,8 @@ import { Response, NextFunction } from "express";
 import { AuthenticatedRequest } from "../middleware/auth";
 import { documentService } from "../services/documentService";
 import { documentTicketService } from "../services/documentTicketService";
+import { dbDocumentRepository } from "../repositories/dbDocumentRepository";
+import { dbOrderRepository } from "../repositories/dbOrderRepository";
 import { verifyToken, TokenPayload } from "../utils/crypto";
 import { ApiError } from "../middleware/errorHandler";
 import { normalizeDocumentUploadPayload } from "../utils/aliasNormalizer";
@@ -41,6 +43,7 @@ async function resolveDocumentUser(
         nama: validation.ticketData.userName,
         jabatan: validation.ticketData.userRole,
         role: validation.ticketData.userRole as any,
+        exp: Math.floor(validation.ticketData.expiresAt / 1000),
       };
     }
   }
@@ -57,13 +60,74 @@ export async function createAccessTicket(
     if (!req.user) {
       throw new ApiError(401, "UNAUTHENTICATED", "Autentikasi diperlukan.");
     }
-    const { id } = req.params;
+    const id = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
     const operation = req.body?.operation === "download" ? "download" : "preview";
 
-    // Verify document exists and user is authorized
-    const doc = documentService.getDocumentById(id, req.user);
-    if (doc.isActive === false) {
+    // 1. Verify document existence
+    const doc = dbDocumentRepository.findById(id);
+    if (!doc || doc.isActive === false) {
       throw new ApiError(404, "DOCUMENT_NOT_FOUND", "Dokumen tidak ditemukan atau telah dinonaktifkan.");
+    }
+
+    // 2. Ticket Issuance Authorization Matrix
+    const role = (req.user.role || req.user.jabatan || "").toLowerCase();
+    const uid = String(req.user.userId || (req.user as any).id || "");
+
+    if (role === "administrator" || role === "svp" || role === "finance") {
+      // Full ticket issuance access
+    } else if (role === "admin") {
+      // Operational admin can issue tickets for order documents or documents uploaded by this admin
+      const isOwner = doc.uploadedById === uid;
+      const isOperationalOrder = Boolean(doc.orderNo);
+      if (!isOperationalOrder && !isOwner) {
+        throw new ApiError(
+          403,
+          "FORBIDDEN_DOCUMENT_ACCESS",
+          "Staf operasional hanya memiliki wewenang menerbitkan tiket untuk dokumen yang terkait order operasional."
+        );
+      }
+    } else if (role === "messenger") {
+      // Messenger ONLY has access if the document is linked to an order assigned to them
+      if (!doc.orderNo) {
+        throw new ApiError(
+          403,
+          "FORBIDDEN_DOCUMENT_ACCESS",
+          "Kurir tidak memiliki izin untuk menerbitkan tiket pada dokumen non-order."
+        );
+      }
+
+      const order = dbOrderRepository.getByOrderNo(doc.orderNo);
+      if (!order) {
+        throw new ApiError(
+          403,
+          "FORBIDDEN_DOCUMENT_ACCESS",
+          "Order operasional terkait dokumen ini tidak ditemukan."
+        );
+      }
+
+      const uName = (req.user.nama || "").toLowerCase().trim();
+      const uEmpId = ((req.user as any).employeeId || req.user.userId || "").toLowerCase().trim();
+
+      const ordMessenger = (order.messenger || (order as any).assignedMessengerName || "").toLowerCase().trim();
+      const ordPengantar = ((order as any).messengerPengantar || "").toLowerCase().trim();
+      const assignedEmpId = ((order as any).assignedMessengerId || "").toLowerCase().trim();
+      const deliveryEmpId = ((order as any).deliveryMessengerId || "").toLowerCase().trim();
+
+      const isAssigned =
+        (ordMessenger && (ordMessenger === uName || ordMessenger.includes(uName) || uName.includes(ordMessenger))) ||
+        (ordPengantar && (ordPengantar === uName || ordPengantar.includes(uName) || uName.includes(ordPengantar))) ||
+        (assignedEmpId && (assignedEmpId === uEmpId || assignedEmpId === uName)) ||
+        (deliveryEmpId && (deliveryEmpId === uEmpId || deliveryEmpId === uName));
+
+      if (!isAssigned) {
+        throw new ApiError(
+          403,
+          "FORBIDDEN_DOCUMENT_ACCESS",
+          "Anda tidak memiliki wewenang menerbitkan tiket untuk dokumen order yang tidak ditugaskan kepada Anda."
+        );
+      }
+    } else {
+      throw new ApiError(403, "FORBIDDEN_DOCUMENT_ACCESS", "Akses penerbitan tiket dokumen ditolak.");
     }
 
     const ticketEntry = documentTicketService.createTicket(id, req.user, operation);
@@ -82,6 +146,8 @@ export async function createAccessTicket(
     next(err);
   }
 }
+
+export const createDocumentTicket = createAccessTicket;
 
 export async function uploadDocument(
   req: AuthenticatedRequest,
@@ -130,7 +196,7 @@ export async function getDocumentById(
     if (!req.user) {
       throw new ApiError(401, "UNAUTHENTICATED", "Autentikasi diperlukan.");
     }
-    const { id } = req.params;
+    const id = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
     const doc = documentService.getDocumentById(id, req.user);
     res.json({
       success: true,
@@ -149,7 +215,7 @@ export async function previewDocument(
   next: NextFunction
 ): Promise<void> {
   try {
-    const { id } = req.params;
+    const id = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
     const resolvedUser = await resolveDocumentUser(req, id, "preview");
     const { doc, stream } = await documentService.getDocumentStream(id, resolvedUser);
 
@@ -184,7 +250,7 @@ export async function downloadDocument(
   next: NextFunction
 ): Promise<void> {
   try {
-    const { id } = req.params;
+    const id = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
     const resolvedUser = await resolveDocumentUser(req, id, "download");
     const { doc, stream } = await documentService.getDocumentStream(id, resolvedUser);
 
@@ -213,7 +279,7 @@ export async function getDocumentsByOrder(
     if (!req.user) {
       throw new ApiError(401, "UNAUTHENTICATED", "Autentikasi diperlukan.");
     }
-    const { orderNo } = req.params;
+    const orderNo = Array.isArray(req.params.orderNo) ? req.params.orderNo[0] : req.params.orderNo;
     const docs = documentService.getDocumentsByOrder(orderNo, req.user);
     res.json({
       success: true,
@@ -235,7 +301,7 @@ export async function getDocumentsByInvoice(
     if (!req.user) {
       throw new ApiError(401, "UNAUTHENTICATED", "Autentikasi diperlukan.");
     }
-    const { invoiceId } = req.params;
+    const invoiceId = Array.isArray(req.params.invoiceId) ? req.params.invoiceId[0] : req.params.invoiceId;
     const docs = documentService.getDocumentsByInvoice(invoiceId, req.user);
     res.json({
       success: true,
@@ -257,7 +323,7 @@ export async function deleteDocument(
     if (!req.user) {
       throw new ApiError(401, "UNAUTHENTICATED", "Autentikasi diperlukan.");
     }
-    const { id } = req.params;
+    const id = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
     await documentService.deleteDocument(id, req.user);
     res.json({
       success: true,
@@ -278,7 +344,7 @@ export async function linkDocumentToOrder(
     if (!req.user) {
       throw new ApiError(401, "UNAUTHENTICATED", "Autentikasi diperlukan.");
     }
-    const { id } = req.params;
+    const id = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
     normalizeDocumentUploadPayload(req.body);
     const { orderNo } = req.body;
     if (!orderNo) {

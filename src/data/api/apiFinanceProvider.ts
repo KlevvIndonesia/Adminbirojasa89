@@ -349,7 +349,8 @@ export class ApiFinanceProvider implements IFinanceDataProvider {
   public resolveInvoice(id: number, details?: any): boolean {
     const record = this.getInvoiceById(id);
     if (!record) return false;
-    return this.recordPayment(id, record.sisa, details);
+    void this.recordPayment(id, record.sisa, details);
+    return true;
   }
 
   public completeInvoice(id: number, completedBy?: string): boolean {
@@ -395,6 +396,96 @@ export class ApiFinanceProvider implements IFinanceDataProvider {
     if (!res.ok) {
       const errorData = await res.json().catch(() => ({}));
       const msg = errorData.error?.message || errorData.message || `Gagal mencairkan cashback (HTTP ${res.status})`;
+      throw new Error(msg);
+    }
+
+    const payload = await res.json();
+    if (payload?.success && payload.data) {
+      const currentIdx = this.invoices.findIndex((inv) => inv.id === id);
+      if (currentIdx !== -1) {
+        this.invoices[currentIdx] = this.normalizeInvoice(payload.data);
+      }
+
+      const kasRes = await fetch(`${this.baseUrl}/finance/kas-kantor`, {
+        headers: { "Content-Type": "application/json", ...this.getAuthHeader() },
+      });
+      if (kasRes.ok) {
+        const kasPayload = await kasRes.json();
+        if (kasPayload?.success && Array.isArray(kasPayload.data)) {
+          this.kasKantor = kasPayload.data.map((k: any) => ({
+            id: Number(k.id),
+            tanggal: k.tanggal,
+            keterangan: k.keterangan,
+            status: k.status,
+            debit: Number(k.debit || 0),
+            kredit: Number(k.kredit || 0),
+            total: Number(k.total ?? k.saldo ?? 0),
+            saldo: Number(k.saldo ?? k.total ?? 0),
+            penanggungJawab: k.penanggungJawab || k.penanggung_jawab || undefined,
+          }));
+        }
+      }
+      this.deriveProfitFromInvoices();
+      this.notify();
+    }
+    return true;
+  }
+
+  public async voidInvoicePayment(id: number, paymentId: number, reason: string): Promise<boolean> {
+    const res = await fetch(`${this.baseUrl}/finance/invoices/${encodeURIComponent(id)}/payments/${encodeURIComponent(paymentId)}/void`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...this.getAuthHeader() },
+      body: JSON.stringify({ reason }),
+    });
+
+    if (!res.ok) {
+      const errorData = await res.json().catch(() => ({}));
+      const msg = errorData.error?.message || errorData.message || `Gagal membatalkan pembayaran (HTTP ${res.status})`;
+      throw new Error(msg);
+    }
+
+    const payload = await res.json();
+    if (payload?.success && payload.data) {
+      const currentIdx = this.invoices.findIndex((inv) => inv.id === id);
+      if (currentIdx !== -1) {
+        this.invoices[currentIdx] = this.normalizeInvoice(payload.data);
+      }
+
+      const kasRes = await fetch(`${this.baseUrl}/finance/kas-kantor`, {
+        headers: { "Content-Type": "application/json", ...this.getAuthHeader() },
+      });
+      if (kasRes.ok) {
+        const kasPayload = await kasRes.json();
+        if (kasPayload?.success && Array.isArray(kasPayload.data)) {
+          this.kasKantor = kasPayload.data.map((k: any) => ({
+            id: Number(k.id),
+            tanggal: k.tanggal,
+            keterangan: k.keterangan,
+            status: k.status,
+            debit: Number(k.debit || 0),
+            kredit: Number(k.kredit || 0),
+            total: Number(k.total ?? k.saldo ?? 0),
+            saldo: Number(k.saldo ?? k.total ?? 0),
+            penanggungJawab: k.penanggungJawab || k.penanggung_jawab || undefined,
+          }));
+        }
+      }
+      this.deriveProfitFromInvoices();
+      this.notify();
+    }
+    return true;
+  }
+
+  public async voidCashbackPayout(id: number, reason: string): Promise<boolean> {
+    const res = await fetch(`${this.baseUrl}/finance/invoices/${encodeURIComponent(id)}/cashback-payout/void`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...this.getAuthHeader() },
+      body: JSON.stringify({ reason }),
+    });
+
+    if (!res.ok) {
+      const errorData = await res.json().catch(() => ({}));
+      const msg = errorData.error?.message || errorData.message || `Gagal membatalkan pencairan cashback (HTTP ${res.status})`;
       throw new Error(msg);
     }
 
@@ -689,5 +780,17 @@ export class ApiFinanceProvider implements IFinanceDataProvider {
     }
     this.deriveProfitFromInvoices();
     this.notify();
+  }
+
+  public async getVoidAuditHistory(): Promise<{ payments: any[]; cashbacks: any[] }> {
+    const res = await fetch(`${this.baseUrl}/finance/audit/void-history`, {
+      headers: { "Content-Type": "application/json", ...this.getAuthHeader() },
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.message || `Gagal mengambil riwayat audit void (HTTP ${res.status})`);
+    }
+    const payload = await res.json();
+    return payload.data || { payments: [], cashbacks: [] };
   }
 }

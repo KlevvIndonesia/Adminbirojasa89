@@ -44,6 +44,12 @@ export interface KasKantorItem {
   debit: number;
   kredit: number;
   total: number;
+  tipe?: string;
+  saldo?: number;
+  masuk?: number;
+  keluar?: number;
+  metode?: string;
+  bank?: string;
   invoiceRef?: string;
   penanggungJawab?: string;
   kategori?: string;

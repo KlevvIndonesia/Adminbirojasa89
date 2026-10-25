@@ -9,11 +9,11 @@ import { requireAuth, requireRoles } from "../middleware/auth";
 
 export const auditRouter = Router();
 
-// Read audit logs (Administrator & Admin only to protect operational audit trail)
+// Read audit logs (Administrator & SVP only to protect operational audit trail)
 auditRouter.get(
   "/",
   requireAuth,
-  requireRoles("administrator", "admin"),
+  requireRoles("administrator", "svp"),
   getAuditLogs
 );
 

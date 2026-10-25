@@ -34,6 +34,24 @@ export class ApiDocumentProvider implements IDocumentProvider {
   }
 
   private mapEntityToItem(entity: any): DocumentItem {
+    let parsedMeta: any = entity.metadata;
+    if (!parsedMeta && entity.metadata_json) {
+      try {
+        parsedMeta = typeof entity.metadata_json === "string" ? JSON.parse(entity.metadata_json) : entity.metadata_json;
+      } catch {
+        parsedMeta = null;
+      }
+    }
+    const phase = parsedMeta?.phase || entity.phase;
+    const computedArah =
+      entity.arah_dokumen ||
+      entity.arahDokumen ||
+      (phase === "AFTER" || phase === "OUTBOUND"
+        ? "KELUAR"
+        : phase === "BEFORE" || phase === "INBOUND"
+        ? "MASUK"
+        : undefined);
+
     return {
       id: entity.id,
       orderNo: entity.orderNo || entity.order_no || null,
@@ -50,6 +68,8 @@ export class ApiDocumentProvider implements IDocumentProvider {
       createdAt: entity.createdAt || entity.created_at,
       fileUrl: `${this.baseUrl}/documents/${entity.id}/preview`,
       downloadUrl: `${this.baseUrl}/documents/${entity.id}/download`,
+      metadata: parsedMeta,
+      arahDokumen: computedArah,
     };
   }
 

@@ -5,8 +5,142 @@
 
 import type { DatabaseSync } from "node:sqlite";
 
+export interface CanonicalServiceConfig {
+  id: string;
+  kode_layanan: string;
+  nama_layanan: string;
+  kategori: string;
+  memerlukan_samsat_tujuan: number;
+  deskripsi: string;
+  status_aktif: number;
+  urutan: number;
+}
+
+export const CANONICAL_SERVICES: CanonicalServiceConfig[] = [
+  {
+    id: "svc-perp-1th",
+    kode_layanan: "PERP_1THN",
+    nama_layanan: "Perpanjangan 1 Tahun",
+    kategori: "PAJAK_STNK",
+    memerlukan_samsat_tujuan: 0,
+    deskripsi: "Pengesahan STNK dan pembayaran PKB tahunan",
+    status_aktif: 1,
+    urutan: 1,
+  },
+  {
+    id: "svc-perp-5th",
+    kode_layanan: "PERP_5THN",
+    nama_layanan: "Perpanjangan 5 Tahun",
+    kategori: "PAJAK_STNK",
+    memerlukan_samsat_tujuan: 0,
+    deskripsi: "Perpanjangan STNK 5 tahunan dan pergantian plat nomor TNKB",
+    status_aktif: 1,
+    urutan: 2,
+  },
+  {
+    id: "svc-mut-asal",
+    kode_layanan: "MUT_ASAL",
+    nama_layanan: "Mutasi Asal Samsat",
+    kategori: "MUTASI",
+    memerlukan_samsat_tujuan: 1,
+    deskripsi: "Pencabutan berkas dari Samsat asal menuju Samsat satu wilayah/daerah",
+    status_aktif: 1,
+    urutan: 3,
+  },
+  {
+    id: "svc-mut-antar",
+    kode_layanan: "MUT_ANTAR",
+    nama_layanan: "Mutasi Antar Daerah",
+    kategori: "MUTASI",
+    memerlukan_samsat_tujuan: 1,
+    deskripsi: "Pencabutan dan pendaftaran berkas kendaraan antar provinsi / luar daerah",
+    status_aktif: 1,
+    urutan: 4,
+  },
+  {
+    id: "svc-balik-nama",
+    kode_layanan: "BALIK_NAMA",
+    nama_layanan: "Balik Nama",
+    kategori: "KEPEMILIKAN",
+    memerlukan_samsat_tujuan: 0,
+    deskripsi: "Bea Balik Nama Kendaraan Bermotor (BBN-KB) perubahan identitas kepemilikan",
+    status_aktif: 1,
+    urutan: 5,
+  },
+  {
+    id: "svc-tarik-berkas",
+    kode_layanan: "TARIK_BERKAS",
+    nama_layanan: "Tarik Berkas",
+    kategori: "DOKUMEN",
+    memerlukan_samsat_tujuan: 0,
+    deskripsi: "Pengambilan dan penarikan berkas arsip kendaraan dari loket Samsat",
+    status_aktif: 1,
+    urutan: 6,
+  },
+  {
+    id: "svc-duplikat-stnk",
+    kode_layanan: "DUPLIKAT_STNK",
+    nama_layanan: "Duplikat STNK",
+    kategori: "DOKUMEN",
+    memerlukan_samsat_tujuan: 0,
+    deskripsi: "Penerbitan duplikat dokumen STNK karena hilang atau rusak",
+    status_aktif: 1,
+    urutan: 7,
+  },
+  {
+    id: "svc-lainnya",
+    kode_layanan: "LAINNYA",
+    nama_layanan: "Lainnya",
+    kategori: "LAINNYA",
+    memerlukan_samsat_tujuan: 0,
+    deskripsi: "Pengurusan layanan samsat khusus dan lainnya",
+    status_aktif: 1,
+    urutan: 8,
+  },
+];
+
+export function seedCanonicalServices(targetDb: DatabaseSync): void {
+  try {
+    const insertStmt = targetDb.prepare(`
+      INSERT OR IGNORE INTO services (
+        id, kode_layanan, nama_layanan, kategori, memerlukan_samsat_tujuan, deskripsi, status_aktif, urutan, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
+    `);
+    for (const s of CANONICAL_SERVICES) {
+      insertStmt.run(
+        s.id,
+        s.kode_layanan,
+        s.nama_layanan,
+        s.kategori,
+        s.memerlukan_samsat_tujuan,
+        s.deskripsi,
+        s.status_aktif,
+        s.urutan
+      );
+    }
+  } catch (err) {
+    console.warn("[SUN89 Migration] Warning seeding canonical services:", err);
+  }
+}
+
 export function initializeSchema(targetDb: DatabaseSync): void {
   targetDb.exec(`
+    CREATE TABLE IF NOT EXISTS services (
+      id TEXT PRIMARY KEY,
+      kode_layanan TEXT UNIQUE NOT NULL,
+      nama_layanan TEXT UNIQUE NOT NULL,
+      kategori TEXT NOT NULL,
+      memerlukan_samsat_tujuan INTEGER NOT NULL DEFAULT 0,
+      deskripsi TEXT,
+      status_aktif INTEGER NOT NULL DEFAULT 1,
+      urutan INTEGER NOT NULL DEFAULT 1,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_services_kode ON services(kode_layanan);
+    CREATE INDEX IF NOT EXISTS idx_services_status_urutan ON services(status_aktif, urutan);
+
     CREATE TABLE IF NOT EXISTS users (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       email TEXT UNIQUE NOT NULL,
@@ -18,6 +152,100 @@ export function initializeSchema(targetDb: DatabaseSync): void {
       created_at TEXT NOT NULL DEFAULT (datetime('now')),
       updated_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
+
+    CREATE TABLE IF NOT EXISTS employees (
+      id TEXT PRIMARY KEY,
+      nik_ktp TEXT UNIQUE NOT NULL,
+      nama_lengkap TEXT NOT NULL,
+      no_hp TEXT NOT NULL,
+      tgl_lahir TEXT NOT NULL,
+      wilayah TEXT NOT NULL,
+      alamat_domisili TEXT NOT NULL,
+      jabatan TEXT NOT NULL,
+      gaji_pokok REAL NOT NULL DEFAULT 0,
+      status_karyawan TEXT NOT NULL DEFAULT 'TETAP',
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_employees_nik ON employees(nik_ktp);
+    CREATE INDEX IF NOT EXISTS idx_employees_wilayah ON employees(wilayah);
+    CREATE INDEX IF NOT EXISTS idx_employees_jabatan ON employees(jabatan);
+
+    CREATE TABLE IF NOT EXISTS employee_accounts (
+      id TEXT PRIMARY KEY,
+      employee_id TEXT NOT NULL,
+      email TEXT UNIQUE NOT NULL,
+      password_hash TEXT NOT NULL,
+      password_salt TEXT,
+      role TEXT NOT NULL DEFAULT 'admin',
+      status_aktif INTEGER NOT NULL DEFAULT 1,
+      last_login_at TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+      FOREIGN KEY (employee_id) REFERENCES employees(id) ON DELETE CASCADE
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_employee_accounts_email ON employee_accounts(email);
+    CREATE INDEX IF NOT EXISTS idx_employee_accounts_emp ON employee_accounts(employee_id);
+    CREATE INDEX IF NOT EXISTS idx_employee_accounts_role ON employee_accounts(role);
+
+    CREATE TABLE IF NOT EXISTS customers (
+      id TEXT PRIMARY KEY,
+      tipe_pelanggan TEXT NOT NULL DEFAULT 'PERORANGAN',
+      nama_lengkap TEXT NOT NULL,
+      nomor_wa TEXT NOT NULL,
+      email TEXT,
+      provinsi TEXT,
+      kota_kabupaten TEXT,
+      kecamatan TEXT,
+      desa_kelurahan TEXT,
+      rt_rw TEXT,
+      no_rumah TEXT,
+      patokan TEXT,
+      detail_alamat TEXT,
+      link_google_maps TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_customers_wa ON customers(nomor_wa);
+    CREATE INDEX IF NOT EXISTS idx_customers_nama ON customers(nama_lengkap);
+    CREATE INDEX IF NOT EXISTS idx_customers_tipe ON customers(tipe_pelanggan);
+
+    CREATE TABLE IF NOT EXISTS customer_accounts (
+      id TEXT PRIMARY KEY,
+      customer_id TEXT NOT NULL,
+      email TEXT UNIQUE NOT NULL,
+      password_hash TEXT NOT NULL,
+      password_salt TEXT,
+      status_akun TEXT NOT NULL DEFAULT 'AKTIF',
+      last_login_at TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+      FOREIGN KEY (customer_id) REFERENCES customers(id) ON DELETE CASCADE
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_cust_accounts_email ON customer_accounts(email);
+    CREATE INDEX IF NOT EXISTS idx_cust_accounts_cust ON customer_accounts(customer_id);
+
+    CREATE TABLE IF NOT EXISTS vehicles (
+      id TEXT PRIMARY KEY,
+      customer_id TEXT NOT NULL REFERENCES customers(id),
+      nopol TEXT UNIQUE NOT NULL,
+      r4_r2 TEXT NOT NULL CHECK(r4_r2 IN ('R4', 'R2')),
+      merk TEXT,
+      model TEXT,
+      tahun_pembuatan INTEGER,
+      warna TEXT,
+      nomor_rangka TEXT,
+      nomor_mesin TEXT,
+      nama_pemilik_stnk TEXT NOT NULL,
+      created_at TEXT DEFAULT (datetime('now'))
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_vehicles_customer ON vehicles(customer_id);
+    CREATE INDEX IF NOT EXISTS idx_vehicles_nopol ON vehicles(nopol);
 
     CREATE TABLE IF NOT EXISTS orders (
       order_no TEXT PRIMARY KEY,
@@ -32,12 +260,61 @@ export function initializeSchema(targetDb: DatabaseSync): void {
       is_archived INTEGER NOT NULL DEFAULT 0,
       data_json TEXT NOT NULL,
       created_at TEXT NOT NULL DEFAULT (datetime('now')),
-      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+      updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+      service_id TEXT,
+      tanggal_masuk_berkas TEXT,
+      samsat_asal TEXT,
+      samsat_tujuan TEXT DEFAULT '-',
+      customer_id TEXT,
+      vehicle_id TEXT,
+      samsat_asal_id TEXT,
+      samsat_tujuan_id TEXT DEFAULT '-',
+      cashback_mitra REAL DEFAULT 0,
+      channel_order TEXT DEFAULT 'LOKET_ADMIN',
+      created_by_employee_id TEXT,
+      FOREIGN KEY (service_id) REFERENCES services(id),
+      FOREIGN KEY (customer_id) REFERENCES customers(id),
+      FOREIGN KEY (vehicle_id) REFERENCES vehicles(id),
+      FOREIGN KEY (samsat_asal_id) REFERENCES samsat_offices(id),
+      FOREIGN KEY (samsat_tujuan_id) REFERENCES samsat_offices(id),
+      FOREIGN KEY (created_by_employee_id) REFERENCES employees(id)
     );
 
     CREATE INDEX IF NOT EXISTS idx_orders_stage ON orders(current_stage_name);
     CREATE INDEX IF NOT EXISTS idx_orders_archived ON orders(is_archived);
     CREATE INDEX IF NOT EXISTS idx_orders_customer ON orders(customer);
+
+    CREATE TABLE IF NOT EXISTS order_status_history (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      order_no TEXT NOT NULL REFERENCES orders(order_no) ON DELETE CASCADE,
+      step_sebelumnya INTEGER NOT NULL,
+      step_baru INTEGER NOT NULL,
+      stage_name TEXT NOT NULL,
+      catatan TEXT,
+      diubah_oleh_employee_id TEXT REFERENCES employees(id),
+      waktu_transisi TEXT DEFAULT (datetime('now'))
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_order_status_history_order ON order_status_history(order_no);
+    CREATE INDEX IF NOT EXISTS idx_order_status_history_employee ON order_status_history(diubah_oleh_employee_id);
+
+    CREATE TABLE IF NOT EXISTS order_timeline_processes (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      order_no TEXT NOT NULL REFERENCES orders(order_no) ON DELETE CASCADE,
+      nama_proses TEXT NOT NULL,
+      urutan INTEGER NOT NULL,
+      status TEXT DEFAULT 'MENUNGGU' CHECK(status IN ('MENUNGGU', 'SEDANG_DIPROSES', 'SELESAI', 'TERKENDALA')),
+      estimasi_durasi_menit INTEGER NOT NULL DEFAULT 30,
+      waktu_mulai TEXT,
+      estimasi_selesai TEXT,
+      waktu_selesai TEXT,
+      catatan_kendala TEXT,
+      updated_by_messenger_id TEXT,
+      created_at TEXT DEFAULT (datetime('now'))
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_order_timeline_order ON order_timeline_processes(order_no);
+    CREATE INDEX IF NOT EXISTS idx_order_timeline_status ON order_timeline_processes(status);
 
     CREATE TABLE IF NOT EXISTS samsat_pricing (
       id TEXT PRIMARY KEY,
@@ -81,6 +358,66 @@ export function initializeSchema(targetDb: DatabaseSync): void {
 
     CREATE INDEX IF NOT EXISTS idx_samsat_wilayah ON samsat_offices(kode_kabupaten_kota);
 
+    CREATE TABLE IF NOT EXISTS biaya_layanan (
+      id TEXT PRIMARY KEY,
+      service_id TEXT NOT NULL,
+      nama_skema TEXT NOT NULL,
+      biaya_jasa_reguler REAL NOT NULL DEFAULT 0,
+      biaya_pengurusan_khusus REAL NOT NULL DEFAULT 0,
+      biaya_antar_jemput REAL NOT NULL DEFAULT 50000,
+      biaya_antar_saja REAL NOT NULL DEFAULT 25000,
+      biaya_jemput_saja REAL NOT NULL DEFAULT 25000,
+      opsen_pkb_daerah REAL NOT NULL DEFAULT 0,
+      biaya_lainnya_json TEXT DEFAULT '{}',
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+      FOREIGN KEY (service_id) REFERENCES services(id)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_biaya_layanan_svc ON biaya_layanan(service_id);
+
+    CREATE TABLE IF NOT EXISTS harga_dasar_samsat (
+      id TEXT PRIMARY KEY,
+      nama_item TEXT NOT NULL,
+      kategori TEXT NOT NULL,
+      tipe_kendaraan TEXT NOT NULL,
+      biaya_dasar REAL NOT NULL DEFAULT 0,
+      deskripsi TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_harga_dasar_kat ON harga_dasar_samsat(kategori);
+    CREATE INDEX IF NOT EXISTS idx_harga_dasar_tipe ON harga_dasar_samsat(tipe_kendaraan);
+
+    CREATE TABLE IF NOT EXISTS aturan_estimasi (
+      id TEXT PRIMARY KEY,
+      nama_formula TEXT NOT NULL,
+      service_id TEXT NOT NULL,
+      koefisien_denda REAL NOT NULL DEFAULT 0.48,
+      denda_swdkllj_formula TEXT,
+      aturan_pemutihan_json TEXT DEFAULT '{}',
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+      FOREIGN KEY (service_id) REFERENCES services(id)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_aturan_estimasi_svc ON aturan_estimasi(service_id);
+
+    CREATE TABLE IF NOT EXISTS master_proses_samsat (
+      id TEXT PRIMARY KEY,
+      service_id TEXT NOT NULL,
+      nama_proses TEXT NOT NULL,
+      urutan INTEGER NOT NULL DEFAULT 1,
+      estimasi_durasi_menit INTEGER NOT NULL DEFAULT 30,
+      deskripsi_klien TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+      FOREIGN KEY (service_id) REFERENCES services(id)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_master_proses_svc ON master_proses_samsat(service_id, urutan);
+
     CREATE TABLE IF NOT EXISTS estimation_templates (
       id TEXT PRIMARY KEY,
       name TEXT NOT NULL,
@@ -106,7 +443,9 @@ export function initializeSchema(targetDb: DatabaseSync): void {
       sisa REAL NOT NULL DEFAULT 0,
       data_json TEXT NOT NULL,
       created_at TEXT NOT NULL DEFAULT (datetime('now')),
-      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+      updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+      service_id TEXT,
+      FOREIGN KEY (service_id) REFERENCES services(id)
     );
 
     CREATE INDEX IF NOT EXISTS idx_invoices_order ON finance_invoices(order_no);
@@ -185,6 +524,40 @@ export function initializeSchema(targetDb: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS idx_documents_invoice ON documents(invoice_id);
     CREATE INDEX IF NOT EXISTS idx_documents_storage_name ON documents(storage_name);
 
+    CREATE TABLE IF NOT EXISTS order_documents (
+      id TEXT PRIMARY KEY,
+      order_no TEXT NOT NULL REFERENCES orders(order_no) ON DELETE CASCADE,
+      arah_dokumen TEXT NOT NULL CHECK(arah_dokumen IN ('MASUK', 'KELUAR')),
+      kategori_dokumen TEXT NOT NULL,
+      nama_file_asli TEXT NOT NULL,
+      storage_path TEXT NOT NULL,
+      mime_type TEXT NOT NULL,
+      file_size INTEGER NOT NULL,
+      sha256_hash TEXT NOT NULL,
+      status_verifikasi TEXT DEFAULT 'PENDING' CHECK(status_verifikasi IN ('PENDING', 'VALID', 'DITOLAK')),
+      keterangan TEXT,
+      uploaded_by_id TEXT NOT NULL,
+      created_at TEXT DEFAULT (datetime('now'))
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_order_documents_order ON order_documents(order_no);
+    CREATE INDEX IF NOT EXISTS idx_order_documents_arah ON order_documents(arah_dokumen);
+
+    CREATE TABLE IF NOT EXISTS document_tickets (
+      ticket_code TEXT PRIMARY KEY,
+      order_no TEXT NOT NULL REFERENCES orders(order_no) ON DELETE CASCADE,
+      ticket_type TEXT NOT NULL,
+      purpose TEXT NOT NULL,
+      issued_by TEXT REFERENCES employees(id),
+      recipient_name TEXT NOT NULL,
+      is_redeemed INTEGER NOT NULL DEFAULT 0,
+      expires_at TEXT,
+      created_at TEXT DEFAULT (datetime('now'))
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_doc_tickets_order ON document_tickets(order_no);
+    CREATE INDEX IF NOT EXISTS idx_doc_tickets_redeemed ON document_tickets(is_redeemed);
+
     CREATE TABLE IF NOT EXISTS notification_settings (
       id TEXT PRIMARY KEY DEFAULT 'global',
       recipient_emails TEXT NOT NULL DEFAULT '[]',
@@ -216,6 +589,35 @@ export function initializeSchema(targetDb: DatabaseSync): void {
       updated_by TEXT
     );
 
+    CREATE TABLE IF NOT EXISTS messengers (
+      id TEXT PRIMARY KEY,
+      employee_id TEXT UNIQUE NOT NULL REFERENCES employees(id),
+      plat_motor_operasional TEXT NOT NULL,
+      wilayah_tugas_utama TEXT NOT NULL,
+      status_tugas TEXT DEFAULT 'STANDBY' CHECK(status_tugas IN ('STANDBY', 'ON_DUTY', 'LIBUR')),
+      created_at TEXT DEFAULT (datetime('now'))
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_messengers_employee ON messengers(employee_id);
+    CREATE INDEX IF NOT EXISTS idx_messengers_status ON messengers(status_tugas);
+
+    CREATE TABLE IF NOT EXISTS messenger_tasks (
+      id TEXT PRIMARY KEY,
+      order_no TEXT NOT NULL REFERENCES orders(order_no) ON DELETE CASCADE,
+      messenger_id TEXT NOT NULL REFERENCES messengers(id),
+      tipe_tugas TEXT NOT NULL CHECK(tipe_tugas IN ('JEMPUT_BERKAS', 'PROSES_SAMSAT', 'ANTAR_HASIL')),
+      status TEXT DEFAULT 'DITUGASKAN' CHECK(status IN ('DITUGASKAN', 'MENUJU_LOKASI', 'SELESAI', 'BATAL')),
+      waktu_penugasan TEXT DEFAULT (datetime('now')),
+      waktu_selesai TEXT,
+      foto_bukti_url TEXT,
+      catatan TEXT,
+      created_at TEXT DEFAULT (datetime('now'))
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_messenger_tasks_order ON messenger_tasks(order_no);
+    CREATE INDEX IF NOT EXISTS idx_messenger_tasks_messenger ON messenger_tasks(messenger_id);
+    CREATE INDEX IF NOT EXISTS idx_messenger_tasks_status ON messenger_tasks(status);
+
     CREATE TABLE IF NOT EXISTS messenger_reimbursements (
       id TEXT PRIMARY KEY,
       employee_id TEXT NOT NULL,
@@ -242,6 +644,8 @@ export function initializeSchema(targetDb: DatabaseSync): void {
       pengeluaran_id INTEGER,
       kas_messenger_id INTEGER,
       channel TEXT,
+      messenger_id TEXT REFERENCES messengers(id),
+      approved_by_employee_id TEXT REFERENCES employees(id),
       created_at TEXT NOT NULL DEFAULT (datetime('now')),
       updated_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
@@ -264,6 +668,7 @@ export function initializeSchema(targetDb: DatabaseSync): void {
       reimbursement_id TEXT,
       receipt_url TEXT,
       kategori TEXT,
+      messenger_id TEXT REFERENCES messengers(id),
       created_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
 
@@ -323,10 +728,33 @@ export function initializeSchema(targetDb: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS idx_inv_payments_invoice ON invoice_payments(invoice_no);
     CREATE INDEX IF NOT EXISTS idx_inv_payments_order ON invoice_payments(order_no);
     CREATE INDEX IF NOT EXISTS idx_inv_payments_idempotency ON invoice_payments(idempotency_key);
+
+    CREATE TABLE IF NOT EXISTS laba_rugi_snapshots (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      order_no TEXT UNIQUE NOT NULL REFERENCES orders(order_no) ON DELETE CASCADE,
+      tanggal_pembukuan TEXT NOT NULL,
+      customer_id TEXT NOT NULL REFERENCES customers(id),
+      service_id TEXT NOT NULL REFERENCES services(id),
+      omzet_tagihan REAL NOT NULL,
+      modal_samsat_riil REAL NOT NULL,
+      biaya_taktis_lapangan REAL DEFAULT 0,
+      cashback_mitra REAL DEFAULT 0,
+      laba_kotor REAL NOT NULL,
+      laba_bersih REAL NOT NULL,
+      is_locked INTEGER DEFAULT 1,
+      locked_by_employee_id TEXT REFERENCES employees(id),
+      created_at TEXT DEFAULT (datetime('now'))
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_pnl_order ON laba_rugi_snapshots(order_no);
+    CREATE INDEX IF NOT EXISTS idx_pnl_customer ON laba_rugi_snapshots(customer_id);
+    CREATE INDEX IF NOT EXISTS idx_pnl_service ON laba_rugi_snapshots(service_id);
+    CREATE INDEX IF NOT EXISTS idx_pnl_locked_by ON laba_rugi_snapshots(locked_by_employee_id);
   `);
 
   migrateDocumentsTable(targetDb);
   migrateOrdersTable(targetDb);
+  applySchemaMigrations(targetDb);
   migrateFinanceInvoicesTable(targetDb);
   migrateKasKantorTable(targetDb);
   migratePengeluaranTable(targetDb);
@@ -334,6 +762,8 @@ export function initializeSchema(targetDb: DatabaseSync): void {
   migrateKasMessengerTable(targetDb);
   migrateMessengerReimbursementsTable(targetDb);
   migrateIdempotencyKeysTable(targetDb);
+  migrateSamsatOfficesTable(targetDb);
+  seedCanonicalServices(targetDb);
   reconcileLegacyDocuments(targetDb);
   backfillHistoricalFinanceData(targetDb);
 
@@ -463,6 +893,72 @@ function migrateDocumentsTable(targetDb: DatabaseSync): void {
   }
 }
 
+export function addColumnIfNotExists(
+  targetDb: DatabaseSync,
+  tableName: string,
+  columnName: string,
+  columnDef: string
+): boolean {
+  try {
+    const tableInfo = targetDb.prepare(`PRAGMA table_info(${tableName})`).all() as { name: string }[];
+    const columnNames = new Set(tableInfo.map((c) => c.name));
+    if (!columnNames.has(columnName)) {
+      targetDb.exec(`ALTER TABLE ${tableName} ADD COLUMN ${columnName} ${columnDef};`);
+      return true;
+    }
+    return false;
+  } catch (err) {
+    console.warn(`[SUN89 Migration] Failed to add column ${columnName} to ${tableName}:`, err);
+    return false;
+  }
+}
+
+export function applySchemaMigrations(targetDb: DatabaseSync): void {
+  // Phase 2 Columns for orders table
+  addColumnIfNotExists(targetDb, "orders", "customer_id", "TEXT REFERENCES customers(id)");
+  addColumnIfNotExists(targetDb, "orders", "vehicle_id", "TEXT REFERENCES vehicles(id)");
+  addColumnIfNotExists(targetDb, "orders", "service_id", "TEXT REFERENCES services(id)");
+  addColumnIfNotExists(targetDb, "orders", "tanggal_masuk_berkas", "TEXT");
+  addColumnIfNotExists(targetDb, "orders", "samsat_asal_id", "TEXT REFERENCES samsat_offices(id)");
+  addColumnIfNotExists(targetDb, "orders", "samsat_tujuan_id", "TEXT DEFAULT '-' REFERENCES samsat_offices(id)");
+  addColumnIfNotExists(targetDb, "orders", "cashback_mitra", "REAL DEFAULT 0");
+  addColumnIfNotExists(targetDb, "orders", "channel_order", "TEXT DEFAULT 'LOKET_ADMIN'");
+  addColumnIfNotExists(targetDb, "orders", "created_by_employee_id", "TEXT REFERENCES employees(id)");
+
+  // Phase 4 Financial & Governance Columns
+  addColumnIfNotExists(targetDb, "finance_invoices", "customer_id", "TEXT REFERENCES customers(id)");
+  addColumnIfNotExists(targetDb, "kas_kantor", "penanggung_jawab_employee_id", "TEXT REFERENCES employees(id)");
+  addColumnIfNotExists(targetDb, "pengeluaran", "reimbursement_id", "TEXT REFERENCES messenger_reimbursements(id)");
+  addColumnIfNotExists(targetDb, "pengeluaran", "penanggung_jawab_employee_id", "TEXT REFERENCES employees(id)");
+  addColumnIfNotExists(targetDb, "invoice_payments", "metode_pembayaran_id", "TEXT REFERENCES payment_methods(id)");
+  addColumnIfNotExists(targetDb, "invoice_payments", "verified_by_employee_id", "TEXT REFERENCES employees(id)");
+  addColumnIfNotExists(targetDb, "invoice_payments", "is_void", "INTEGER NOT NULL DEFAULT 0");
+  addColumnIfNotExists(targetDb, "invoice_payments", "void_reason", "TEXT");
+  addColumnIfNotExists(targetDb, "invoice_payments", "voided_by", "TEXT");
+  addColumnIfNotExists(targetDb, "invoice_payments", "voided_at", "TEXT");
+  addColumnIfNotExists(targetDb, "invoice_payments", "reversal_kas_id", "INTEGER REFERENCES kas_kantor(id)");
+
+  try {
+    targetDb.exec(`
+      CREATE INDEX IF NOT EXISTS idx_orders_customer_id ON orders(customer_id);
+      CREATE INDEX IF NOT EXISTS idx_orders_vehicle_id ON orders(vehicle_id);
+      CREATE INDEX IF NOT EXISTS idx_orders_service_id ON orders(service_id);
+      CREATE INDEX IF NOT EXISTS idx_orders_samsat_asal_id ON orders(samsat_asal_id);
+      CREATE INDEX IF NOT EXISTS idx_orders_samsat_tujuan_id ON orders(samsat_tujuan_id);
+      CREATE INDEX IF NOT EXISTS idx_orders_created_by ON orders(created_by_employee_id);
+      CREATE INDEX IF NOT EXISTS idx_invoices_customer_id ON finance_invoices(customer_id);
+      CREATE INDEX IF NOT EXISTS idx_kas_kantor_penanggung_jawab ON kas_kantor(penanggung_jawab_employee_id);
+      CREATE INDEX IF NOT EXISTS idx_pengeluaran_reimbursement ON pengeluaran(reimbursement_id);
+      CREATE INDEX IF NOT EXISTS idx_pengeluaran_penanggung_jawab ON pengeluaran(penanggung_jawab_employee_id);
+      CREATE INDEX IF NOT EXISTS idx_inv_payments_method ON invoice_payments(metode_pembayaran_id);
+      CREATE INDEX IF NOT EXISTS idx_inv_payments_verified_by ON invoice_payments(verified_by_employee_id);
+      CREATE INDEX IF NOT EXISTS idx_inv_payments_void ON invoice_payments(is_void);
+    `);
+  } catch (err) {
+    console.warn("[SUN89 Migration] Warning creating orders indexes:", err);
+  }
+}
+
 function migrateOrdersTable(targetDb: DatabaseSync): void {
   try {
     const tableInfo = targetDb.prepare("PRAGMA table_info(orders)").all() as { name: string }[];
@@ -487,6 +983,21 @@ function migrateOrdersTable(targetDb: DatabaseSync): void {
     if (!columnNames.has("alasan_pending")) {
       targetDb.exec("ALTER TABLE orders ADD COLUMN alasan_pending TEXT;");
     }
+    if (!columnNames.has("service_id")) {
+      targetDb.exec("ALTER TABLE orders ADD COLUMN service_id TEXT REFERENCES services(id);");
+    }
+    if (!columnNames.has("tanggal_masuk_berkas")) {
+      targetDb.exec("ALTER TABLE orders ADD COLUMN tanggal_masuk_berkas TEXT;");
+    }
+    if (!columnNames.has("samsat_asal")) {
+      targetDb.exec("ALTER TABLE orders ADD COLUMN samsat_asal TEXT;");
+    }
+    if (!columnNames.has("samsat_tujuan")) {
+      targetDb.exec("ALTER TABLE orders ADD COLUMN samsat_tujuan TEXT DEFAULT '-';");
+    }
+    targetDb.exec("CREATE INDEX IF NOT EXISTS idx_orders_service_id ON orders(service_id);");
+
+    applySchemaMigrations(targetDb);
   } catch (err) {
     console.warn("[SUN89 Migration] Warning during orders table migration:", err);
   }
@@ -498,6 +1009,9 @@ function migrateFinanceInvoicesTable(targetDb: DatabaseSync): void {
     if (!tableInfo || tableInfo.length === 0) return;
 
     const columnNames = new Set(tableInfo.map((c) => c.name));
+    if (!columnNames.has("service_id")) {
+      targetDb.exec("ALTER TABLE finance_invoices ADD COLUMN service_id TEXT REFERENCES services(id);");
+    }
     if (!columnNames.has("biaya_antar_jemput")) {
       targetDb.exec("ALTER TABLE finance_invoices ADD COLUMN biaya_antar_jemput REAL NOT NULL DEFAULT 0;");
     }
@@ -542,6 +1056,7 @@ function migrateFinanceInvoicesTable(targetDb: DatabaseSync): void {
     }
 
     targetDb.exec(`
+      CREATE INDEX IF NOT EXISTS idx_invoices_service_id ON finance_invoices(service_id);
       CREATE INDEX IF NOT EXISTS idx_invoices_settlement ON finance_invoices(settlement_condition);
       CREATE INDEX IF NOT EXISTS idx_invoices_profit_status ON finance_invoices(profit_status);
       CREATE INDEX IF NOT EXISTS idx_invoices_cashback_status ON finance_invoices(cashback_status);
@@ -649,7 +1164,11 @@ function migrateKasMessengerTable(targetDb: DatabaseSync): void {
     if (!columnNames.has("kategori")) {
       targetDb.exec("ALTER TABLE kas_messenger ADD COLUMN kategori TEXT;");
     }
+    if (!columnNames.has("messenger_id")) {
+      targetDb.exec("ALTER TABLE kas_messenger ADD COLUMN messenger_id TEXT REFERENCES messengers(id);");
+    }
     targetDb.exec("CREATE INDEX IF NOT EXISTS idx_kas_messenger_reimb ON kas_messenger(reimbursement_id);");
+    targetDb.exec("CREATE INDEX IF NOT EXISTS idx_kas_messenger_messenger_id ON kas_messenger(messenger_id);");
   } catch (err) {
     console.warn("[SUN89 Migration] Warning during kas_messenger table migration:", err);
   }
@@ -667,7 +1186,15 @@ function migrateMessengerReimbursementsTable(targetDb: DatabaseSync): void {
     if (!columnNames.has("channel")) {
       targetDb.exec("ALTER TABLE messenger_reimbursements ADD COLUMN channel TEXT;");
     }
+    if (!columnNames.has("messenger_id")) {
+      targetDb.exec("ALTER TABLE messenger_reimbursements ADD COLUMN messenger_id TEXT REFERENCES messengers(id);");
+    }
+    if (!columnNames.has("approved_by_employee_id")) {
+      targetDb.exec("ALTER TABLE messenger_reimbursements ADD COLUMN approved_by_employee_id TEXT REFERENCES employees(id);");
+    }
     targetDb.exec("CREATE INDEX IF NOT EXISTS idx_reimb_kas_msg ON messenger_reimbursements(kas_messenger_id);");
+    targetDb.exec("CREATE INDEX IF NOT EXISTS idx_reimb_messenger_id ON messenger_reimbursements(messenger_id);");
+    targetDb.exec("CREATE INDEX IF NOT EXISTS idx_reimb_approved_by ON messenger_reimbursements(approved_by_employee_id);");
   } catch (err) {
     console.warn("[SUN89 Migration] Warning during messenger_reimbursements table migration:", err);
   }
@@ -684,6 +1211,32 @@ function migrateIdempotencyKeysTable(targetDb: DatabaseSync): void {
     }
   } catch (err) {
     console.warn("[SUN89 Migration] Warning during idempotency_keys table migration:", err);
+  }
+}
+
+function migrateSamsatOfficesTable(targetDb: DatabaseSync): void {
+  try {
+    const tableInfo = targetDb.prepare("PRAGMA table_info(samsat_offices)").all() as { name: string }[];
+    if (!tableInfo || tableInfo.length === 0) return;
+
+    const columnNames = new Set(tableInfo.map((c) => c.name));
+    if (!columnNames.has("id_biaya_layanan")) {
+      targetDb.exec("ALTER TABLE samsat_offices ADD COLUMN id_biaya_layanan TEXT;");
+    }
+    if (!columnNames.has("nama_kantor")) {
+      targetDb.exec("ALTER TABLE samsat_offices ADD COLUMN nama_kantor TEXT;");
+      targetDb.exec("UPDATE samsat_offices SET nama_kantor = name WHERE nama_kantor IS NULL;");
+    }
+    if (!columnNames.has("provinsi")) {
+      targetDb.exec("ALTER TABLE samsat_offices ADD COLUMN provinsi TEXT;");
+    }
+    if (!columnNames.has("alamat_lengkap")) {
+      targetDb.exec("ALTER TABLE samsat_offices ADD COLUMN alamat_lengkap TEXT;");
+      targetDb.exec("UPDATE samsat_offices SET alamat_lengkap = alamat WHERE alamat_lengkap IS NULL;");
+    }
+    targetDb.exec("CREATE INDEX IF NOT EXISTS idx_samsat_biaya ON samsat_offices(id_biaya_layanan);");
+  } catch (err) {
+    console.warn("[SUN89 Migration] Warning during samsat_offices table migration:", err);
   }
 }
 

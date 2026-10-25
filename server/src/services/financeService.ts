@@ -386,11 +386,85 @@ export class FinanceService {
       uploadedAt: new Date().toISOString(),
     } : null;
 
+    // Phase B Payment Security Gating: Cashback cannot be disbursed before final cost is set and Supervisi is approved
+    const invPre = this.getInvoiceById(id);
+    if (!invPre) {
+      throw new ApiError(404, "NOT_FOUND", `Invoice #${id} tidak ditemukan.`);
+    }
+
+    if (invPre.orderNo) {
+      const linkedOrder = dbOrderRepository.getByOrderNo(invPre.orderNo);
+      if (!linkedOrder) {
+        throw new ApiError(404, "ORDER_NOT_FOUND", `Order '${invPre.orderNo}' yang terhubung dengan invoice #${id} tidak ditemukan.`);
+      }
+      const isCancelledOrder = linkedOrder.currentStageName === "Dibatalkan" || Boolean((linkedOrder as any).isCancelled);
+      if (isCancelledOrder) {
+        if (!invPre.overpayment || invPre.overpayment <= 0) {
+          throw new ApiError(400, "ORDER_CANCELLED", `Order '${linkedOrder.orderNo}' telah dibatalkan dan tidak memiliki saldo dana titipan untuk dikembalikan.`);
+        }
+      } else {
+        const hasFinalCost = Boolean(
+          linkedOrder.isVerified ||
+          (typeof (linkedOrder as any).finalCost === "number" && (linkedOrder as any).finalCost > 0) ||
+          linkedOrder.documentApproval?.stage5Verified ||
+          linkedOrder.currentStep >= 6
+        );
+        if (!hasFinalCost) {
+          throw new ApiError(
+            400,
+            "FINAL_COST_NOT_SET",
+            `Pencairan cashback/kelebihan bayar untuk order '${linkedOrder.orderNo}' tidak dapat diproses karena rincian biaya final belum ditetapkan.`
+          );
+        }
+
+        const isSupervisiApproved = Boolean(
+          linkedOrder.approvedBySpv ||
+          linkedOrder.documentApproval?.stage6Approved ||
+          linkedOrder.currentStep >= 7
+        );
+        if (!isSupervisiApproved) {
+          throw new ApiError(
+            400,
+            "SUPERVISI_NOT_APPROVED",
+            `Pencairan cashback/kelebihan bayar untuk order '${linkedOrder.orderNo}' tidak dapat diproses karena belum disetujui oleh Supervisor (Stage 6 Supervisi).`
+          );
+        }
+      }
+    }
+
     return runInTransaction(() => {
       const inv = this.getInvoiceById(id);
       if (!inv) {
         throw new ApiError(404, "NOT_FOUND", `Invoice #${id} tidak ditemukan.`);
       }
+
+      // Re-verify payment security gating inside transaction lock
+      if (inv.orderNo) {
+        const lockedOrder = dbOrderRepository.getByOrderNo(inv.orderNo);
+        if (!lockedOrder) {
+          throw new ApiError(404, "ORDER_NOT_FOUND", "Order tidak valid.");
+        }
+        const isCancelledOrder = lockedOrder.currentStageName === "Dibatalkan" || Boolean((lockedOrder as any).isCancelled);
+        if (isCancelledOrder) {
+          if (!inv.overpayment || inv.overpayment <= 0) {
+            throw new ApiError(400, "ORDER_CANCELLED", "Order telah dibatalkan dan tidak memiliki saldo refund.");
+          }
+        } else {
+          const isSupervisiApproved = Boolean(
+            lockedOrder.approvedBySpv ||
+            lockedOrder.documentApproval?.stage6Approved ||
+            lockedOrder.currentStep >= 7
+          );
+          if (!isSupervisiApproved) {
+            throw new ApiError(
+              400,
+              "SUPERVISI_NOT_APPROVED",
+              "Pencairan ditolak karena belum disetujui oleh Supervisor (Stage 6 Supervisi)."
+            );
+          }
+        }
+      }
+
       const pType = payoutData.paymentType || (inv.overpayment && inv.overpayment > 0 ? "KELEBIHAN" : "KOMISI");
 
       const maxAllowed = pType === "KELEBIHAN"
@@ -534,6 +608,245 @@ export class FinanceService {
         module: "Tagihan",
         details: `Menyelesaikan dan mengarsipkan tagihan ${inv.invoiceNo}`,
         metadata: { invoiceId: id, orderNo: inv.orderNo },
+        createdAt: nowStr,
+      });
+
+      return this.getInvoiceById(id);
+    });
+  }
+
+  /**
+   * Void / Cancel a recorded invoice payment (Storno / Reversal).
+   * Restricted strictly to roles: Administrator, Supervisor (SPV), or SVP.
+   * Atomically posts a Kredit reversal into kas_kantor, marks invoice_payment as VOID,
+   * decrements paid amount, restores remaining balance, resets invoice and order status,
+   * and records an immutable audit log.
+   */
+  public voidInvoicePayment(
+    id: number,
+    paymentId: number,
+    voidReason: string,
+    user?: TokenPayload | null
+  ): InvoiceBillingRecord {
+    const userRole = (user?.role || "").toLowerCase();
+    const isSpvOrAdmin =
+      userRole === "administrator" ||
+      userRole === "supervisor" ||
+      userRole === "spv" ||
+      userRole === "svp" ||
+      (user as any)?.jabatan === "SVP";
+
+    if (!isSpvOrAdmin) {
+      throw new ApiError(
+        403,
+        "FORBIDDEN",
+        "Hanya Supervisor (SPV) atau Administrator yang berwenang membatalkan transaksi pembayaran."
+      );
+    }
+
+    const reason = (voidReason || "").trim();
+    if (!reason || reason.length < 10) {
+      throw new ApiError(
+        400,
+        "VALIDATION_ERROR",
+        "Alasan pembatalan transaksi wajib diisi minimal 10 karakter demi akuntabilitas audit."
+      );
+    }
+
+    return runInTransaction(() => {
+      const inv = this.getInvoiceById(id);
+      if (!inv) {
+        throw new ApiError(404, "NOT_FOUND", `Invoice #${id} tidak ditemukan.`);
+      }
+
+      const payment = dbFinanceRepository.getInvoicePaymentById(paymentId);
+      if (!payment) {
+        throw new ApiError(404, "PAYMENT_NOT_FOUND", `Data pembayaran #${paymentId} tidak ditemukan.`);
+      }
+
+      if (payment.is_void === 1 || payment.status_verifikasi === "VOID") {
+        throw new ApiError(400, "PAYMENT_ALREADY_VOIDED", `Pembayaran #${paymentId} sudah dibatalkan sebelumnya.`);
+      }
+
+      const invoiceNum = inv.invoiceNo || (inv as any).invoice || `INV-${id}`;
+      if (payment.invoice_no !== invoiceNum && payment.invoice_no !== inv.invoiceNo) {
+        throw new ApiError(
+          400,
+          "PAYMENT_MISMATCH",
+          `Pembayaran #${paymentId} tidak terdaftar pada invoice ${invoiceNum}.`
+        );
+      }
+
+      const amount = Number(payment.nominal);
+      const nowStr = new Date().toISOString();
+      const paymentDate = nowStr.split("T")[0];
+
+      // 1. Post atomic Kredit reversal in Kas Kantor
+      const reversalKas = dbFinanceRepository.addKasKantor({
+        tanggal: paymentDate,
+        keterangan: `[BATAL/VOID] Koreksi Pelunasan: ${invoiceNum} - ${reason}`,
+        status: "Kredit",
+        debit: 0,
+        kredit: amount,
+        penanggungJawab: user?.nama || "Supervisor",
+        orderNo: inv.orderNo || undefined,
+        invoiceNo: invoiceNum,
+      });
+
+      // 2. Mark payment as VOID
+      dbFinanceRepository.updateInvoicePayment(paymentId, {
+        is_void: 1,
+        status_verifikasi: "VOID",
+        void_reason: reason,
+        voided_by: user?.nama || "Supervisor",
+        voided_at: nowStr,
+        reversal_kas_id: reversalKas.id,
+      });
+
+      // 3. Recalculate invoice balance and status
+      const currentPaid = Number(inv.dibayar ?? inv.terbayar ?? 0);
+      const newPaid = Math.max(0, currentPaid - amount);
+      const totalTagihan = Number(inv.totalTagihan || 0);
+      const newSisa = Math.max(0, totalTagihan - newPaid);
+      const newStatus = (newSisa === 0 && totalTagihan > 0) ? "PAID" : (newPaid > 0 ? "PARTIAL" : "UNPAID");
+
+      dbFinanceRepository.updateInvoice(id, {
+        dibayar: newPaid,
+        sisa: newSisa,
+        status: newStatus as any,
+        billingStatus: "ACTIVE",
+      });
+
+      // 4. Synchronize with linked Order in orders table
+      if (inv.orderNo) {
+        const linkedOrder = dbOrderRepository.getByOrderNo(inv.orderNo);
+        if (linkedOrder) {
+          const existingRecords = (linkedOrder.payment?.paymentRecords || []).map((r: any) => {
+            if (
+              r.id === payment.idempotency_key ||
+              r.id === `pay-${payment.idempotency_key}` ||
+              (Number(r.nominal) === amount && !r.isVoid)
+            ) {
+              return { ...r, statusVerifikasi: "VOID", isVoid: true, voidReason: reason, voidedAt: nowStr, voidedBy: user?.nama || "Supervisor" };
+            }
+            return r;
+          });
+          const orderPayStatus = (newSisa === 0 && totalTagihan > 0) ? "Lunas" : (newPaid > 0 ? "Kurang Bayar" : "Belum Lunas");
+          dbOrderRepository.saveOrder({
+            ...linkedOrder,
+            payment: {
+              ...linkedOrder.payment,
+              dibayar: newPaid,
+              kurang: newSisa,
+              statusPembayaran: orderPayStatus as any,
+              isPaymentVerified: false,
+              paymentRecords: existingRecords,
+            },
+          });
+        }
+      }
+
+      // 5. Immutable Audit Log
+      dbAuditRepository.save({
+        id: `log-void-pay-${Date.now()}`,
+        userId: user?.userId || "usr-spv",
+        userName: user?.nama || "Supervisor",
+        userRole: user?.role || "supervisor",
+        action: "VOID_INVOICE_PAYMENT",
+        module: "Finance Tagihan",
+        details: `[VOID] Pembatalan pembayaran #${paymentId} (${invoiceNum}) sebesar Rp ${amount.toLocaleString("id-ID")} oleh ${user?.nama}. Alasan: ${reason}`,
+        metadata: { invoiceId: id, paymentId, nominal: amount, reason, reversalKasId: reversalKas.id },
+        createdAt: nowStr,
+      });
+
+      return this.getInvoiceById(id);
+    });
+  }
+
+  /**
+   * Void / Cancel a disbursed cashback or overpayment refund.
+   * Restricted strictly to roles: Administrator, Supervisor (SPV), or SVP.
+   * Atomically posts a Debit reversal into kas_kantor (restores cash),
+   * resets invoice refundStatus back to PENDING, and logs to audit trail.
+   */
+  public voidCashbackPayout(
+    id: number,
+    voidReason: string,
+    user?: TokenPayload | null
+  ): InvoiceBillingRecord {
+    const userRole = (user?.role || "").toLowerCase();
+    const isSpvOrAdmin =
+      userRole === "administrator" ||
+      userRole === "supervisor" ||
+      userRole === "spv" ||
+      userRole === "svp" ||
+      (user as any)?.jabatan === "SVP";
+
+    if (!isSpvOrAdmin) {
+      throw new ApiError(
+        403,
+        "FORBIDDEN",
+        "Hanya Supervisor (SPV) atau Administrator yang berwenang membatalkan transaksi pencairan cashback."
+      );
+    }
+
+    const reason = (voidReason || "").trim();
+    if (!reason || reason.length < 10) {
+      throw new ApiError(
+        400,
+        "VALIDATION_ERROR",
+        "Alasan pembatalan transaksi wajib diisi minimal 10 karakter demi akuntabilitas audit."
+      );
+    }
+
+    return runInTransaction(() => {
+      const inv = this.getInvoiceById(id);
+      if (!inv) {
+        throw new ApiError(404, "NOT_FOUND", `Invoice #${id} tidak ditemukan.`);
+      }
+
+      if (inv.refundStatus !== "PROCESSED" && inv.cashbackStatus !== "REALIZED") {
+        throw new ApiError(
+          400,
+          "CASHBACK_NOT_PROCESSED",
+          "Pencairan cashback untuk invoice ini belum pernah diproses atau sudah dibatalkan sebelumnya."
+        );
+      }
+
+      const nominal = Number(inv.overpayment || inv.cashback || 0);
+      const invoiceNum = inv.invoiceNo || (inv as any).invoice || `INV-${id}`;
+      const nowStr = new Date().toISOString();
+      const paymentDate = nowStr.split("T")[0];
+
+      // 1. Post atomic Debit reversal in Kas Kantor (restore cash)
+      const reversalKas = dbFinanceRepository.addKasKantor({
+        tanggal: paymentDate,
+        keterangan: `[BATAL/VOID] Koreksi Pencairan Cashback: ${invoiceNum} - ${reason}`,
+        status: "Debit",
+        debit: nominal,
+        kredit: 0,
+        penanggungJawab: user?.nama || "Supervisor",
+        orderNo: inv.orderNo || undefined,
+        invoiceNo: invoiceNum,
+      });
+
+      // 2. Revert invoice refund status
+      dbFinanceRepository.updateInvoice(id, {
+        refundStatus: "PENDING",
+        cashbackStatus: "PENDING",
+        settlementCondition: "OVERPAID",
+      });
+
+      // 3. Immutable Audit Log
+      dbAuditRepository.save({
+        id: `log-void-cashback-${Date.now()}`,
+        userId: user?.userId || "usr-spv",
+        userName: user?.nama || "Supervisor",
+        userRole: user?.role || "supervisor",
+        action: "VOID_CASHBACK_PAYOUT",
+        module: "Cashback Terpending",
+        details: `[VOID] Pembatalan pencairan cashback invoice #${id} (${invoiceNum}) sebesar Rp ${nominal.toLocaleString("id-ID")} oleh ${user?.nama}. Alasan: ${reason}`,
+        metadata: { invoiceId: id, nominal, reason, reversalKasId: reversalKas.id },
         createdAt: nowStr,
       });
 
@@ -713,6 +1026,19 @@ export class FinanceService {
       penanggungJawab: user?.nama || "Admin Finance",
     });
 
+    // QC-02 Fix: Double-entry balanced bookkeeping. If panjar/uang jalan given to messenger, post Credit to Kas Kantor
+    if (debit > 0 && ((item.jenis || "").toLowerCase().includes("petty") || (item.jenis || "").toLowerCase().includes("uang jalan") || (item.jenis || "").toLowerCase().includes("panjar") || Boolean((item as any).deductKasKantor))) {
+      dbFinanceRepository.addKasKantor({
+        tanggal: item.tanggal,
+        keterangan: `[KAS KELUAR] Panjar Uang Jalan Kurir: ${item.messenger} (${item.keterangan || item.jenis})${rawOrderNo ? ` [Order: ${rawOrderNo}]` : ""}`,
+        status: "Kredit",
+        debit: 0,
+        kredit: debit,
+        penanggungJawab: user?.nama || "Admin Finance",
+        orderNo: rawOrderNo || undefined,
+      });
+    }
+
     dbAuditRepository.save({
       id: `audit-kas-msg-${Date.now()}`,
       userId: user?.userId || "usr-finance",
@@ -766,6 +1092,64 @@ export class FinanceService {
       });
     }
     return success;
+  }
+
+  public getVoidAuditHistory(): { payments: any[]; cashbacks: any[] } {
+    const payments = db.prepare(`
+      SELECT 
+        p.id as payment_id,
+        COALESCE(p.invoice_no, '') as invoice_no,
+        COALESCE(p.order_no, '') as order_no,
+        COALESCE(i.customer, '') as customer,
+        p.nominal,
+        COALESCE(p.metode_pembayaran, '') as metode_pembayaran,
+        p.is_void,
+        COALESCE(p.void_reason, '') as void_reason,
+        COALESCE(p.voided_by, '') as voided_by,
+        COALESCE(p.voided_at, '') as voided_at,
+        p.reversal_kas_id,
+        'VOID_PAYMENT' as void_type
+      FROM invoice_payments p
+      LEFT JOIN finance_invoices i ON p.invoice_no = i.invoice_no
+      WHERE p.is_void = 1
+      ORDER BY p.voided_at DESC
+    `).all() as any[];
+
+    const cashbacksRaw = db.prepare(`
+      SELECT 
+        id,
+        user_id,
+        COALESCE(user_name, '') as voided_by,
+        user_role,
+        action as void_type,
+        COALESCE(metadata_json, '') as metadata_json,
+        COALESCE(details, '') as void_reason,
+        created_at as voided_at
+      FROM audit_logs
+      WHERE action = 'VOID_CASHBACK_PAYOUT'
+      ORDER BY created_at DESC
+    `).all() as any[];
+
+    const cashbacks = cashbacksRaw.map((c) => {
+      let invoiceNo = "-";
+      let nominal = 0;
+      try {
+        if (c.metadata_json) {
+          const m = JSON.parse(c.metadata_json);
+          invoiceNo = m.invoiceNum || m.invoiceNo || m.orderNo || `INV-${m.invoiceId || ""}`;
+          nominal = Number(m.nominal || 0);
+        }
+      } catch {
+        // fallback
+      }
+      return {
+        ...c,
+        invoice_no: invoiceNo,
+        nominal,
+      };
+    });
+
+    return { payments, cashbacks };
   }
 }
 

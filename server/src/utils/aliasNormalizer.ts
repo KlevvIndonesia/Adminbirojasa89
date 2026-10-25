@@ -369,11 +369,40 @@ export const PROTECTED_PAYMENT_ALIASES_MAP: Record<string, string> = {
  * checking all camelCase, snake_case, and alias variants.
  * Throws ApiError(403, "PROTECTED_FIELD_VIOLATION") if found.
  */
-export function assertNoProtectedFieldViolations(body: Record<string, any>): void {
+export function assertNoProtectedFieldViolations(body: Record<string, any>, user?: { role?: string } | null): void {
+  const isAuthorizedRole = Boolean(
+    user?.role && ["administrator", "admin", "finance", "svp"].includes(user.role.toLowerCase().trim())
+  );
+
   // 1. Root fields check
   for (const [key, val] of Object.entries(body)) {
     if (val !== undefined && key in PROTECTED_ROOT_ALIASES_MAP) {
       const canonical = PROTECTED_ROOT_ALIASES_MAP[key];
+
+      // If authorized staff (admin/finance/svp) updates operational & financial parameters via authorized edit form, permit financial fields
+      if (isAuthorizedRole) {
+        const allowedFinancialFields = new Set([
+          "totalBiaya",
+          "biayaSamsat",
+          "uangKeluar",
+          "profit",
+          "biayaJasa",
+          "biayaAntarJemput",
+          "biayaLainnya",
+          "namaPenerimaKeluar",
+          "bankUangKeluar",
+          "metodePembayaranKeluar",
+          "paymentStatus",
+          "statusPembayaran",
+          "dibayar",
+          "kurang",
+          "overpayment",
+        ]);
+        if (allowedFinancialFields.has(canonical) || allowedFinancialFields.has(key)) {
+          continue;
+        }
+      }
+
       const desc = PROTECTED_ROOT_FIELD_DESCRIPTIONS[canonical] || "Field ini dilindungi oleh sistem.";
       throw new ApiError(
         403,
@@ -388,6 +417,26 @@ export function assertNoProtectedFieldViolations(body: Record<string, any>): voi
     for (const [payKey, payVal] of Object.entries(body.payment)) {
       if (payVal !== undefined && payKey in PROTECTED_PAYMENT_ALIASES_MAP) {
         const canonical = PROTECTED_PAYMENT_ALIASES_MAP[payKey];
+
+        if (isAuthorizedRole) {
+          const allowedPaymentFields = new Set([
+            "totalBiaya",
+            "totalEstimasi",
+            "statusPembayaran",
+            "dibayar",
+            "kurang",
+            "overpayment",
+            "metodePembayaran",
+            "namaBank",
+            "noRekening",
+            "namaRekening",
+            "tipePembayaran",
+          ]);
+          if (allowedPaymentFields.has(canonical) || allowedPaymentFields.has(payKey)) {
+            continue;
+          }
+        }
+
         const desc = PROTECTED_PAYMENT_FIELD_DESCRIPTIONS[canonical] || "Field payment ini dilindungi oleh sistem.";
         throw new ApiError(
           403,
@@ -421,19 +470,51 @@ export const ORDER_ALIAS_DEFS: AliasDefinition[] = [
     isSensitive: true,
     transform: (v) => (v !== undefined && v !== null && v !== "" ? Number(v) : undefined),
   },
+  {
+    canonicalKey: "biayaLainnya",
+    aliases: ["biayaLainnya", "biaya_lainnya"],
+    isSensitive: false,
+    transform: (v) => (v !== undefined && v !== null && v !== "" ? Number(v) : 0),
+  },
+  {
+    canonicalKey: "biayaSamsat",
+    aliases: ["biayaSamsat", "biaya_samsat", "uangKeluar", "uang_keluar"],
+    isSensitive: false,
+    transform: (v) => (v !== undefined && v !== null && v !== "" ? Number(v) : undefined),
+  },
+  {
+    canonicalKey: "totalBiaya",
+    aliases: ["totalBiaya", "total_biaya", "totalEstimasi", "total_estimasi"],
+    isSensitive: false,
+    transform: (v) => (v !== undefined && v !== null && v !== "" ? Number(v) : undefined),
+  },
   { canonicalKey: "namaPemilik", aliases: ["namaPemilik", "nama_pemilik"], isSensitive: false },
   { canonicalKey: "jenisKendaraan", aliases: ["jenisKendaraan", "jenis_kendaraan", "tipeKendaraan", "tipe_kendaraan"], isSensitive: false },
   { canonicalKey: "tahunKendaraan", aliases: ["tahunKendaraan", "tahun_kendaraan"], isSensitive: false },
-  { canonicalKey: "wilayahSamsatAsal", aliases: ["wilayahSamsatAsal", "wilayah_samsat_asal"], isSensitive: false },
-  { canonicalKey: "wilayahSamsatTujuan", aliases: ["wilayahSamsatTujuan", "wilayah_samsat_tujuan"], isSensitive: false },
+  { canonicalKey: "wilayahSamsatAsal", aliases: ["wilayahSamsatAsal", "wilayah_samsat_asal", "samsatAsal", "samsat_asal", "samsat"], isSensitive: false },
+  { canonicalKey: "wilayahSamsatTujuan", aliases: ["wilayahSamsatTujuan", "wilayah_samsat_tujuan", "samsatTujuan", "samsat_tujuan"], isSensitive: false },
+  { canonicalKey: "tanggalMasukBerkas", aliases: ["tanggalMasukBerkas", "tanggal_masuk_berkas", "tglMasukBerkas", "tgl_masuk_berkas"], isSensitive: false },
+  { canonicalKey: "alamatPenjemputan", aliases: ["alamatPenjemputan", "alamat_penjemputan"], isSensitive: false },
+  { canonicalKey: "alamatPengantaran", aliases: ["alamatPengantaran", "alamat_pengantaran"], isSensitive: false },
+  { canonicalKey: "alamat", aliases: ["alamat", "address"], isSensitive: false },
   { canonicalKey: "metodeLayanan", aliases: ["metodeLayanan", "metode_layanan"], isSensitive: false },
-  { canonicalKey: "catatanOrder", aliases: ["catatanOrder", "catatan_order", "catatan"], isSensitive: false },
+  { canonicalKey: "catatanOrder", aliases: ["catatanOrder", "catatan_order", "catatan", "keterangan"], isSensitive: false },
   { canonicalKey: "alasanPending", aliases: ["alasanPending", "alasan_pending", "alasan"], isSensitive: false },
-  { canonicalKey: "namaPenerimaKeluar", aliases: ["namaPenerimaKeluar", "namaPemilikRekeningKeluar", "nama_penerima_keluar"], isSensitive: false },
+  { canonicalKey: "namaPenerimaKeluar", aliases: ["namaPenerimaKeluar", "namaPemilikRekeningKeluar", "nama_penerima_keluar", "namaPenerima", "nama_penerima"], isSensitive: false },
   { canonicalKey: "bankUangKeluar", aliases: ["bankUangKeluar", "bank_uang_keluar"], isSensitive: false },
   { canonicalKey: "metodePembayaranKeluar", aliases: ["metodePembayaranKeluar", "metode_pembayaran_keluar"], isSensitive: false },
+  { canonicalKey: "noRekeningPengirim", aliases: ["noRekeningPengirim", "nomorRekeningPengirim"], isSensitive: false },
+  { canonicalKey: "noRekeningPenerima", aliases: ["noRekeningPenerima", "nomorRekeningPenerima"], isSensitive: false },
+  { canonicalKey: "stafPengirim", aliases: ["stafPengirim", "staf_pengirim"], isSensitive: false },
+  { canonicalKey: "noInvoice", aliases: ["noInvoice", "no_invoice", "invoiceNo", "invoice"], isSensitive: false },
+  { canonicalKey: "tanggalInvoice", aliases: ["tanggalInvoice", "tanggal_invoice"], isSensitive: false },
+  { canonicalKey: "bpkb", aliases: ["bpkb", "dokumenBPKB", "dokumen_bpkb"], isSensitive: false },
+  { canonicalKey: "ttbBPKB", aliases: ["ttbBPKB", "ttb_bpkb", "nomorTTBBPKB", "nomor_ttb_bpkb"], isSensitive: false },
+  { canonicalKey: "statusBPKB", aliases: ["statusBPKB", "status_bpkb"], isSensitive: false },
+  { canonicalKey: "statusPengerjaan", aliases: ["statusPengerjaan", "status_pengerjaan", "salesSnapshotStatus"], isSensitive: false },
   { canonicalKey: "kepemilikanKendaraan", aliases: ["kepemilikanKendaraan", "statusKepemilikan"], isSensitive: false },
   { canonicalKey: "tanggalPengeluaranSamsat", aliases: ["tanggalPengeluaranSamsat", "tanggalPengeluaran", "tanggalUangKeluar"], isSensitive: false },
+  { canonicalKey: "tanggalUangMasuk", aliases: ["tanggalUangMasuk", "tanggal_uang_masuk", "tanggalBayar"], isSensitive: false },
 ];
 
 /**

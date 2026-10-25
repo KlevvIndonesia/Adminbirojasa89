@@ -12,6 +12,7 @@ import {
   normalizeServicePricingPayload,
   normalizeSamsatPricingPayload,
 } from "../utils/aliasNormalizer";
+import { validateOrderPricingSanity } from "../utils/pricingSanityCheck";
 
 /**
  * Validates Auth Login Payload
@@ -93,6 +94,20 @@ export function validateOrderCreatePayload(req: Request, res: Response, next: Ne
     return;
   }
 
+  // Server-side Pricing Sanity & Anti-Tampering Check
+  const pricingCheck = validateOrderPricingSanity(req.body);
+  if (!pricingCheck.isValid) {
+    res.status(400).json({
+      success: false,
+      error: {
+        code: pricingCheck.errorCode || "VALIDATION_ERROR",
+        message: pricingCheck.errorMessage || "Kalkulasi harga order tidak valid atau terindikasi manipulasi.",
+      },
+      timestamp: new Date().toISOString(),
+    });
+    return;
+  }
+
   next();
 }
 
@@ -115,7 +130,8 @@ export function validateOrderUpdatePayload(req: Request, res: Response, next: Ne
   }
 
   // 1. Check URL param orderNo vs body orderNo/order_no
-  const paramOrderNo = req.params?.orderNo?.trim();
+  const rawParam = req.params?.orderNo;
+  const paramOrderNo = typeof rawParam === "string" ? rawParam.trim() : (Array.isArray(rawParam) ? String(rawParam[0]).trim() : undefined);
   const bodyOrderNo = body.orderNo || body.order_no;
   if (paramOrderNo && bodyOrderNo && String(bodyOrderNo).trim().toUpperCase() !== paramOrderNo.toUpperCase()) {
     res.status(400).json({
@@ -132,7 +148,7 @@ export function validateOrderUpdatePayload(req: Request, res: Response, next: Ne
   // 2. Strict rejection of server-controlled and approval/workflow-gated root & payment fields
   // Catches all camelCase, snake_case, and alias variants with HTTP 403 PROTECTED_FIELD_VIOLATION
   try {
-    assertNoProtectedFieldViolations(body);
+    assertNoProtectedFieldViolations(body, (req as any).user);
   } catch (err: any) {
     res.status(err.statusCode || 403).json({
       success: false,

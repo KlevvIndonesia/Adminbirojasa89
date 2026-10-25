@@ -70,7 +70,9 @@ class PaymentMethodStore {
   private hasSuccessfullyLoaded = false;
 
   constructor() {
-    this.initFromApi();
+    if (typeof window === "undefined" || (typeof window !== "undefined" && window.localStorage?.getItem("auth_token"))) {
+      this.initFromApi();
+    }
   }
 
   private getAuthHeader(): Record<string, string> {
@@ -86,10 +88,15 @@ class PaymentMethodStore {
   }
 
   public async initFromApi(): Promise<void> {
+    const authHeaders = this.getAuthHeader();
+    if (!authHeaders.Authorization) {
+      this.isLoadingState = false;
+      return;
+    }
     this.isLoadingState = true;
     try {
       const res = await fetch(`${APP_CONFIG.apiBaseUrl}/payment-methods`, {
-        headers: { "Content-Type": "application/json", ...this.getAuthHeader() },
+        headers: { "Content-Type": "application/json", ...authHeaders },
       });
       if (!res.ok) {
         throw new Error(`Gagal memuat metode pembayaran dari server (HTTP ${res.status})`);

@@ -581,7 +581,7 @@ export function MessengerSamsatView({
                     nominal: p.basePrice || 0,
                     masterPrice: p.basePrice || 0,
                     actualOrderPrice: p.actualCost || p.basePrice || 0,
-                    status: p.status === "Selesai" ? "COMPLETED" : (p.status === "Sedang Diproses" ? "IN_PROGRESS" : (p.status === "Menunggu" ? "WAITING" : "NOT_STARTED")),
+                    status: p.status === "Selesai" ? "COMPLETED" : (p.status === "Sedang Diproses" ? "IN_PROGRESS" : ((p.status as string) === "Menunggu" ? "WAITING" : "NOT_STARTED")),
                   }));
 
             // Filter out empty generic dummy components (e.g. "Komponen Samsat" with 0 price)

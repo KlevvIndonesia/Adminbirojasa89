@@ -148,7 +148,7 @@ export function BuatOrder({
   const { activeMethods } = usePaymentMethods();
 
   // Stepper State: 1 = Data Klien & Kendaraan, 2 = Dokumen, Pembayaran & Ringkasan
-  const [currentStep, setCurrentStep] = useState<1 | 2>(1);
+  const [currentStep, setCurrentStep] = useState<1 | 2 | 3>(1);
   const [isSameAsCustomer, setIsSameAsCustomer] = useState(false);
 
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -1159,7 +1159,7 @@ export function BuatOrder({
         wilayahSamsatAsal: formData.wilayahSamsatAsal,
         wilayahSamsatTujuan: formData.layanan.includes("Mutasi") ? (formData.wilayahSamsatTujuan || formData.wilayahSamsatAsal) : formData.wilayahSamsatAsal,
         pkbBerlakuSd: formData.pkbBerlakuSd,
-        tahunPajak: formData.tahunPajak || (pkbParts ? String(pkbParts.y) : ""),
+        tahunPajak: formData.tahunPajak || (formData.pkbBerlakuSd ? formData.pkbBerlakuSd.split("-")[0] : ""),
         bulanPajak: formData.bulanPajak || (formData.pkbBerlakuSd ? (getMonthNameFromDate(formData.pkbBerlakuSd) || "") : ""),
         nominalPkbTerakhir: parseFloat(formData.nominalPkbTerakhir) || 0,
         nominalSwdkllj: parseFloat(formData.nominalSwdkllj) || 143000,

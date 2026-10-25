@@ -47,6 +47,10 @@ export async function payInvoice(req: AuthenticatedRequest, res: Response, next:
 
     normalizeInvoicePaymentPayload(req.body);
     const amount = req.body.amount;
+    const numAmount = Number(amount);
+    if (!Number.isFinite(numAmount) || numAmount <= 0) {
+      throw new ApiError(400, "VALIDATION_ERROR", "Nominal pembayaran harus berupa angka positif yang lebih besar dari 0.");
+    }
 
     const headerKey = (req.headers["idempotency-key"] as string) || (req.headers["x-idempotency-key"] as string);
     const bodyKey = req.body.idempotencyKey || req.body.details?.idempotencyKey || req.body.details?.clientRequestId || req.body.details?.transactionRef;
@@ -180,5 +184,61 @@ export async function deleteKasMessenger(req: AuthenticatedRequest, res: Respons
     next(err);
   }
 }
+
+export async function voidInvoicePayment(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
+  try {
+    const id = parseInt(req.params.id, 10);
+    const paymentId = parseInt(req.params.paymentId, 10);
+    if (isNaN(id) || id <= 0 || isNaN(paymentId) || paymentId <= 0) {
+      throw new ApiError(400, "VALIDATION_ERROR", "ID invoice dan ID pembayaran harus berupa bilangan bulat positif yang valid.");
+    }
+
+    const reason = req.body?.reason || req.body?.voidReason || req.body?.alasan;
+    const invoice = financeService.voidInvoicePayment(id, paymentId, reason, req.user);
+    res.json({
+      success: true,
+      message: "Pembayaran berhasil dibatalkan (Void) dan jurnal pembalik telah dicatat.",
+      data: invoice,
+      timestamp: new Date().toISOString(),
+    });
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function voidCashbackPayout(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
+  try {
+    const id = parseInt(req.params.id, 10);
+    if (isNaN(id) || id <= 0) {
+      throw new ApiError(400, "VALIDATION_ERROR", "ID invoice harus berupa bilangan bulat positif yang valid.");
+    }
+
+    const reason = req.body?.reason || req.body?.voidReason || req.body?.alasan;
+    const invoice = financeService.voidCashbackPayout(id, reason, req.user);
+    res.json({
+      success: true,
+      message: "Pencairan cashback berhasil dibatalkan (Void) dan saldo kas telah dipulihkan.",
+      data: invoice,
+      timestamp: new Date().toISOString(),
+    });
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function getVoidAuditHistory(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
+  try {
+    const history = financeService.getVoidAuditHistory();
+    res.json({
+      success: true,
+      message: "OK",
+      data: history,
+      timestamp: new Date().toISOString(),
+    });
+  } catch (err) {
+    next(err);
+  }
+}
+
 
 

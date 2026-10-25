@@ -20,6 +20,9 @@ import {
   getKasMessenger,
   addKasMessenger,
   deleteKasMessenger,
+  voidInvoicePayment,
+  voidCashbackPayout,
+  getVoidAuditHistory,
 } from "../controllers/financeController";
 import { requireAuth, requireRoles } from "../middleware/auth";
 import {
@@ -34,21 +37,21 @@ export const financeRouter = Router();
 financeRouter.get(
   "/invoices",
   requireAuth,
-  requireRoles("administrator", "admin", "finance"),
+  requireRoles("administrator", "finance", "svp"),
   getInvoices
 );
 
 financeRouter.get(
   "/invoices/:id",
   requireAuth,
-  requireRoles("administrator", "admin", "finance"),
+  requireRoles("administrator", "finance", "svp"),
   getInvoiceById
 );
 
 financeRouter.get(
   "/invoices/:invoiceNo/payments",
   requireAuth,
-  requireRoles("administrator", "admin", "finance"),
+  requireRoles("administrator", "finance", "svp"),
   getInvoicePayments
 );
 
@@ -75,11 +78,35 @@ financeRouter.post(
   completeInvoice
 );
 
+// Void / Cancel payment (Strictly Administrator & Supervisor / SPV)
+financeRouter.post(
+  "/invoices/:id/payments/:paymentId/void",
+  requireAuth,
+  requireRoles("administrator", "supervisor", "spv", "svp"),
+  voidInvoicePayment
+);
+
+// Void / Cancel cashback payout (Strictly Administrator & Supervisor / SPV)
+financeRouter.post(
+  "/invoices/:id/cashback-payout/void",
+  requireAuth,
+  requireRoles("administrator", "supervisor", "spv", "svp"),
+  voidCashbackPayout
+);
+
+// Void Audit History Log (Strictly Administrator & Supervisor / SPV)
+financeRouter.get(
+  "/audit/void-history",
+  requireAuth,
+  requireRoles("administrator", "supervisor", "spv", "svp"),
+  getVoidAuditHistory
+);
+
 // Kas Kantor read (Protected)
 financeRouter.get(
   "/kas-kantor",
   requireAuth,
-  requireRoles("administrator", "admin", "finance"),
+  requireRoles("administrator", "finance", "svp"),
   getKasKantor
 );
 
@@ -103,7 +130,7 @@ financeRouter.delete(
 financeRouter.get(
   "/pengeluaran",
   requireAuth,
-  requireRoles("administrator", "admin", "finance"),
+  requireRoles("administrator", "finance", "svp"),
   getPengeluaran
 );
 

@@ -42,6 +42,7 @@ import {
   ExternalLink,
   Receipt,
   CheckCheck,
+  Layers,
 } from "lucide-react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription } from "./ui/dialog";
 import { Label } from "./ui/label";
@@ -575,10 +576,10 @@ export function MessengerTask() {
       setIsCompressingDelivery(true);
       const processed = await processDocumentUpload(file);
       let fileUrl = processed.fileUrl;
-      if (selectedTaskForDetail?.orderNo) {
+      if (selectedTask?.orderNo) {
         try {
           const uploaded = await documentRepository.uploadDocument(processed.file, {
-            orderNo: selectedTaskForDetail.orderNo,
+            orderNo: selectedTask.orderNo,
             documentType: "Bukti Serah Terima",
             metadata: { phase: "AFTER", category: "Bukti Serah Terima" },
           });
@@ -607,10 +608,10 @@ export function MessengerTask() {
     try {
       const processed = await processDocumentUpload(file);
       let fileUrl = processed.fileUrl;
-      if (selectedTaskForDetail?.orderNo) {
+      if (selectedTask?.orderNo) {
         try {
           const uploaded = await documentRepository.uploadDocument(processed.file, {
-            orderNo: selectedTaskForDetail.orderNo,
+            orderNo: selectedTask.orderNo,
             documentType: "Hasil Samsat",
             metadata: { phase: "AFTER", category: "Dokumen Hasil" },
           });

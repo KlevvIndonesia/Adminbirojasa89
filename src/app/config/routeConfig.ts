@@ -15,11 +15,20 @@ export interface RouteMeta {
 }
 
 export const DATA_PENJUALAN_CATEGORIES: Record<string, string> = {
-  "mutasi-ld": "Mutasi LD",
-  "mutasi-as": "Mutasi AS",
-  "bbn": "BBN",
-  "perpanjangan-pajak": "Perpanjangan Pajak",
-  "lain-lain": "Lain-Lain",
+  "perpanjangan-1-tahun": "Perpanjangan 1 Tahun",
+  "perpanjangan-5-tahun": "Perpanjangan 5 Tahun",
+  "mutasi-asal": "Mutasi Asal Samsat",
+  "mutasi-antar-daerah": "Mutasi Antar Daerah",
+  "balik-nama": "Balik Nama",
+  "tarik-berkas": "Tarik Berkas",
+  "duplikat-stnk": "Duplikat STNK",
+  "lainnya": "Lainnya",
+  // Legacy aliases
+  "mutasi-ld": "Mutasi Antar Daerah",
+  "mutasi-as": "Mutasi Asal Samsat",
+  "bbn": "Balik Nama",
+  "perpanjangan-pajak": "Perpanjangan 1 Tahun",
+  "lain-lain": "Tarik Berkas",
 };
 
 export const CANONICAL_ROUTES: Record<string, RouteMeta> = {
@@ -265,8 +274,8 @@ export function getRouteMeta(pathname: string): RouteMeta {
     return {
       path: normalized,
       id: "finance-penjualan",
-      title: `Data Penjualan — ${categoryLabel}`,
-      description: `Rekapitulasi transaksi ${categoryLabel} dan kalkulasi samsat`,
+      title: `Data Penjualan - ${categoryLabel}`,
+      description: `Rekapitulasi transaksi ${categoryLabel} dan kalkulasi Samsat`,
       breadcrumbs: ["Finance", "Data Penjualan", categoryLabel],
       parentGroupId: "finance",
     };

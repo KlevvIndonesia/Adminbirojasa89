@@ -362,3 +362,30 @@ export function PlainTextStatus({ status }: { status: string | null | undefined 
 
 // Alias for backwards compatibility
 export const FinanceStatusBadge = PlainTextStatus;
+
+/**
+ * Konversi nominal angka ke format teks terbilang bahasa Indonesia resmi.
+ * Contoh: 1500000 -> "Satu Juta Lima Ratus Ribu Rupiah"
+ */
+export function angkaKeTerbilang(nilai: number): string {
+  const bilangan = ["", "Satu", "Dua", "Tiga", "Empat", "Lima", "Enam", "Tujuh", "Delapan", "Sembilan", "Sepuluh", "Sebelas"];
+  const num = Math.floor(Math.abs(nilai));
+
+  if (num === 0) return "Nol Rupiah";
+
+  function sebut(n: number): string {
+    if (n < 12) return bilangan[n];
+    if (n < 20) return sebut(n - 10) + " Belas";
+    if (n < 100) return sebut(Math.floor(n / 10)) + " Puluh " + (n % 10 > 0 ? sebut(n % 10) : "");
+    if (n < 200) return "Seratus " + (n - 100 > 0 ? sebut(n - 100) : "");
+    if (n < 1000) return sebut(Math.floor(n / 100)) + " Ratus " + (n % 100 > 0 ? sebut(n % 100) : "");
+    if (n < 2000) return "Seribu " + (n - 1000 > 0 ? sebut(n - 1000) : "");
+    if (n < 1000000) return sebut(Math.floor(n / 1000)) + " Ribu " + (n % 1000 > 0 ? sebut(n % 1000) : "");
+    if (n < 1000000000) return sebut(Math.floor(n / 1000000)) + " Juta " + (n % 1000000 > 0 ? sebut(n % 1000000) : "");
+    if (n < 1000000000000) return sebut(Math.floor(n / 1000000000)) + " Miliar " + (n % 1000000000 > 0 ? sebut(n % 1000000000) : "");
+    return sebut(Math.floor(n / 1000000000000)) + " Triliun " + (n % 1000000000000 > 0 ? sebut(n % 1000000000000) : "");
+  }
+
+  const hasil = sebut(num).replace(/\s+/g, " ").trim();
+  return `${hasil} Rupiah`;
+}

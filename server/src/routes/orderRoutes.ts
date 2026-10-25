@@ -14,6 +14,7 @@ import {
   rollbackOrder,
   archiveOrder,
   deleteArchivedOrder,
+  hardDeleteOrder,
   clearArchivedOrders,
   verifyPayment,
   cancelOrder,
@@ -46,7 +47,7 @@ orderRouter.post(
 orderRouter.put(
   "/:orderNo",
   requireAuth,
-  requireRoles("administrator", "admin", "messenger", "finance", "svp"),
+  requireRoles("administrator", "admin", "finance", "svp"),
   validateOrderUpdatePayload,
   updateOrder
 );
@@ -67,12 +68,14 @@ orderRouter.post(
   rollbackOrder
 );
 
+// Canonical endpoint for clearing all archived orders
 orderRouter.delete(
   "/archive/clear-all",
   requireAuth,
   requireRoles("administrator", "admin", "svp"),
   clearArchivedOrders
 );
+// Backward-compatibility route alias for legacy callers
 orderRouter.delete(
   "/archived/clear-all",
   requireAuth,
@@ -92,6 +95,13 @@ orderRouter.delete(
   requireAuth,
   requireRoles("administrator", "admin", "svp"),
   deleteArchivedOrder
+);
+
+orderRouter.delete(
+  "/:orderNo",
+  requireAuth,
+  requireRoles("administrator", "admin", "finance", "svp"),
+  hardDeleteOrder
 );
 
 orderRouter.post(

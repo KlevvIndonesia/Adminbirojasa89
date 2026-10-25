@@ -3,7 +3,7 @@
  * Admin SUN89 — Biro Jasa Management System
  */
 
-import { db } from "../database/db";
+import { db, runInTransaction } from "../database/db";
 import { OperationalOrder, StageName, STAGES } from "../../../src/domain/order/types";
 
 export class DbOrderRepository {
@@ -33,6 +33,10 @@ export class DbOrderRepository {
     const bankUangKeluar = row.bank_uang_keluar !== null && row.bank_uang_keluar !== undefined ? String(row.bank_uang_keluar) : (parsed.bankUangKeluar || "");
     const metodePembayaranKeluar = row.metode_pembayaran_keluar !== null && row.metode_pembayaran_keluar !== undefined ? String(row.metode_pembayaran_keluar) : (parsed.metodePembayaranKeluar || "");
     const alasanPending = row.alasan_pending !== null && row.alasan_pending !== undefined ? String(row.alasan_pending) : (parsed.alasan_pending || parsed.alasanPending || parsed.alasan || "");
+    const serviceId = row.service_id !== null && row.service_id !== undefined ? String(row.service_id) : (parsed.serviceId || parsed.service_id || undefined);
+    const tanggalMasukBerkas = row.tanggal_masuk_berkas !== null && row.tanggal_masuk_berkas !== undefined ? String(row.tanggal_masuk_berkas) : (parsed.tanggalMasukBerkas || parsed.tanggal_masuk_berkas || undefined);
+    const samsatAsal = row.samsat_asal !== null && row.samsat_asal !== undefined ? String(row.samsat_asal) : (parsed.wilayahSamsatAsal || parsed.samsatAsal || parsed.samsat || "Jakarta Timur");
+    const samsatTujuan = row.samsat_tujuan !== null && row.samsat_tujuan !== undefined ? String(row.samsat_tujuan) : (parsed.wilayahSamsatTujuan || parsed.samsatTujuan || "-");
     const createdAt = row.created_at ? String(row.created_at) : (parsed.createdAt || new Date().toISOString());
     const updatedAt = row.updated_at ? String(row.updated_at) : (parsed.updatedAt || new Date().toISOString());
 
@@ -78,6 +82,14 @@ export class DbOrderRepository {
       metodePembayaranKeluar: metodePembayaranKeluar || undefined,
       alasan_pending: alasanPending || undefined,
       alasanPending: alasanPending || undefined,
+      serviceId,
+      service_id: serviceId,
+      tanggalMasukBerkas,
+      tanggal_masuk_berkas: tanggalMasukBerkas,
+      wilayahSamsatAsal: samsatAsal,
+      samsat_asal: samsatAsal,
+      wilayahSamsatTujuan: samsatTujuan,
+      samsat_tujuan: samsatTujuan,
       payment,
       createdAt,
       updatedAt,
@@ -149,6 +161,10 @@ export class DbOrderRepository {
     const bankUangKeluar = (order as any).bankUangKeluar || null;
     const metodePembayaranKeluar = (order as any).metodePembayaranKeluar || null;
     const alasanPending = (order as any).alasan_pending || (order as any).alasanPending || (order as any).alasan || null;
+    const serviceId = (order as any).serviceId || (order as any).service_id || null;
+    const tanggalMasukBerkas = (order as any).tanggalMasukBerkas || (order as any).tanggal_masuk_berkas || null;
+    const samsatAsal = (order as any).wilayahSamsatAsal || (order as any).samsatAsal || (order as any).samsat_asal || (order as any).samsat || null;
+    const samsatTujuan = (order as any).wilayahSamsatTujuan || (order as any).samsatTujuan || (order as any).samsat_tujuan || "-";
     const currentStep = Number(order.currentStep || 1);
     const currentStageName = String(order.currentStageName || "Verifikasi");
     const paymentStatus = String(order.payment?.statusPembayaran || "Belum Lunas");
@@ -172,6 +188,14 @@ export class DbOrderRepository {
       metodePembayaranKeluar: metodePembayaranKeluar || undefined,
       alasan_pending: alasanPending || undefined,
       alasanPending: alasanPending || undefined,
+      serviceId: serviceId || undefined,
+      service_id: serviceId || undefined,
+      tanggalMasukBerkas: tanggalMasukBerkas || undefined,
+      tanggal_masuk_berkas: tanggalMasukBerkas || undefined,
+      wilayahSamsatAsal: samsatAsal || "Jakarta Timur",
+      samsat_asal: samsatAsal || undefined,
+      wilayahSamsatTujuan: samsatTujuan,
+      samsat_tujuan: samsatTujuan,
       createdAt,
       payment: {
         ...(order.payment || {}),
@@ -185,8 +209,10 @@ export class DbOrderRepository {
         order_no, customer, nomor_hp, layanan, nopol, current_step,
         current_stage_name, payment_status, total_biaya, is_archived,
         biaya_jasa, biaya_antar_jemput, nama_penerima_keluar, bank_uang_keluar, metode_pembayaran_keluar,
-        alasan_pending, data_json, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+        alasan_pending, data_json, created_at, updated_at,
+        service_id, tanggal_masuk_berkas, samsat_asal, samsat_tujuan,
+        samsat_tujuan_id
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), ?, ?, ?, ?, NULL)
     `);
 
     stmt.run(
@@ -207,7 +233,11 @@ export class DbOrderRepository {
       metodePembayaranKeluar,
       alasanPending,
       JSON.stringify(synchronizedOrder),
-      createdAt
+      createdAt,
+      serviceId,
+      tanggalMasukBerkas,
+      samsatAsal,
+      samsatTujuan
     );
   }
 
@@ -271,6 +301,22 @@ export class DbOrderRepository {
               ? (updates as any).alasan
               : ((existing as any).alasan_pending || (existing as any).alasanPending || (existing as any).alasan || null)));
 
+    const resolvedServiceId = (updates as any).serviceId !== undefined
+      ? (updates as any).serviceId
+      : ((updates as any).service_id !== undefined ? (updates as any).service_id : ((existing as any).serviceId || (existing as any).service_id || null));
+
+    const resolvedTanggalMasukBerkas = (updates as any).tanggalMasukBerkas !== undefined
+      ? (updates as any).tanggalMasukBerkas
+      : ((updates as any).tanggal_masuk_berkas !== undefined ? (updates as any).tanggal_masuk_berkas : ((existing as any).tanggalMasukBerkas || null));
+
+    const resolvedSamsatAsal = (updates as any).wilayahSamsatAsal !== undefined
+      ? (updates as any).wilayahSamsatAsal
+      : ((updates as any).samsat_asal !== undefined ? (updates as any).samsat_asal : ((updates as any).samsatAsal || (existing as any).wilayahSamsatAsal || "Jakarta Timur"));
+
+    const resolvedSamsatTujuan = (updates as any).wilayahSamsatTujuan !== undefined
+      ? (updates as any).wilayahSamsatTujuan
+      : ((updates as any).samsat_tujuan !== undefined ? (updates as any).samsat_tujuan : ((updates as any).samsatTujuan || (existing as any).wilayahSamsatTujuan || "-"));
+
     const synchronizedMerged: OperationalOrder = {
       ...existing,
       ...updates,
@@ -287,6 +333,14 @@ export class DbOrderRepository {
       metodePembayaranKeluar: resolvedMetodePembayaranKeluar || undefined,
       alasan_pending: resolvedAlasanPending || undefined,
       alasanPending: resolvedAlasanPending || undefined,
+      serviceId: resolvedServiceId || undefined,
+      service_id: resolvedServiceId || undefined,
+      tanggalMasukBerkas: resolvedTanggalMasukBerkas || undefined,
+      tanggal_masuk_berkas: resolvedTanggalMasukBerkas || undefined,
+      wilayahSamsatAsal: resolvedSamsatAsal,
+      samsat_asal: resolvedSamsatAsal,
+      wilayahSamsatTujuan: resolvedSamsatTujuan,
+      samsat_tujuan: resolvedSamsatTujuan,
       payment: {
         ...(existing.payment || {}),
         ...(updates.payment || {}),
@@ -312,6 +366,10 @@ export class DbOrderRepository {
         metode_pembayaran_keluar = ?,
         alasan_pending = ?,
         data_json = ?,
+        service_id = ?,
+        tanggal_masuk_berkas = ?,
+        samsat_asal = ?,
+        samsat_tujuan = ?,
         updated_at = datetime('now')
       WHERE order_no = ?
     `);
@@ -332,6 +390,10 @@ export class DbOrderRepository {
       resolvedMetodePembayaranKeluar,
       resolvedAlasanPending,
       JSON.stringify(synchronizedMerged),
+      resolvedServiceId,
+      resolvedTanggalMasukBerkas,
+      resolvedSamsatAsal,
+      resolvedSamsatTujuan,
       orderNo
     );
 
@@ -401,6 +463,72 @@ export class DbOrderRepository {
       : db.prepare("UPDATE orders SET is_archived = 2, updated_at = datetime('now') WHERE order_no = ? AND is_archived = 1");
     const res = synchronizedJson ? stmt.run(synchronizedJson, orderNo) : stmt.run(orderNo);
     return res.changes > 0;
+  }
+
+  public hardDeleteOrder(orderNo: string): boolean {
+    const cleanNo = (orderNo || "").trim().toUpperCase();
+    if (!cleanNo) return false;
+
+    return runInTransaction(() => {
+      // 1. Delete invoice payments referencing order_no or matching invoice_no of order
+      try {
+        db.prepare("DELETE FROM invoice_payments WHERE UPPER(order_no) = ? OR order_no = ?").run(cleanNo, cleanNo);
+        db.prepare(
+          "DELETE FROM invoice_payments WHERE invoice_no IN (SELECT invoice_no FROM finance_invoices WHERE UPPER(order_no) = ? OR order_no = ?)"
+        ).run(cleanNo, cleanNo);
+      } catch (e) {
+        console.warn("[DbOrderRepository] invoice_payments cleanup warning:", e);
+      }
+
+      // 2. Delete finance invoices
+      try {
+        db.prepare("DELETE FROM finance_invoices WHERE UPPER(order_no) = ? OR order_no = ?").run(cleanNo, cleanNo);
+      } catch (e) {
+        console.warn("[DbOrderRepository] finance_invoices cleanup warning:", e);
+      }
+
+      // 3. Delete order documents
+      try {
+        db.prepare("DELETE FROM order_documents WHERE UPPER(order_no) = ? OR order_no = ?").run(cleanNo, cleanNo);
+      } catch (e) {
+        console.warn("[DbOrderRepository] order_documents cleanup warning:", e);
+      }
+
+      // 4. Delete order status history & timeline
+      try {
+        db.prepare("DELETE FROM order_status_history WHERE UPPER(order_no) = ? OR order_no = ?").run(cleanNo, cleanNo);
+      } catch (e) {
+        console.warn("[DbOrderRepository] order_status_history cleanup warning:", e);
+      }
+      try {
+        db.prepare("DELETE FROM order_timeline_processes WHERE UPPER(order_no) = ? OR order_no = ?").run(cleanNo, cleanNo);
+      } catch (e) {
+        console.warn("[DbOrderRepository] order_timeline_processes cleanup warning:", e);
+      }
+
+      // 5. Delete messenger tasks
+      try {
+        db.prepare("DELETE FROM order_messenger_tasks WHERE UPPER(order_no) = ? OR order_no = ?").run(cleanNo, cleanNo);
+      } catch {
+        // ignore
+      }
+
+      // 6. Nullify or delete kas_kantor / pengeluaran references
+      try {
+        db.prepare("DELETE FROM pengeluaran WHERE UPPER(order_no) = ? OR order_no = ?").run(cleanNo, cleanNo);
+      } catch {
+        // ignore
+      }
+      try {
+        db.prepare("UPDATE kas_kantor SET order_no = NULL WHERE UPPER(order_no) = ? OR order_no = ?").run(cleanNo, cleanNo);
+      } catch {
+        // ignore
+      }
+
+      // 7. Finally delete from orders table
+      const res = db.prepare("DELETE FROM orders WHERE UPPER(order_no) = ? OR order_no = ?").run(cleanNo, cleanNo);
+      return res.changes > 0;
+    });
   }
 
   public clearArchivedOrders(): number {

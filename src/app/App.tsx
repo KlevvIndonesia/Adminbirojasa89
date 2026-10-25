@@ -1,4 +1,4 @@
-import { useState, useEffect, lazy, Suspense } from "react";
+import { useState, useEffect, useMemo, useCallback, lazy, Suspense } from "react";
 import { useLocation, useNavigate, Routes, Route, Navigate } from "react-router";
 import { motion, AnimatePresence } from "motion/react";
 import { 
@@ -12,6 +12,9 @@ import {
   Sun,
   Moon,
   ShieldAlert,
+  ArrowLeft,
+  AlertTriangle,
+  Check,
 } from "lucide-react";
 import { ThemeProvider, useTheme } from "./components/ThemeProvider";
 import { ErrorBoundary } from "./components/ErrorBoundary";
@@ -21,6 +24,30 @@ import { useNotifications } from "./data/notificationAdapter";
 import { Button } from "./components/ui/button";
 import { NotFoundPage } from "./components/NotFoundPage";
 import { HeaderReloadButton } from "./utils/useLiveSync";
+import {
+  DropdownMenu,
+  DropdownMenuTrigger,
+  DropdownMenuContent,
+  DropdownMenuItem,
+} from "./components/ui/dropdown-menu";
+import {
+  CANONICAL_SALES_CATEGORIES,
+  CANONICAL_SERVICES_METADATA,
+} from "./components/DataPenjualan";
+import type { CanonicalSalesCategory } from "../domain/finance/types";
+import {
+  AlertDialog,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "./components/ui/alert-dialog";
+import {
+  NavigationGuardContext,
+  CustomHeaderConfig,
+  NavigationGuardConfig,
+} from "./context/NavigationGuardContext";
 
 // Page-level code splitting for on-demand bundle delivery
 const Dashboard = lazy(() => import("./components/Dashboard").then(m => ({ default: m.Dashboard })));
@@ -131,6 +158,54 @@ function AppContent() {
   ]);
   const [isNotificationOpen, setIsNotificationOpen] = useState(false);
   const { theme } = useTheme();
+
+  // Custom Header & Navigation Guard state (Declared unconditionally at top of component)
+  const [customHeader, setCustomHeaderState] = useState<CustomHeaderConfig | null>(null);
+  const [navigationGuard, setNavigationGuardState] = useState<NavigationGuardConfig | null>(null);
+  const [isNavConfirmOpen, setIsNavConfirmOpen] = useState(false);
+  const [pendingNavPath, setPendingNavPath] = useState<string | null>(null);
+
+  const setCustomHeader = useCallback((action: React.SetStateAction<CustomHeaderConfig | null>) => {
+    setCustomHeaderState((prev) => {
+      const config = typeof action === "function" ? action(prev) : action;
+      if (!prev && !config) return prev;
+      if (
+        prev &&
+        config &&
+        prev.title === config.title &&
+        prev.subtitle === config.subtitle &&
+        prev.showBackButton === config.showBackButton &&
+        prev.hideBreadcrumbs === config.hideBreadcrumbs &&
+        prev.onBack === config.onBack
+      ) {
+        return prev;
+      }
+      return config;
+    });
+  }, []);
+
+  const setNavigationGuard = useCallback((action: React.SetStateAction<NavigationGuardConfig | null>) => {
+    setNavigationGuardState((prev) => {
+      const config = typeof action === "function" ? action(prev) : action;
+      if (!prev && !config) return prev;
+      if (
+        prev &&
+        config &&
+        prev.isDirty === config.isDirty &&
+        prev.onDiscard === config.onDiscard
+      ) {
+        return prev;
+      }
+      return config;
+    });
+  }, []);
+
+  const navigationGuardContextValue = useMemo(() => ({
+    customHeader,
+    setCustomHeader,
+    navigationGuard,
+    setNavigationGuard,
+  }), [customHeader, setCustomHeader, navigationGuard, setNavigationGuard]);
 
   // Authoritative Role & Permission Store
   const { canViewPage, getFilteredMenuItems } = usePermissionStore();
@@ -314,15 +389,52 @@ function AppContent() {
   const routeMeta = getRouteMeta(location.pathname);
   const isAllowed = userRole ? canViewPage(userRole, routeMeta.id) : false;
 
+  const isDataPenjualanRoute = location.pathname.startsWith("/finance/data-penjualan");
+  const rawPathCat = location.pathname.replace(/^\/finance\/data-penjualan\/?/, "").split("/")[0];
+  const activeSalesCategory = (rawPathCat && (CANONICAL_SALES_CATEGORIES as string[]).includes(rawPathCat))
+    ? (rawPathCat as CanonicalSalesCategory)
+    : "perpanjangan-1-tahun";
+  const currentCategoryLabel = CANONICAL_SERVICES_METADATA[activeSalesCategory]?.title || "Perpanjangan 1 Tahun";
+
   const handleNavigate = (path: string) => {
+    if (navigationGuard?.isDirty && path !== location.pathname) {
+      setPendingNavPath(path);
+      setIsNavConfirmOpen(true);
+      return;
+    }
     navigate(path);
     if (isMobileSidebarOpen) {
       setIsMobileSidebarOpen(false);
     }
   };
 
+  const handleConfirmLeave = () => {
+    setIsNavConfirmOpen(false);
+    if (pendingNavPath === "__BACK__") {
+      navigationGuard?.onDiscard?.();
+      setCustomHeader(null);
+      setNavigationGuard(null);
+      customHeader?.onBack?.();
+    } else if (pendingNavPath) {
+      navigationGuard?.onDiscard?.();
+      setCustomHeader(null);
+      setNavigationGuard(null);
+      navigate(pendingNavPath);
+      if (isMobileSidebarOpen) {
+        setIsMobileSidebarOpen(false);
+      }
+    }
+    setPendingNavPath(null);
+  };
+
+  const handleCancelLeave = () => {
+    setIsNavConfirmOpen(false);
+    setPendingNavPath(null);
+  };
+
   return (
-    <div className="flex h-screen h-[100dvh] max-h-screen w-full overflow-hidden overscroll-none bg-background">
+    <NavigationGuardContext.Provider value={navigationGuardContextValue}>
+      <div className="flex h-screen h-[100dvh] max-h-screen w-full overflow-hidden overscroll-none bg-background">
       {/* Mobile Sidebar */}
       <AnimatePresence>
         {isMobileSidebarOpen && (
@@ -405,12 +517,73 @@ function AppContent() {
             >
               <Menu className="w-4 h-4" />
             </Button>
+
+            {customHeader?.showBackButton && (
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={() => {
+                  if (navigationGuard?.isDirty) {
+                    setPendingNavPath("__BACK__");
+                    setIsNavConfirmOpen(true);
+                  } else {
+                    customHeader.onBack?.();
+                  }
+                }}
+                className="flex items-center gap-1.5 border-border hover:bg-secondary/50 text-xs h-8 sm:h-9 px-2.5 sm:px-3 shrink-0"
+              >
+                <ArrowLeft className="w-3.5 h-3.5 sm:w-4 sm:h-4 mr-0.5 sm:mr-1" />
+                <span>Kembali</span>
+              </Button>
+            )}
+
             <div className="min-w-0 flex-1">
-              <h1 className="text-sm md:text-base leading-tight font-semibold text-foreground truncate">
-                {routeMeta.title}
-              </h1>
+              <div className="text-sm md:text-base leading-tight font-semibold text-foreground truncate flex items-center gap-1.5">
+                {customHeader?.title ? (
+                  customHeader.title
+                ) : isDataPenjualanRoute ? (
+                  <div className="flex items-center gap-1.5 flex-wrap">
+                    <span>Data Penjualan -</span>
+                    <DropdownMenu>
+                      <DropdownMenuTrigger asChild>
+                        <button
+                          type="button"
+                          className="inline-flex items-center gap-1 font-semibold text-foreground hover:text-primary transition-colors cursor-pointer focus:outline-none focus-visible:ring-1 focus-visible:ring-primary rounded px-1 py-0.5"
+                          title="Pilih layanan Data Penjualan"
+                        >
+                          <span>{currentCategoryLabel}</span>
+                          <ChevronDown className="w-3.5 h-3.5 text-muted-foreground" />
+                        </button>
+                      </DropdownMenuTrigger>
+                      <DropdownMenuContent align="start" className="w-56 bg-card border-border shadow-md">
+                        {CANONICAL_SALES_CATEGORIES.map((catKey) => {
+                          const meta = CANONICAL_SERVICES_METADATA[catKey];
+                          const isSelected = activeSalesCategory === catKey;
+                          return (
+                            <DropdownMenuItem
+                              key={catKey}
+                              onSelect={() => handleNavigate(`/finance/data-penjualan/${catKey}`)}
+                              onClick={() => handleNavigate(`/finance/data-penjualan/${catKey}`)}
+                              className={cn(
+                                "cursor-pointer text-xs font-medium py-2 px-2.5 flex items-center justify-between",
+                                isSelected && "bg-primary/10 text-primary font-bold"
+                              )}
+                            >
+                              <span>{meta.title}</span>
+                              {isSelected && <Check className="w-3.5 h-3.5 text-primary" />}
+                            </DropdownMenuItem>
+                          );
+                        })}
+                      </DropdownMenuContent>
+                    </DropdownMenu>
+                  </div>
+                ) : (
+                  routeMeta.title
+                )}
+              </div>
               <p className="text-[11px] text-muted-foreground hidden sm:block truncate">
-                {routeMeta.description}
+                {customHeader?.subtitle || (isDataPenjualanRoute ? `Rekapitulasi transaksi ${currentCategoryLabel} dan kalkulasi Samsat` : routeMeta.description)}
               </p>
             </div>
           </div>
@@ -447,7 +620,7 @@ function AppContent() {
             <Button
               variant="ghost"
               size="sm"
-              onClick={() => navigate("/settings")}
+              onClick={() => handleNavigate("/settings")}
               aria-label="Pengaturan sistem"
               className="hidden sm:flex h-8 w-8 p-0 shrink-0"
             >
@@ -456,7 +629,7 @@ function AppContent() {
             <button
               type="button"
               className="flex items-center gap-2 pl-1.5 sm:pl-2.5 md:pl-3 border-l border-border/80 cursor-pointer hover:bg-muted/60 rounded-lg px-1.5 py-1 sm:px-2 transition-colors shrink-0 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
-              onClick={() => navigate("/profile")}
+              onClick={() => handleNavigate("/profile")}
               aria-label="Buka profil admin"
             >
               <Avatar className="w-7 h-7">
@@ -473,7 +646,7 @@ function AppContent() {
         </header>
 
         {/* Breadcrumb Bar (Below Header - No border line, compact spacing) */}
-        {routeMeta.breadcrumbs && routeMeta.breadcrumbs.length > 1 && (
+        {!customHeader?.hideBreadcrumbs && routeMeta.breadcrumbs && routeMeta.breadcrumbs.length > 1 && (
           <div className="px-3 sm:px-4 pt-2 pb-0 md:px-6 shrink-0 flex items-center">
             <nav aria-label="Breadcrumb" className="flex items-center gap-1.5 text-[11px] md:text-xs text-muted-foreground truncate">
               {routeMeta.breadcrumbs.map((crumb, idx) => {
@@ -534,7 +707,7 @@ function AppContent() {
                     <Route path="/finance/kas-messenger" element={<Finance defaultTab="kas-messenger" />} />
                     <Route path="/finance/kas-kantor" element={<Finance defaultTab="kas-kantor" />} />
                     <Route path="/finance/pengeluaran" element={<Finance defaultTab="pengeluaran" />} />
-                    <Route path="/finance/data-penjualan" element={<Navigate to="/finance/data-penjualan/mutasi-ld" replace />} />
+                    <Route path="/finance/data-penjualan" element={<Navigate to="/finance/data-penjualan/perpanjangan-1-tahun" replace />} />
                     <Route path="/finance/data-penjualan/:category" element={<Finance defaultTab="penjualan" />} />
                     <Route path="/finance/belum-bayar" element={<Finance defaultTab="belum-bayar" />} />
                     <Route path="/finance/profit-pending" element={<Finance defaultTab="profit-pending" />} />
@@ -586,6 +759,40 @@ function AppContent() {
         </main>
       </div>
     </div>
+
+    {/* Global Navigation Guard Confirmation Dialog */}
+    <AlertDialog open={isNavConfirmOpen} onOpenChange={setIsNavConfirmOpen}>
+      <AlertDialogContent className="border-border sm:max-w-md bg-card">
+        <AlertDialogHeader>
+          <AlertDialogTitle className="text-base font-semibold text-foreground flex items-center gap-2">
+            <AlertTriangle className="w-5 h-5 text-amber-500 shrink-0" />
+            Tinggalkan Halaman?
+          </AlertDialogTitle>
+          <AlertDialogDescription className="text-xs text-muted-foreground leading-relaxed">
+            Perubahan data transaksi yang Anda masukkan belum disimpan. Jika Anda meninggalkan halaman ini sekarang, semua perubahan yang Anda masukkan akan hilang.
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+        <AlertDialogFooter className="mt-4 gap-2 flex items-center justify-between sm:justify-between w-full">
+          <Button
+            size="sm"
+            variant="outline"
+            className="h-8.5 text-xs font-medium"
+            onClick={handleCancelLeave}
+          >
+            Batal
+          </Button>
+          <Button
+            size="sm"
+            variant="destructive"
+            className="h-8.5 text-xs bg-red-600 hover:bg-red-700 text-white font-semibold"
+            onClick={handleConfirmLeave}
+          >
+            Tinggalkan Halaman
+          </Button>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
+  </NavigationGuardContext.Provider>
   );
 }
 

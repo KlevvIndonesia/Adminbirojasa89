@@ -234,12 +234,23 @@ export class MessengerService {
     let tasks = this.getAllCompletedTasksInternal();
 
     // Filter by messenger name or employeeId
-    if (filters?.messenger && filters.messenger !== "all") {
+    if (filters?.employeeId && filters?.messenger && filters.messenger !== "all") {
       const target = filters.messenger.toLowerCase();
-      tasks = tasks.filter((t) => t.messenger.toLowerCase().includes(target));
-    }
-    if (filters?.employeeId) {
-      tasks = tasks.filter((t) => t.messengerEmployeeId === filters.employeeId);
+      const empId = filters.employeeId.toLowerCase();
+      tasks = tasks.filter(
+        (t) =>
+          (t.messengerEmployeeId && t.messengerEmployeeId.toLowerCase() === empId) ||
+          (t.messenger && t.messenger.toLowerCase().includes(target))
+      );
+    } else {
+      if (filters?.messenger && filters.messenger !== "all") {
+        const target = filters.messenger.toLowerCase();
+        tasks = tasks.filter((t) => t.messenger.toLowerCase().includes(target));
+      }
+      if (filters?.employeeId) {
+        const empId = filters.employeeId.toLowerCase();
+        tasks = tasks.filter((t) => t.messengerEmployeeId?.toLowerCase() === empId);
+      }
     }
     if (filters?.taskType && filters.taskType !== "all") {
       tasks = tasks.filter((t) => t.taskType === filters.taskType);
@@ -321,9 +332,31 @@ export class MessengerService {
    */
   public getAllReimbursements(filters?: {
     employeeId?: string;
+    messengerName?: string;
     orderNo?: string;
     status?: string;
   }): ReimbursementRequest[] {
+    if (filters?.employeeId || filters?.messengerName) {
+      const all = dbMessengerRepository.getAllReimbursements({
+        orderNo: filters.orderNo,
+        status: filters.status,
+      });
+
+      const targetEmpId = filters.employeeId?.toLowerCase();
+      const targetName = filters.messengerName?.toLowerCase();
+      const resolvedEmpId = filters.messengerName ? this.resolveMessengerEmpId(filters.messengerName).toLowerCase() : undefined;
+
+      return all.filter((r) => {
+        const rEmpId = r.employeeId?.toLowerCase();
+        const rName = r.messengerName?.toLowerCase();
+        return (
+          (targetEmpId && rEmpId === targetEmpId) ||
+          (resolvedEmpId && rEmpId === resolvedEmpId) ||
+          (targetName && rName === targetName)
+        );
+      });
+    }
+
     return dbMessengerRepository.getAllReimbursements(filters);
   }
 
@@ -362,7 +395,7 @@ export class MessengerService {
     ) as any;
 
     const matchedAdapter = !matchedUser ? INITIAL_KARYAWAN.find(
-      (k) => k.id === rawEmpId || k.employeeId === rawEmpId || k.nama.toLowerCase() === data.messengerName.toLowerCase()
+      (k) => k.id === rawEmpId || (k as any).employeeId === rawEmpId || k.nama.toLowerCase() === data.messengerName.toLowerCase()
     ) : null;
 
     if (!matchedUser && !matchedAdapter) {
@@ -495,6 +528,20 @@ export class MessengerService {
         receiptUrl: existing.receiptUrl || undefined,
         kategori: existing.category,
       });
+
+      // QC-02 Fix: Double-entry balanced bookkeeping. Deduct cash from Kas Kantor (Kredit)
+      const isOfficeCash = !paymentDetails?.channel || paymentDetails?.channel.toLowerCase().includes("kantor") || paymentDetails?.paymentMethod?.toLowerCase().includes("tunai") || paymentDetails?.paymentMethod?.toLowerCase().includes("kas");
+      if (isOfficeCash) {
+        dbFinanceRepository.addKasKantor({
+          tanggal: nowStr,
+          keterangan: `[KAS KELUAR] Pencairan Reimbursement Kurir: ${existing.messengerName} (${existing.category}) [Ref: ${id}]`,
+          status: "Kredit",
+          debit: 0,
+          kredit: amountToPay,
+          penanggungJawab: user.nama,
+          orderNo: existing.orderNo || undefined,
+        });
+      }
 
       // 2. Update reimbursement record
       const updates: Partial<ReimbursementRequest> = {
@@ -678,7 +725,7 @@ export class MessengerService {
     });
   }
 
-  private resolveMessengerEmpId(name: string): string {
+  public resolveMessengerEmpId(name: string): string {
     const found = INITIAL_KARYAWAN.find((k) => k.nama.toLowerCase() === name.toLowerCase());
     return found ? found.id : "EMP-MSG-001";
   }

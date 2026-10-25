@@ -5,16 +5,16 @@
 
 import { SettlementCondition, RefundStatus } from "../order/types";
 
-export type PaymentStatus = "Belum Bayar" | "Kurang Bayar" | "Lunas" | "Kelebihan Bayar";
+export type PaymentStatus = "Belum Bayar" | "Kurang Bayar" | "Lunas" | "Kelebihan Bayar" | "Belum Lunas" | "Kurang" | "CANCELLED" | "BATAL" | "Dibatalkan";
 export type RealizationStatus = "PENDING" | "REALIZED";
-export type BillingLifecycleStatus = "ACTIVE" | "COMPLETED";
+export type BillingLifecycleStatus = "ACTIVE" | "COMPLETED" | "CANCELLED" | "ARCHIVED" | "DRAFT" | "ISSUED" | "PAID" | "OVERPAID" | "UNPAID";
 
 export type PaymentDueTrigger = "IMMEDIATE" | "AFTER_DOCUMENT_RECEIVED";
 export type CollectionState = "BELUM_JATUH_TEMPO" | "JATUH_TEMPO" | "LUNAS";
 
 export interface PaymentSyncPayload {
   orderNo: string;
-  statusPembayaran: "Lunas" | "Belum Bayar" | "Kurang Bayar" | "Kelebihan Bayar" | "Belum Lunas" | "Kurang";
+  statusPembayaran: PaymentStatus | "Lunas" | "Belum Bayar" | "Kurang Bayar" | "Kelebihan Bayar" | "Belum Lunas" | "Kurang" | string;
   dibayar: number;
   kurang: number;
   totalBiaya: number;
@@ -73,6 +73,7 @@ export interface InvoiceBillingRecord {
   metodePembayaran?: string;
   bank?: string;
   alasanPending?: string;
+  alasan?: string;
   keterangan?: string;
 
   // Final Cost Reconciliation & Collection Status
@@ -81,9 +82,39 @@ export interface InvoiceBillingRecord {
   settlementCondition?: SettlementCondition;
   refundStatus?: RefundStatus;
   overpayment?: number;
+
+  // Supervision & Gating Metadata
+  isPaymentGated?: boolean;
+  hasFinalCost?: boolean;
+  isSupervisiApproved?: boolean;
+  paymentGatingReason?: string;
+  kekurangan?: number;
+  pengurusan?: string;
+  spvApprovedAt?: string;
+  spvName?: string;
+  alasan_pending?: string;
+  serviceId?: string;
+  service_id?: string;
+  total_tagihan?: number;
+  biaya_jasa?: number;
+  biaya_samsat?: number;
+  pendapatan_jasa?: number;
+  isCancelled?: boolean;
+  cancellationReason?: string;
 }
 
+export type CanonicalSalesCategory =
+  | "perpanjangan-1-tahun"
+  | "perpanjangan-5-tahun"
+  | "mutasi-asal"
+  | "mutasi-antar-daerah"
+  | "balik-nama"
+  | "tarik-berkas"
+  | "duplikat-stnk"
+  | "lainnya";
+
 export type PenjualanContractCategory =
+  | CanonicalSalesCategory
   | "mutasi-ld"
   | "mutasi-as"
   | "bbn"
@@ -148,6 +179,13 @@ export interface KasKantorItem {
   debit: number;
   kredit: number;
   total: number;
+  tipe?: string;
+  saldo?: number;
+  masuk?: number;
+  keluar?: number;
+  metode?: string;
+  bank?: string;
+  kategori?: string;
   invoiceRef?: string;
   penanggungJawab?: string;
 }
@@ -158,6 +196,13 @@ export interface PengeluaranItem {
   keterangan: string;
   nominal: number;
   penanggungJawab?: string;
+}
+
+export interface LabaRugiMonthlyItem {
+  bulan: string;
+  pendapatan: number;
+  pengeluaran: number;
+  laba: number;
 }
 
 export interface BelumKurangBayarItem {

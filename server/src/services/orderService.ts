@@ -12,8 +12,85 @@ import { notificationConfigService } from "./notificationConfigService";
 import { OperationalOrder, StageName, STAGES, getDefaultSamsatProcesses } from "../../../src/domain/order/types";
 import { ApiError } from "../middleware/errorHandler";
 import { TokenPayload } from "../utils/crypto";
-import { runInTransaction } from "../database/db";
+import { db, runInTransaction } from "../database/db";
 import { assertNoProtectedFieldViolations, normalizeOrderPayload } from "../utils/aliasNormalizer";
+import { validateOrderPricingSanity } from "../utils/pricingSanityCheck";
+
+export const CANONICAL_SERVICES_MAP: Record<string, { id: string; nama: string }> = {
+  // 1. Perpanjangan 1 Tahun
+  "svc-perp-1th": { id: "svc-perp-1th", nama: "Perpanjangan 1 Tahun" },
+  "perp_1thn": { id: "svc-perp-1th", nama: "Perpanjangan 1 Tahun" },
+  "perpanjangan 1 tahun": { id: "svc-perp-1th", nama: "Perpanjangan 1 Tahun" },
+  "tahunan": { id: "svc-perp-1th", nama: "Perpanjangan 1 Tahun" },
+  "perpanjangan stnk tahunan": { id: "svc-perp-1th", nama: "Perpanjangan 1 Tahun" },
+  "perpanjangan stnk": { id: "svc-perp-1th", nama: "Perpanjangan 1 Tahun" },
+
+  // 2. Perpanjangan 5 Tahun
+  "svc-perp-5th": { id: "svc-perp-5th", nama: "Perpanjangan 5 Tahun" },
+  "perp_5thn": { id: "svc-perp-5th", nama: "Perpanjangan 5 Tahun" },
+  "perpanjangan 5 tahun": { id: "svc-perp-5th", nama: "Perpanjangan 5 Tahun" },
+  "5 tahunan": { id: "svc-perp-5th", nama: "Perpanjangan 5 Tahun" },
+  "perpanjangan plat 5 tahun": { id: "svc-perp-5th", nama: "Perpanjangan 5 Tahun" },
+  "ganti plat 5 tahun": { id: "svc-perp-5th", nama: "Perpanjangan 5 Tahun" },
+
+  // 3. Mutasi Asal Samsat
+  "svc-mut-asal": { id: "svc-mut-asal", nama: "Mutasi Asal Samsat" },
+  "mut_asal": { id: "svc-mut-asal", nama: "Mutasi Asal Samsat" },
+  "mutasi asal samsat": { id: "svc-mut-asal", nama: "Mutasi Asal Samsat" },
+  "mutasi antar samsat": { id: "svc-mut-asal", nama: "Mutasi Asal Samsat" },
+  "mutasi as": { id: "svc-mut-asal", nama: "Mutasi Asal Samsat" },
+  "mutasi satu daerah": { id: "svc-mut-asal", nama: "Mutasi Asal Samsat" },
+  "mutasi lokal": { id: "svc-mut-asal", nama: "Mutasi Asal Samsat" },
+
+  // 4. Mutasi Antar Daerah
+  "svc-mut-antar": { id: "svc-mut-antar", nama: "Mutasi Antar Daerah" },
+  "mut_antar": { id: "svc-mut-antar", nama: "Mutasi Antar Daerah" },
+  "mutasi antar daerah": { id: "svc-mut-antar", nama: "Mutasi Antar Daerah" },
+  "mutasi luar daerah": { id: "svc-mut-antar", nama: "Mutasi Antar Daerah" },
+  "mutasi ld": { id: "svc-mut-antar", nama: "Mutasi Antar Daerah" },
+  "mutasi keluar daerah": { id: "svc-mut-antar", nama: "Mutasi Antar Daerah" },
+
+  // 5. Balik Nama
+  "svc-balik-nama": { id: "svc-balik-nama", nama: "Balik Nama" },
+  "balik_nama": { id: "svc-balik-nama", nama: "Balik Nama" },
+  "balik nama": { id: "svc-balik-nama", nama: "Balik Nama" },
+  "bbn": { id: "svc-balik-nama", nama: "Balik Nama" },
+  "bbn-kb": { id: "svc-balik-nama", nama: "Balik Nama" },
+
+  // 6. Tarik Berkas
+  "svc-tarik-berkas": { id: "svc-tarik-berkas", nama: "Tarik Berkas" },
+  "tarik_berkas": { id: "svc-tarik-berkas", nama: "Tarik Berkas" },
+  "tarik berkas": { id: "svc-tarik-berkas", nama: "Tarik Berkas" },
+  "cabut berkas": { id: "svc-tarik-berkas", nama: "Tarik Berkas" },
+
+  // 7. Duplikat STNK
+  "svc-duplikat-stnk": { id: "svc-duplikat-stnk", nama: "Duplikat STNK" },
+  "duplikat_stnk": { id: "svc-duplikat-stnk", nama: "Duplikat STNK" },
+  "duplikat stnk": { id: "svc-duplikat-stnk", nama: "Duplikat STNK" },
+  "stnk hilang": { id: "svc-duplikat-stnk", nama: "Duplikat STNK" },
+};
+
+export function resolveServiceIdentity(
+  serviceIdInput?: string | null,
+  layananInput?: string | null
+): { serviceId: string | null; namaLayanan: string } {
+  const normSvcId = (serviceIdInput || "").trim().toLowerCase();
+  if (normSvcId && CANONICAL_SERVICES_MAP[normSvcId]) {
+    const match = CANONICAL_SERVICES_MAP[normSvcId];
+    return { serviceId: match.id, namaLayanan: match.nama };
+  }
+
+  const normLayanan = (layananInput || "").trim().toLowerCase();
+  if (normLayanan && CANONICAL_SERVICES_MAP[normLayanan]) {
+    const match = CANONICAL_SERVICES_MAP[normLayanan];
+    return { serviceId: match.id, namaLayanan: match.nama };
+  }
+
+  return {
+    serviceId: serviceIdInput || null,
+    namaLayanan: layananInput || "Layanan Standar",
+  };
+}
 
 export class OrderService {
   private orderCounter = 0;
@@ -21,15 +98,25 @@ export class OrderService {
 
   constructor() {
     try {
-      const orders = dbOrderRepository.getAllFlat(false);
-      if (orders.length > 0) {
-        // Find highest order number
-        const nums = orders
+      // 1. Scan ALL orders (including archived) to prevent counter reset
+      const activeOrders = dbOrderRepository.getAllFlat(false);
+      const archivedOrders = dbOrderRepository.getAllFlat(true);
+      const allOrders = [...activeOrders, ...archivedOrders];
+      if (allOrders.length > 0) {
+        const nums = allOrders
           .map((o) => parseInt(o.orderNo.replace(/\D/g, ""), 10))
           .filter((n) => !isNaN(n));
         if (nums.length > 0) {
           this.orderCounter = Math.max(0, ...nums);
         }
+      }
+
+      // 2. Direct atomic SQLite query across all historical rows to guarantee highest sequence
+      const row = db
+        .prepare("SELECT COALESCE(MAX(CAST(SUBSTR(order_no, 5) AS INTEGER)), 0) AS maxSeq FROM orders")
+        .get() as { maxSeq: number } | undefined;
+      if (row && typeof row.maxSeq === "number" && row.maxSeq > this.orderCounter) {
+        this.orderCounter = row.maxSeq;
       }
     } catch {
       // safe fallback if schema not yet initialized
@@ -85,25 +172,118 @@ export class OrderService {
       throw new ApiError(400, "VALIDATION_ERROR", "Data wajib belum lengkap (customer, nomorHP, layanan, nopol).");
     }
 
-    this.orderCounter++;
-    const orderNo = `ORD-${String(this.orderCounter).padStart(4, "0")}`;
+    // Server-side Pricing Sanity & Anti-Tampering Guard
+    const pricingSanity = validateOrderPricingSanity(data);
+    if (!pricingSanity.isValid) {
+      throw new ApiError(
+        400,
+        pricingSanity.errorCode || "VALIDATION_ERROR",
+        pricingSanity.errorMessage || "Kalkulasi harga order tidak valid atau terindikasi manipulasi."
+      );
+    }
+
+    const resolvedTanggalBerkas = (data as any).tanggalMasukBerkas || (data as any).tanggal_masuk_berkas || undefined;
     const nowStr = new Date().toISOString();
+
+    const parsePeriodMMYY = (dateVal?: string): string => {
+      if (!dateVal) {
+        const d = new Date();
+        const mm = String(d.getMonth() + 1).padStart(2, "0");
+        const yy = String(d.getFullYear()).slice(-2);
+        return `${mm}${yy}`;
+      }
+      const iso = dateVal.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/);
+      if (iso) {
+        const yy = iso[1].slice(-2);
+        const mm = iso[2].padStart(2, "0");
+        return `${mm}${yy}`;
+      }
+      const slash = dateVal.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})/);
+      if (slash) {
+        const mm = slash[2].padStart(2, "0");
+        const yy = slash[3].slice(-2);
+        return `${mm}${yy}`;
+      }
+      const d = new Date(dateVal);
+      if (!isNaN(d.getTime())) {
+        const mm = String(d.getMonth() + 1).padStart(2, "0");
+        const yy = String(d.getFullYear()).slice(-2);
+        return `${mm}${yy}`;
+      }
+      const dNow = new Date();
+      return `${String(dNow.getMonth() + 1).padStart(2, "0")}${String(dNow.getFullYear()).slice(-2)}`;
+    };
+
+    const targetMMYY = parsePeriodMMYY(resolvedTanggalBerkas || nowStr);
+
+    let orderNo = (data.orderNo || "").trim();
+    const orderPattern = new RegExp(`^ORD-${targetMMYY}-\\d+$`);
+    let isTaken = false;
+    if (orderNo && orderPattern.test(orderNo)) {
+      try {
+        const existing = db.prepare("SELECT 1 FROM orders WHERE order_no = ?").get(orderNo);
+        if (existing) isTaken = true;
+      } catch {
+        // safe fallback
+      }
+    }
+    if (!orderNo || !orderPattern.test(orderNo) || isTaken) {
+      let maxSeq = 0;
+      try {
+        const rows = db.prepare("SELECT order_no FROM orders WHERE order_no LIKE ?").all(`ORD-${targetMMYY}-%`) as { order_no: string }[];
+        for (const r of rows) {
+          const parts = r.order_no.split("-");
+          if (parts.length >= 3) {
+            const seq = parseInt(parts[2], 10);
+            if (!isNaN(seq) && seq > maxSeq) maxSeq = seq;
+          }
+        }
+      } catch {
+        // safe fallback
+      }
+      const nextSeq = maxSeq + 1;
+      orderNo = `ORD-${targetMMYY}-${String(nextSeq).padStart(3, "0")}`;
+    }
+
+    const orderParts = orderNo.split("-");
+    const seqSuffix = orderParts.length >= 3 ? orderParts[2] : "001";
+    const matchingInvoiceNo = `INV-${targetMMYY}-${seqSuffix}`;
+
+    const rawNoInvoice = data.noInvoice !== undefined
+      ? data.noInvoice
+      : (data.payment?.invoiceNo !== undefined ? data.payment.invoiceNo : undefined);
+
+    const resolvedNoInvoice = (rawNoInvoice && String(rawNoInvoice).trim() && !String(rawNoInvoice).startsWith("INV-2026"))
+      ? String(rawNoInvoice).trim()
+      : matchingInvoiceNo;
+
     const resolvedMetodeLayanan = data.metodeLayanan || data.costSnapshot?.metodeLayanan || "Antar Jemput";
     const isDatangLangsung = resolvedMetodeLayanan === "Datang Langsung";
     const initialStep = isDatangLangsung ? 3 : 1;
     const initialStageName: StageName = isDatangLangsung ? "Verifikasi Dokumen" : "Verifikasi";
 
     const resolvedStatusPengerjaan = data.salesSnapshotStatus || data.statusPengerjaan;
-    const resolvedNoInvoice = data.noInvoice !== undefined
-      ? data.noInvoice
-      : (data.payment?.invoiceNo !== undefined ? data.payment.invoiceNo : undefined);
+
+    const resolvedSvc = resolveServiceIdentity((data as any).service_id || (data as any).serviceId, data.layanan);
+    const resolvedLayanan = resolvedSvc.namaLayanan;
+    const resolvedServiceId = resolvedSvc.serviceId;
+    const resolvedSamsatAsal = (data as any).samsat_asal || (data as any).samsatAsal || data.wilayahSamsatAsal || "Jakarta Timur";
+    const resolvedSamsatTujuan = (data as any).samsat_tujuan || (data as any).samsatTujuan || data.wilayahSamsatTujuan || "-";
 
     const newOrder: OperationalOrder = {
       orderNo,
       ...(resolvedKey ? { clientRequestId: resolvedKey } : {}),
       customer: data.customer,
       nomorHP: data.nomorHP,
-      layanan: data.layanan,
+      layanan: resolvedLayanan,
+      serviceId: resolvedServiceId || undefined,
+      service_id: resolvedServiceId || undefined,
+      tanggalMasukBerkas: resolvedTanggalBerkas,
+      tanggal_masuk_berkas: resolvedTanggalBerkas,
+      wilayahSamsatAsal: resolvedSamsatAsal,
+      samsat_asal: resolvedSamsatAsal,
+      wilayahSamsatTujuan: resolvedSamsatTujuan,
+      samsat_tujuan: resolvedSamsatTujuan,
       metodeLayanan: resolvedMetodeLayanan,
       currentStep: data.currentStep !== undefined ? data.currentStep : initialStep,
       currentStageName: data.currentStageName || initialStageName,
@@ -127,15 +307,14 @@ export class OrderService {
       nominalPkbTerakhir: data.nominalPkbTerakhir ?? 0,
       nominalSwdkllj: data.nominalSwdkllj ?? 143000,
       kodePromo: data.kodePromo || "",
-      wilayahSamsatAsal: data.wilayahSamsatAsal || "Jakarta Timur",
-      wilayahSamsatTujuan: data.wilayahSamsatTujuan || "-",
 
-      biayaJasa: Number(data.biayaJasa ?? data.profit ?? 0),
+      biayaJasa: pricingSanity.resolvedBiayaJasa,
       biayaAntarJemput: Number(data.biayaAntarJemput ?? 0),
       namaPenerimaKeluar: (data.namaPenerimaKeluar || data.namaPemilikRekeningKeluar || "").trim(),
       bankUangKeluar: data.bankUangKeluar || "",
       metodePembayaranKeluar: data.metodePembayaranKeluar || "",
       tanggalPengeluaranSamsat: data.tanggalPengeluaranSamsat || data.tanggalUangKeluar || "",
+      tanggalUangMasuk: (data as any).tanggalUangMasuk || "",
 
       ...(resolvedStatusPengerjaan ? { salesSnapshotStatus: resolvedStatusPengerjaan, statusPengerjaan: resolvedStatusPengerjaan } : {}),
       ...(resolvedNoInvoice !== undefined ? { noInvoice: resolvedNoInvoice } : {}),
@@ -189,9 +368,9 @@ export class OrderService {
         ...(data.payment || {}),
         tipePembayaran: data.payment?.tipePembayaran || data.tipePembayaran || "Bayar di Akhir",
         metodePembayaran: data.payment?.metodePembayaran || data.metodePembayaran || "Transfer Bank",
-        totalBiaya: data.payment?.totalBiaya ?? data.totalEstimasi ?? data.biayaJasa ?? 0,
+        totalBiaya: pricingSanity.resolvedTotalBiaya,
         dibayar: data.payment?.dibayar ?? 0,
-        kurang: data.payment?.kurang ?? (data.totalEstimasi || data.biayaJasa || 0),
+        kurang: Math.max(0, pricingSanity.resolvedTotalBiaya - Number(data.payment?.dibayar ?? 0)),
         statusPembayaran: data.payment?.statusPembayaran || "Belum Lunas",
         isPaymentVerified: data.payment?.isPaymentVerified ?? false,
         invoiceNo: resolvedNoInvoice !== undefined ? resolvedNoInvoice : `INV-${orderNo}`,
@@ -211,8 +390,10 @@ export class OrderService {
       const totalTagihan = newOrder.payment.totalBiaya;
       const isLunas = initialPaid >= totalTagihan && totalTagihan > 0;
       dbFinanceRepository.saveInvoice({
-        invoiceNo: (resolvedNoInvoice && resolvedNoInvoice.trim()) ? resolvedNoInvoice : `INV-${orderNo}`,
+        invoiceNo: (resolvedNoInvoice && resolvedNoInvoice.trim()) ? resolvedNoInvoice : matchingInvoiceNo,
         orderNo: orderNo,
+        service_id: resolvedServiceId || undefined,
+        serviceId: resolvedServiceId || undefined,
         customer: newOrder.customer,
         layanan: newOrder.layanan,
         nopol: newOrder.nopol,
@@ -220,13 +401,14 @@ export class OrderService {
         totalTagihan,
         dibayar: initialPaid,
         sisa: Math.max(0, totalTagihan - initialPaid),
-        biayaSamsat: Number(data.biayaSamsat ?? data.uangKeluar ?? 0),
-        pendapatanJasa: Number(data.biayaJasa ?? data.profit ?? Math.max(0, totalTagihan - Number(data.biayaSamsat ?? data.uangKeluar ?? 0))),
-        biayaJasa: Number(data.biayaJasa ?? data.profit ?? 0),
+        biayaSamsat: pricingSanity.resolvedBiayaSamsat,
+        pendapatanJasa: Number(pricingSanity.resolvedBiayaJasa || Math.max(0, totalTagihan - pricingSanity.resolvedBiayaSamsat)),
+        biayaJasa: pricingSanity.resolvedBiayaJasa,
         biayaAntarJemput: Number(data.biayaAntarJemput ?? 0),
         namaPenerimaKeluar: (data.namaPenerimaKeluar || data.namaPemilikRekeningKeluar || "").trim(),
         jatuhTempo: new Date(Date.now() + 7 * 86400000).toISOString().split("T")[0],
-        tanggalInvoice: nowStr.split("T")[0],
+        tanggalInvoice: resolvedTanggalBerkas || nowStr.split("T")[0],
+        profit: Math.max(0, initialPaid - pricingSanity.resolvedBiayaSamsat - Number((data as any).biayaLainnya || 0)),
       } as any);
 
       // Audit Log
@@ -350,12 +532,53 @@ export class OrderService {
     }
 
     // Defense in Depth: Reject server-controlled and approval-gated fields across all alias variants
-    assertNoProtectedFieldViolations(updates);
+    assertNoProtectedFieldViolations(updates, user);
 
     // Canonicalize update payload and resolve alias conflicts
     normalizeOrderPayload(updates);
 
     const safeUpdates: Partial<OperationalOrder> = { ...updates };
+
+    // Resolve service identity if service_id or layanan is updated
+    if (safeUpdates.layanan || (safeUpdates as any).service_id || (safeUpdates as any).serviceId) {
+      const resolvedSvc = resolveServiceIdentity(
+        (safeUpdates as any).service_id || (safeUpdates as any).serviceId,
+        safeUpdates.layanan
+      );
+      if (resolvedSvc.serviceId) {
+        (safeUpdates as any).service_id = resolvedSvc.serviceId;
+        (safeUpdates as any).serviceId = resolvedSvc.serviceId;
+      }
+      if (safeUpdates.layanan) {
+        safeUpdates.layanan = resolvedSvc.namaLayanan;
+      }
+    }
+
+    if (safeUpdates.tanggalMasukBerkas) (safeUpdates as any).tanggal_masuk_berkas = safeUpdates.tanggalMasukBerkas;
+    if ((safeUpdates as any).tanggal_masuk_berkas) safeUpdates.tanggalMasukBerkas = (safeUpdates as any).tanggal_masuk_berkas;
+
+    if (safeUpdates.wilayahSamsatAsal) (safeUpdates as any).samsat_asal = safeUpdates.wilayahSamsatAsal;
+    if ((safeUpdates as any).samsat_asal) safeUpdates.wilayahSamsatAsal = (safeUpdates as any).samsat_asal;
+
+    if (safeUpdates.wilayahSamsatTujuan) (safeUpdates as any).samsat_tujuan = safeUpdates.wilayahSamsatTujuan;
+    if ((safeUpdates as any).samsat_tujuan) safeUpdates.wilayahSamsatTujuan = (safeUpdates as any).samsat_tujuan;
+
+    const incomingTotal = Number(
+      safeUpdates.payment?.totalBiaya ??
+      (safeUpdates as any).total_biaya ??
+      (safeUpdates as any).totalBiaya ??
+      (safeUpdates as any).totalEstimasi ??
+      0
+    );
+    if (incomingTotal > 0) {
+      (safeUpdates as any).total_biaya = incomingTotal;
+      if (!safeUpdates.payment) safeUpdates.payment = { ...(existing.payment || {}) } as any;
+      if (safeUpdates.payment) safeUpdates.payment.totalBiaya = incomingTotal;
+    }
+
+    if ((safeUpdates as any).biayaLainnya !== undefined) {
+      (safeUpdates as any).biaya_lainnya = Number((safeUpdates as any).biayaLainnya);
+    }
 
     return runInTransaction(() => {
       // Invalidate existing Supervisor approval if fundamental order data changes after approval
@@ -374,15 +597,55 @@ export class OrderService {
       const updated = this.getByOrderNo(orderNo);
       this.linkOrderDocuments(updated);
 
-      // Financial sync if order header (customer, layanan, nopol) was modified
+      // Financial and Invoice atomic sync across orders and finance_invoices
       const inv = dbFinanceRepository.getInvoiceByOrderNo(orderNo);
-      if (inv && (safeUpdates.customer || safeUpdates.layanan || safeUpdates.nopol)) {
+      if (inv) {
+        const resolvedSvcId = (safeUpdates as any).service_id || (safeUpdates as any).serviceId || inv.service_id || (inv as any).serviceId;
+        const newTotal = incomingTotal > 0
+          ? incomingTotal
+          : Number(inv.totalTagihan ?? inv.total_tagihan ?? 0);
+        const newSamsat = (safeUpdates as any).biayaSamsat !== undefined
+          ? Number((safeUpdates as any).biayaSamsat)
+          : ((safeUpdates as any).uangKeluar !== undefined
+              ? Number((safeUpdates as any).uangKeluar)
+              : Number(inv.biayaSamsat ?? inv.biaya_samsat ?? 0));
+        const newJasa = (safeUpdates as any).biayaJasa !== undefined
+          ? Number((safeUpdates as any).biayaJasa)
+          : ((safeUpdates as any).profit !== undefined
+              ? Number((safeUpdates as any).profit)
+              : Number(inv.biayaJasa ?? inv.biaya_jasa ?? 0));
+        const newAntarJemput = (safeUpdates as any).biayaAntarJemput !== undefined
+          ? Number((safeUpdates as any).biayaAntarJemput)
+          : Number(inv.biayaAntarJemput ?? inv.biaya_antar_jemput ?? 0);
+        const currentDibayar = Number(inv.dibayar ?? 0);
+        const newSisa = Math.max(0, newTotal - currentDibayar);
+        const newStatus = currentDibayar >= newTotal && newTotal > 0 ? "PAID" : currentDibayar > 0 ? "PARTIAL" : "UNPAID";
+
         dbFinanceRepository.saveInvoice({
           ...inv,
           customer: safeUpdates.customer || inv.customer,
           layanan: safeUpdates.layanan || inv.layanan,
+          service_id: resolvedSvcId || undefined,
+          serviceId: resolvedSvcId || undefined,
           nopol: safeUpdates.nopol || inv.nopol,
+          totalTagihan: newTotal,
+          biayaSamsat: newSamsat,
+          pendapatanJasa: newJasa,
+          biayaJasa: newJasa,
+          biayaAntarJemput: newAntarJemput,
+          sisa: newSisa,
+          status: newStatus as any,
+          namaPenerimaKeluar: (safeUpdates as any).namaPenerimaKeluar || (safeUpdates as any).namaPemilikRekeningKeluar || (inv as any).namaPenerimaKeluar || undefined,
+          tandaTerima: (safeUpdates as any).tandaTerima || (inv as any).tandaTerima || undefined,
+          ttbBPKB: (safeUpdates as any).ttbBPKB || (inv as any).ttbBPKB || undefined,
         });
+
+        // Direct SQL update to ensure immediate persistence in SQLite table
+        db.prepare(`
+          UPDATE finance_invoices
+          SET total_tagihan = ?, biaya_samsat = ?, pendapatan_jasa = ?, biaya_jasa = ?, biaya_antar_jemput = ?, sisa = ?, status = ?, updated_at = datetime('now')
+          WHERE order_no = ?
+        `).run(newTotal, newSamsat, newJasa, newJasa, newAntarJemput, newSisa, newStatus, orderNo);
       }
 
       // Audit Log with verified actor
@@ -797,6 +1060,26 @@ export class OrderService {
     });
   }
 
+  public hardDeleteOrder(orderNo: string, user?: TokenPayload | null): boolean {
+    return runInTransaction(() => {
+      const success = dbOrderRepository.hardDeleteOrder(orderNo);
+      if (success) {
+        dbAuditRepository.save({
+          id: `log-ord-hard-del-${Date.now()}`,
+          userId: user?.userId || "usr-admin",
+          userName: user?.nama || "Admin API",
+          userRole: user?.role || "admin",
+          action: "DELETE",
+          module: "Data Penjualan",
+          details: `Menghapus data order secara permanen (Hard Delete): ${orderNo}`,
+          metadata: { orderNo },
+          createdAt: new Date().toISOString(),
+        });
+      }
+      return success;
+    });
+  }
+
   public cancelOrder(orderNo: string, reason: string, user?: TokenPayload | null): OperationalOrder {
     if (!reason || !reason.trim()) {
       throw new ApiError(400, "VALIDATION_ERROR", "Alasan pembatalan order wajib diisi.");
@@ -827,12 +1110,23 @@ export class OrderService {
       // Also update matching invoice
       const inv = dbFinanceRepository.getInvoiceByOrderNo(orderNo);
       if (inv) {
-        dbFinanceRepository.updateInvoice(inv.id, {
+        const paidAmount = Number(inv.dibayar ?? inv.terbayar ?? 0);
+        const invoiceUpdates: any = {
           status: "CANCELLED" as any,
           billingStatus: "CANCELLED" as any,
           keterangan: `Order dibatalkan: ${reason.trim()}`,
           alasan_pending: reason.trim(),
-        });
+        };
+
+        // QC-01 Fix: If customer already paid deposit/full amount, route funds to Cashback Terpending (Refund Liability)
+        if (paidAmount > 0) {
+          invoiceUpdates.overpayment = paidAmount;
+          invoiceUpdates.refundStatus = "PENDING";
+          invoiceUpdates.settlementCondition = "OVERPAID";
+          invoiceUpdates.keterangan = `Order dibatalkan: ${reason.trim()} (Dana setoran Rp ${paidAmount.toLocaleString("id-ID")} dialihkan ke Refund/Cashback Terpending)`;
+        }
+
+        dbFinanceRepository.updateInvoice(inv.id, invoiceUpdates);
       }
 
       // Save audit log

@@ -26,14 +26,14 @@ export function parsePlateNumber(raw: string | null | undefined): PlateParts {
     // Find first token with digits for the number part
     const numIdx = tokens.findIndex((t, idx) => idx > 0 && /\d/.test(t));
     if (numIdx !== -1) {
-      const number = tokens[numIdx].replace(/\D/g, "").slice(0, 4);
+      const number = tokens[numIdx].replace(/\D/g, "").slice(0, 6);
       const suffix = tokens.slice(numIdx + 1).join("").replace(/[^A-Z]/g, "").slice(0, 3);
       return { prefix, number, suffix };
     }
   }
 
   // 2. Continuous string pattern: e.g. "B1234ABC", "D5678EFG", "AB12CD"
-  const continuousMatch = cleaned.replace(/[\s-]/g, "").match(/^([A-Z]{1,2})(\d{1,4})([A-Z]{0,3})$/);
+  const continuousMatch = cleaned.replace(/[\s-]/g, "").match(/^([A-Z]{1,2})(\d{1,6})([A-Z]{0,3})$/);
   if (continuousMatch) {
     return {
       prefix: continuousMatch[1],
@@ -43,11 +43,11 @@ export function parsePlateNumber(raw: string | null | undefined): PlateParts {
   }
 
   // 3. Fallback for non-standard / incomplete inputs: extract leading letters, middle digits, trailing letters
-  const matchGeneric = cleaned.match(/^([A-Z]{1,3})?\s*(\d{1,5})?\s*([A-Z]{1,4})?$/);
+  const matchGeneric = cleaned.match(/^([A-Z]{1,3})?\s*(\d{1,6})?\s*([A-Z]{1,4})?$/);
   if (matchGeneric) {
     return {
       prefix: (matchGeneric[1] || "B").slice(0, 2),
-      number: (matchGeneric[2] || "").slice(0, 4),
+      number: (matchGeneric[2] || "").slice(0, 6),
       suffix: (matchGeneric[3] || "").slice(0, 3),
     };
   }
@@ -55,7 +55,7 @@ export function parsePlateNumber(raw: string | null | undefined): PlateParts {
   // 4. Ultimate safe fallback: preserve first word as prefix if letters, otherwise use "B"
   return {
     prefix: tokens[0]?.slice(0, 2) || "B",
-    number: (tokens[1] || "").replace(/\D/g, "").slice(0, 4),
+    number: (tokens[1] || "").replace(/\D/g, "").slice(0, 6),
     suffix: tokens.slice(2).join("").slice(0, 3),
   };
 }
@@ -65,7 +65,7 @@ export function parsePlateNumber(raw: string | null | undefined): PlateParts {
  */
 export function formatPlateNumber(prefix: string, number: string, suffix: string): string {
   const cleanPrefix = prefix.trim().toUpperCase().replace(/[^A-Z]/g, "").slice(0, 2);
-  const cleanNumber = number.trim().replace(/\D/g, "").slice(0, 4);
+  const cleanNumber = number.trim().replace(/\D/g, "").slice(0, 6);
   const cleanSuffix = suffix.trim().toUpperCase().replace(/[^A-Z]/g, "").slice(0, 3);
 
   const parts = [cleanPrefix, cleanNumber, cleanSuffix].filter(Boolean);
@@ -132,7 +132,7 @@ export function PlateNumberInput({
   };
 
   const handleNumberChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const val = e.target.value.replace(/\D/g, "").slice(0, 4);
+    const val = e.target.value.replace(/\D/g, "").slice(0, 6);
     updateParts(prefix, val, suffix);
   };
 
@@ -164,13 +164,13 @@ export function PlateNumberInput({
         <div className="flex-1 min-w-[70px]">
           <Input
             placeholder="1234"
-            maxLength={4}
+            maxLength={6}
             value={number}
             onChange={handleNumberChange}
             disabled={disabled}
             required={required}
             aria-label="Nomor Plat (Angka)"
-            title="Nomor Plat Kendaraan (1 - 4 Digit)"
+            title="Nomor Plat Kendaraan (1 - 6 Digit)"
             className={cn(
               "h-8.5 text-xs font-mono font-bold text-center tracking-widest bg-background border-border",
               hasError && "border-destructive ring-1 ring-destructive/40"

@@ -52,6 +52,7 @@ import {
   calculateOrderTagihan,
 } from "../data/messengerTaskAdapter";
 import { formatRupiah } from "../utils/financeFormatters";
+import { apiMessengerProvider } from "../../data/api/apiMessengerProvider";
 
 interface MessengerWithStats {
   employeeId: string;
@@ -113,11 +114,34 @@ export function MessengerHistory() {
   const [previewDoc, setPreviewDoc] = useState<{ isOpen: boolean; url?: string; title?: string }>({ isOpen: false });
 
   // ----------------------------------------------------
-  // 1. Derive All Completed Tasks Across Orders
+  // 1. Server-Side Messenger History with Local Fallback
   // ----------------------------------------------------
+  const [serverTasks, setServerTasks] = useState<MessengerHistoryItem[] | null>(null);
+
+  useEffect(() => {
+    let isMounted = true;
+    apiMessengerProvider
+      .getMessengerHistory()
+      .then((data) => {
+        if (isMounted && Array.isArray(data) && data.length > 0) {
+          setServerTasks(data);
+        }
+      })
+      .catch((err) => {
+        // Fallback transparently to local state store if server is unreachable
+        console.debug("Backend messenger history query fallback to local derivation:", err);
+      });
+    return () => {
+      isMounted = false;
+    };
+  }, []);
+
   const allCompletedTasks = useMemo(() => {
+    if (serverTasks && serverTasks.length > 0) {
+      return serverTasks;
+    }
     return deriveAllMessengerHistory(activeOrders, archivedOrders);
-  }, [activeOrders, archivedOrders]);
+  }, [serverTasks, activeOrders, archivedOrders]);
 
   // ----------------------------------------------------
   // 2. Gather All Real Messengers & Aggregate Statistics
@@ -463,8 +487,8 @@ export function MessengerHistory() {
     }
 
     // 4. Component progress updates
-    if (rawOrder.componentProgress && Array.isArray(rawOrder.componentProgress)) {
-      rawOrder.componentProgress.forEach((cp, idx) => {
+    if ((rawOrder as any).componentProgress && Array.isArray((rawOrder as any).componentProgress)) {
+      (rawOrder as any).componentProgress.forEach((cp: any, idx: number) => {
         if (cp.completedAt) {
           events.push({
             id: `ev-comp-${idx}`,
@@ -570,10 +594,10 @@ export function MessengerHistory() {
       });
     }
 
-    if (rawOrder.componentProgress && Array.isArray(rawOrder.componentProgress)) {
-      rawOrder.componentProgress.forEach((cp, idx) => {
+    if ((rawOrder as any).componentProgress && Array.isArray((rawOrder as any).componentProgress)) {
+      (rawOrder as any).componentProgress.forEach((cp: any, idx: number) => {
         if (cp.evidence && Array.isArray(cp.evidence)) {
-          cp.evidence.forEach((ev, evIdx) => {
+          cp.evidence.forEach((ev: any, evIdx: number) => {
             list.push({
               id: `att-cp-${idx}-${evIdx}`,
               name: `Bukti Loket: ${cp.name}`,

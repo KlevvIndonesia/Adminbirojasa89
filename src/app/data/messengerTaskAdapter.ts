@@ -1220,9 +1220,10 @@ export function startSamsatResultPickup(
  */
 export function completeSamsatResultPickup(
   orderNo: string,
-  notes: string | undefined,
+  notes: string | { photoProofUrl?: string; notes?: string } | undefined,
   user: UserContext
 ): { success: boolean; error?: string } {
+  const notesStr = typeof notes === "object" ? notes?.notes : notes;
   const order = orderStore.getOrderByNo(orderNo);
   if (!order) return { success: false, error: `Order ${orderNo} tidak ditemukan` };
   const authCheck = checkTaskOwnership(order, user);
@@ -1233,7 +1234,7 @@ export function completeSamsatResultPickup(
     id: `tl-${Date.now()}`,
     timestamp: nowIso,
     title: "Dokumen Samsat Diserahkan ke Kantor",
-    note: notes ? `Catatan: ${notes}` : `Dokumen hasil pengurusan Samsat telah diserahkan oleh ${user.userName} ke kantor.`,
+    note: notesStr ? `Catatan: ${notesStr}` : `Dokumen hasil pengurusan Samsat telah diserahkan oleh ${user.userName} ke kantor.`,
     author: user.userName,
     type: "STATUS_CHANGE",
   };
@@ -1242,8 +1243,8 @@ export function completeSamsatResultPickup(
   const success = orderStore.updateOrder(orderNo, {
     samsatPickupStatus: "Dokumen Samsat Diterima di Kantor",
     samsatPickupCompletedAt: nowIso,
-    samsatPickupNotes: notes?.trim() || undefined,
-    messengerTaskNotes: notes?.trim() || order.messengerTaskNotes,
+    samsatPickupNotes: notesStr?.trim() || undefined,
+    messengerTaskNotes: notesStr?.trim() || order.messengerTaskNotes,
     messengerTimeline: [timelineEvent, ...existingTimeline],
   });
 
@@ -1848,6 +1849,8 @@ export function addSamsatComponentToOrder(
     category?: string;
     isCustom?: boolean;
     note?: string;
+    nominal?: number;
+    addedManually?: boolean;
   },
   user: UserContext
 ): { success: boolean; error?: string; component?: MessengerComponentProgress } {
@@ -2131,6 +2134,7 @@ export function completeMessengerPickup(
     notes?: string;
     catatanKendala?: string;
     pickupChecklist?: Record<string, boolean>;
+    documentChecklist?: any;
   },
   user: UserContext
 ): { success: boolean; error?: string } {

@@ -71,6 +71,7 @@ export interface DocumentApprovalMetadata {
   stage6ApprovedBy?: string;
   stage6ApprovedAt?: string;
   approvedDocsSnapshot?: string[];
+  snapshotDocs?: any[];
 }
 
 export interface RekapDocument {
@@ -113,9 +114,11 @@ export interface PaymentRecordItem {
 export interface OrderPayment {
   tipePembayaran: "Bayar di Awal" | "Bayar di Akhir" | "Tempo";
   metodePembayaran: string;
-  statusPembayaran: "Lunas" | "Belum Bayar" | "Kurang Bayar" | "Kelebihan Bayar" | "Belum Lunas" | "Kurang";
+  statusPembayaran: "Lunas" | "Belum Bayar" | "Kurang Bayar" | "Kelebihan Bayar" | "Belum Lunas" | "Kurang" | string;
   totalBiaya: number;
   totalEstimasi?: number;
+  totalBayar?: number;
+  statusBayar?: string;
   dibayar: number;
   kurang: number;
   overpayment?: number;
@@ -203,6 +206,7 @@ export interface OperationalOrder {
   // Estimasi Biaya
   biayaJasa: number;
   biayaAntarJemput?: number;
+  biayaLainnya?: number;
   pkb: number;
   swdkllj: number;
   dendaSwdkllj: number;
@@ -212,6 +216,7 @@ export interface OperationalOrder {
   namaPenerimaKeluar?: string;
   bankUangKeluar?: string;
   metodePembayaranKeluar?: string;
+  tanggalUangMasuk?: string;
 
   // Biaya Final Aktual (Stage 5 & 6)
   finalBiayaJasa?: number;
@@ -324,6 +329,27 @@ export interface OperationalOrder {
   refundStatus?: RefundStatus;
   rekapDocuments?: RekapDocument[];
   completedAt?: string;
+
+  // Operational State & Status Lifecycle
+  isArchived?: boolean | number;
+  stageBeforeCancel?: string;
+  isCancelled?: boolean;
+  status?: string;
+  alasanPending?: string;
+  alasan_pending?: string;
+  uploadedDocs?: any[];
+  samsatPickupProof?: any;
+  detailAlamatPengembalian?: string;
+  componentProgress?: any;
+  noInvoice?: string;
+  tandaTerima?: string;
+  ttbBPKB?: string;
+  statusBPKB?: string;
+  bpkb?: string;
+  statusPengerjaan?: string;
+  salesSnapshotStatus?: string;
+  statusKepemilikan?: string;
+  cancellationReason?: string;
 }
 
 export const STAGES = [
