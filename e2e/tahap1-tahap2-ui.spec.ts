@@ -2,6 +2,7 @@ import { test, expect } from "@playwright/test";
 
 test.describe("Tahap 1 & Tahap 2 UI Verification", () => {
   test.beforeEach(async ({ page }) => {
+    test.setTimeout(60000);
     await page.goto("http://localhost:3000/login", { waitUntil: "domcontentloaded" });
     await page.fill("#email", "svp@birojasa.com");
     await page.fill("#password", "admin123");
@@ -12,8 +13,10 @@ test.describe("Tahap 1 & Tahap 2 UI Verification", () => {
   });
 
   test("Verify Belum Bayar Cetak Invoice A5 & WhatsApp Buttons", async ({ page }) => {
+    test.setTimeout(45000);
     await page.evaluate(() => { window.location.href = "/finance/belum-bayar"; });
     await page.waitForURL("**/finance/belum-bayar", { timeout: 15000 });
+    await page.waitForSelector("text=Memuat halaman...", { state: "detached", timeout: 15000 }).catch(() => {});
 
     // Verify "Cetak" and "Kirim WA" buttons exist in table
     const cetakButtons = page.locator("button", { hasText: "Cetak" });

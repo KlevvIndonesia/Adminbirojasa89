@@ -684,13 +684,9 @@ export function FinanceContent({ tab }: FinanceContentProps) {
     const phone = item.nomorHP || item.noHp || item["No HP / WhatsApp"] || item.phone || "";
     const customer = item["Nama Customer"] || item.customer || "Pelanggan";
     const orderNo = item.orderNo || item["Nomor Order"] || item["No Order"] || (typeof item.id === "string" && item.id.startsWith("ord:") ? item.id.slice(4) : (item["No Invoice"] || `ORD-${item.id || "001"}`));
-    const invoiceNo = item["No Invoice"] || item.invoice || item.invoiceNo || (orderNo ? `INV/${orderNo.replace(/^ORD-/, "")}` : "INV-001");
     const nopol = item["Plat No"] || item.nopol || "-";
     const layanan = item["Jenis Pengurusan"] || item.layanan || item.jenisLayanan || "Pengurusan Dokumen Kendaraan";
-    const samsat = item["Samsat Asal"] || item["Samsat"] || item.wilayahSamsatAsal || item.samsat || "Samsat DKI Jakarta";
     const sisa = Number(item["Sisa Tagihan"] ?? item.Kekurangan ?? item.sisaTagihan ?? item.sisa ?? item.kurang ?? item.kekurangan ?? 0);
-    const total = Number(item["Total Tagihan Konsumen"] ?? item.totalBiaya ?? item.totalTagihan ?? (sisa + Number(item.dibayar ?? item.terbayar ?? 0)));
-    const dibayar = Number(item["Uang Masuk dari Konsumen"] ?? item.dibayar ?? item.terbayar ?? Math.max(0, total - sisa));
 
     if (!phone || !phone.trim() || phone === "-") {
       toast.warning(`Nomor WhatsApp tidak ditemukan pada data transaksi ${orderNo}.`);
@@ -702,7 +698,16 @@ export function FinanceContent({ tab }: FinanceContentProps) {
     } else if (cleanPhone.startsWith("8")) {
       cleanPhone = "62" + cleanPhone;
     }
-    const messageText = `Halo Bpk/Ibu ${customer},\n\nKami dari *Biro Jasa SUN89* menginformasikan rincian tagihan pengurusan dokumen kendaraan Anda:\n\n• *Nomor Order*   : ${orderNo}\n• *Nomor Invoice* : ${invoiceNo}\n• *Nomor Polisi*  : ${String(nopol).toUpperCase()}\n• *Jenis Layanan* : ${layanan}\n• *Samsat*        : ${samsat}\n• *Total Tagihan* : ${formatRupiah(total)}\n• *Telah Dibayar* : ${formatRupiah(dibayar)}\n-----------------------------------------\n• *SISA TAGIHAN*  : *${formatRupiah(sisa)}*\n\nPembayaran dapat ditransfer ke rekening resmi:\n*Bank BCA*: 7175095764\n*a/n ANISA SUSANTI (Biro Jasa SUN89)*\n\nMohon kirimkan bukti transfer setelah pembayaran dilakukan. Terima kasih atas kepercayaan Anda menggunakan Biro Jasa SUN89.`;
+    const messageText = `Halo ${customer},
+
+kami dari Biro Jasa SUN89 menginformasikan tagihan pengurusan ${layanan} (No. Polisi: ${String(nopol).toUpperCase()}, Order: ${orderNo}) memiliki sisa tagihan sebesar ${formatRupiah(sisa)}.
+
+Rekening Resmi Pembayaran:
+Bank BCA: 7175095764
+a/n ANISA SUSANTI (Biro Jasa SUN89)
+
+Mohon konfirmasi jadwal pelunasan.
+Terima kasih.`;
     const waUrl = `https://wa.me/${cleanPhone}?text=${encodeURIComponent(messageText)}`;
     window.open(waUrl, "_blank");
     toast.success(`Membuka WhatsApp untuk mengirim tagihan ke ${customer} (${phone})`);
@@ -3052,7 +3057,16 @@ export function FinanceContent({ tab }: FinanceContentProps) {
           const waPhone = cleanPhone.startsWith("0") ? `62${cleanPhone.slice(1)}` : (cleanPhone.startsWith("8") ? `62${cleanPhone}` : cleanPhone);
           const sisa = formatRupiah(item.sisaTagihan ?? item.kekurangan ?? item.sisa ?? 0);
           const textMsg = encodeURIComponent(
-            `Halo ${item.customer}, kami dari Biro Jasa SUN89 menginformasikan tagihan pengurusan ${item.pengurusan || item.jenisLayanan} (No. Polisi: ${item.nopol || "-"}, Order: ${item.orderNo || item.invoice || "-"}) memiliki sisa tagihan sebesar ${sisa}. Mohon konfirmasi jadwal pelunasan. Terima kasih.`
+            `Halo ${item.customer},
+
+kami dari Biro Jasa SUN89 menginformasikan tagihan pengurusan ${item.pengurusan || item.jenisLayanan} (No. Polisi: ${item.nopol || "-"}, Order: ${item.orderNo || item.invoice || "-"}) memiliki sisa tagihan sebesar ${sisa}.
+
+Rekening Resmi Pembayaran:
+Bank BCA: 7175095764
+a/n ANISA SUSANTI (Biro Jasa SUN89)
+
+Mohon konfirmasi jadwal pelunasan.
+Terima kasih.`
           );
           return (
             <div className="flex items-center gap-1.5 py-0.5">

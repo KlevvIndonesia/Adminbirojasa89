@@ -111,10 +111,25 @@ export function InvoiceA5Dialog({ open, onOpenChange, data }: InvoiceA5DialogPro
     } else if (cleanPhone.startsWith("8")) {
       cleanPhone = "62" + cleanPhone;
     }
-    const messageText = `Halo Bpk/Ibu ${customer},\n\nKami dari *Biro Jasa SUN89* menginformasikan rincian tagihan pengurusan dokumen kendaraan Anda:\n\n• *Nomor Order*   : ${orderNo}\n• *Nomor Invoice* : ${invoiceNo}\n• *Nomor Polisi*  : ${nopol.toUpperCase()}\n• *Jenis Layanan* : ${layanan}\n• *Samsat*        : ${samsat}\n• *Total Tagihan* : ${formatRupiah(total)}\n• *Telah Dibayar* : ${formatRupiah(dibayar)}\n-----------------------------------------\n• *SISA TAGIHAN*  : *${formatRupiah(kurang)}*\n\nPembayaran dapat ditransfer ke rekening resmi:\n*Bank BCA*: 7175095764\n*a/n ANISA SUSANTI (Biro Jasa SUN89)*\n\nMohon kirimkan bukti transfer setelah pembayaran dilakukan. Terima kasih atas kepercayaan Anda menggunakan Biro Jasa SUN89.`;
+
+    // 1. Unduh / cetak otomatis faktur resmi PDF A5 dengan nama file: [Order] - [Customer] - [Nopol]
+    printA5Document(printAreaRef.current, pdfFileName);
+
+    // 2. Format pesan WhatsApp sesuai template resmi
+    const messageText = `Halo ${customer},
+
+kami dari Biro Jasa SUN89 menginformasikan tagihan pengurusan ${layanan} (No. Polisi: ${String(nopol).toUpperCase()}, Order: ${orderNo}) memiliki sisa tagihan sebesar ${formatRupiah(kurang)}.
+
+Rekening Resmi Pembayaran:
+Bank BCA: 7175095764
+a/n ANISA SUSANTI (Biro Jasa SUN89)
+
+Mohon konfirmasi jadwal pelunasan.
+Terima kasih.
+*(Faktur tagihan resmi PDF terlampir)*`;
     const waUrl = `https://wa.me/${cleanPhone}?text=${encodeURIComponent(messageText)}`;
     window.open(waUrl, "_blank");
-    toast.success(`Membuka WhatsApp untuk mengirim tagihan ke ${customer} (${phone})`);
+    toast.success(`Membuka WhatsApp & menyiapkan file ${pdfFileName}. Silakan lampirkan file ke chat.`);
   };
 
   return (
