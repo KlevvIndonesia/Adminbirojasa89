@@ -5,6 +5,7 @@ import { Printer, Download, MessageCircle, FileCheck, CheckCircle2 } from "lucid
 import { toast } from "sonner";
 import { LOGO_SUN89_BASE64 } from "../assets/logoSun89Base64";
 import { formatRupiah, formatDateDDMMYYYY, angkaKeTerbilang } from "../utils/financeFormatters";
+import { printA5Document } from "../utils/printA5Iframe";
 
 export interface KwitansiData {
   orderNo?: string;
@@ -58,14 +59,20 @@ export function KwitansiA5Dialog({ open, onOpenChange, data }: KwitansiA5DialogP
   const phone = data.nomorHP || data.noHp || data["No HP / WhatsApp"] || data.phone || "";
   const kasir = data.kasirName || data.kasir || "Kasir Keuangan";
 
+  // Format nama file: nomor order - nama customer - plat nomor polisi
+  const cleanOrder = String(orderNo || "ORD").trim().replace(/[/\\?%*:|"<>]/g, "-");
+  const cleanCustomer = String(customer || "Customer").trim().replace(/[/\\?%*:|"<>]/g, "-");
+  const cleanNopol = String(nopol || "").trim().toUpperCase().replace(/[/\\?%*:|"<>]/g, "-");
+  const kwitansiFileName = `${cleanOrder} - ${cleanCustomer} - ${cleanNopol} (Kwitansi)`;
+
   const handlePrint = () => {
-    window.print();
+    printA5Document(printAreaRef.current, kwitansiFileName);
     toast.success("Kwitansi siap dicetak!");
   };
 
   const handleDownload = () => {
-    window.print();
-    toast.info("Pilih 'Save as PDF' di dialog cetak browser untuk menyimpan PDF.");
+    printA5Document(printAreaRef.current, kwitansiFileName);
+    toast.info("Pilih 'Save as PDF' di dialog cetak browser (nama file terisi otomatis).");
   };
 
   const handleSendWhatsApp = () => {

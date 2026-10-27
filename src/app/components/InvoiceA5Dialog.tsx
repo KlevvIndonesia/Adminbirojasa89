@@ -5,6 +5,7 @@ import { Printer, Download, CheckCircle2, ShieldAlert, MessageCircle } from "luc
 import { toast } from "sonner";
 import { LOGO_SUN89_BASE64 } from "../assets/logoSun89Base64";
 import { formatRupiah, formatDateDDMMYYYY } from "../utils/financeFormatters";
+import { printA5Document } from "../utils/printA5Iframe";
 
 export interface InvoiceA5Data {
   orderNo?: string;
@@ -83,14 +84,20 @@ export function InvoiceA5Dialog({ open, onOpenChange, data }: InvoiceA5DialogPro
 
   const phone = data.nomorHP || data.noHp || data["No HP / WhatsApp"] || data.phone || "";
 
+  // Format nama file: nomor order - nama customer - plat nomor polisi
+  const cleanOrder = String(orderNo || "ORD").trim().replace(/[/\\?%*:|"<>]/g, "-");
+  const cleanCustomer = String(customer || "Customer").trim().replace(/[/\\?%*:|"<>]/g, "-");
+  const cleanNopol = String(nopol || "").trim().toUpperCase().replace(/[/\\?%*:|"<>]/g, "-");
+  const pdfFileName = `${cleanOrder} - ${cleanCustomer} - ${cleanNopol}`;
+
   const handlePrint = () => {
-    window.print();
+    printA5Document(printAreaRef.current, pdfFileName);
     toast.success("Faktur invoice A5 siap dicetak!");
   };
 
   const handleDownload = () => {
-    window.print();
-    toast.info("Gunakan opsi 'Save as PDF' / 'Simpan sebagai PDF' di jendela cetak browser.");
+    printA5Document(printAreaRef.current, pdfFileName);
+    toast.info("Pilih 'Save as PDF' / 'Simpan sebagai PDF' di jendela cetak (nama file terisi otomatis).");
   };
 
   const handleSendWhatsApp = () => {
@@ -132,50 +139,54 @@ export function InvoiceA5Dialog({ open, onOpenChange, data }: InvoiceA5DialogPro
           <div
             id="invoice-a5-print-area"
             ref={printAreaRef}
-            className="w-full max-w-[148mm] min-h-[200mm] bg-white text-slate-900 p-5 rounded-md shadow-md border border-slate-200 text-[11px] flex flex-col justify-between"
+            className="w-full max-w-[148mm] min-h-[195mm] bg-white text-slate-900 p-5 rounded-md shadow-md border border-slate-200 text-[11px] flex flex-col justify-between"
             style={{ fontFamily: "'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" }}
           >
             {/* INVOICE HEADER */}
             <div>
-              <div className="flex items-center justify-between pb-3 border-b-2 border-slate-900">
-                {/* Logo & Company info */}
-                <div className="flex items-center gap-3">
+              <div className="flex items-start justify-between pb-3 border-b-2 border-slate-900 gap-4">
+                {/* Logo & Company info - Stacked Vertically, Logo Enlarged, Header Text Removed */}
+                <div className="flex flex-col items-start gap-1 max-w-[62%]">
                   <img
                     src={LOGO_SUN89_BASE64}
                     alt="Logo Biro Jasa SUN89"
-                    className="w-14 h-14 object-contain rounded"
+                    className="h-12 w-auto object-contain object-left mb-0.5"
                   />
-                  <div>
-                    <h1 className="text-base font-black tracking-tight text-slate-950 uppercase leading-none">
-                      BIRO JASA SUN89
-                    </h1>
-                    <p className="text-[9px] font-semibold text-slate-600 uppercase tracking-wide mt-0.5">
-                      Jasa Pengurusan Dokumen Samsat &amp; Kendaraan Bermotor
-                    </p>
-                    <p className="text-[9px] text-slate-500 leading-tight">
-                      Jl. Raya Sukahati No. 6, Kel. Sukahati, Kec. Cibinong, Bogor
-                    </p>
-                    <p className="text-[9px] text-slate-500 font-mono">
-                      Telp / WhatsApp: 0812-3456-7890 • 021-83715981
-                    </p>
-                  </div>
+                  <p className="text-[9px] font-semibold text-slate-700 uppercase tracking-wide leading-tight">
+                    Jasa Pengurusan Dokumen Samsat &amp; Kendaraan Bermotor
+                  </p>
+                  <p className="text-[9px] text-slate-500 leading-tight">
+                    Jl. Raya Sukahati No. 6, Kel. Sukahati, Kec. Cibinong, Bogor
+                  </p>
+                  <p className="text-[9px] text-slate-500 font-mono leading-tight">
+                    Telp / WhatsApp: 0812-3456-7890 • 021-83715981
+                  </p>
                 </div>
 
-                {/* Invoice Title & Meta */}
-                <div className="text-right">
-                  <span className="inline-block bg-slate-900 text-white font-bold text-xs uppercase px-2.5 py-0.5 rounded tracking-wider mb-1">
+                {/* Invoice Title & Meta - Single line per item, font sized to fit perfectly */}
+                <div className="text-right shrink-0">
+                  <span className="inline-block bg-slate-900 text-white font-bold text-xs uppercase px-2.5 py-0.5 rounded tracking-wider mb-2">
                     INVOICE
                   </span>
-                  <div className="text-[10px] space-y-0.5">
-                    <p><span className="text-slate-500">Nomor Invoice: </span><strong className="font-mono">{invoiceNo}</strong></p>
-                    <p><span className="text-slate-500">Tanggal: </span><strong className="font-mono">{tanggalStr}</strong></p>
-                    <p><span className="text-slate-500">Nomor Order: </span><strong className="font-mono">{orderNo}</strong></p>
+                  <div className="text-[9px] space-y-1 text-right">
+                    <p className="whitespace-nowrap">
+                      <span className="text-slate-500">Nomor Invoice: </span>
+                      <strong className="font-mono text-slate-900">{invoiceNo}</strong>
+                    </p>
+                    <p className="whitespace-nowrap">
+                      <span className="text-slate-500">Tanggal: </span>
+                      <strong className="font-mono text-slate-900">{tanggalStr}</strong>
+                    </p>
+                    <p className="whitespace-nowrap">
+                      <span className="text-slate-500">Nomor Order: </span>
+                      <strong className="font-mono text-slate-900">{orderNo}</strong>
+                    </p>
                   </div>
                 </div>
               </div>
 
               {/* CLIENT & VEHICLE INFORMATION CARD */}
-              <div className="grid grid-cols-2 gap-2 my-3 p-2.5 bg-slate-50 rounded border border-slate-200 text-[10px]">
+              <div className="grid grid-cols-2 gap-2 my-2.5 p-2.5 bg-slate-50 rounded border border-slate-200 text-[10px]">
                 <div>
                   <p className="text-slate-500 uppercase font-semibold text-[8px] tracking-wider mb-0.5">Informasi Customer</p>
                   <p className="font-bold text-slate-900 text-xs">{customer}</p>
@@ -193,7 +204,7 @@ export function InvoiceA5Dialog({ open, onOpenChange, data }: InvoiceA5DialogPro
               </div>
 
               {/* ITEMIZATION TABLE */}
-              <table className="w-full border-collapse my-3 text-[10px]">
+              <table className="w-full border-collapse my-2.5 text-[10px]">
                 <thead>
                   <tr className="border-y border-slate-300 bg-slate-100 text-slate-700">
                     <th className="py-1.5 px-2 text-left font-semibold w-8">NO</th>
@@ -230,40 +241,26 @@ export function InvoiceA5Dialog({ open, onOpenChange, data }: InvoiceA5DialogPro
               </table>
 
               {/* PAYMENT SUMMARY & STAMP */}
-              <div className="flex justify-between items-start my-3 pt-2">
-                {/* Status Stamp & Bank info */}
-                <div className="w-1/2 pr-3">
-                  <div className={`p-2 rounded border mb-2 flex items-center gap-2 ${
-                    isLunas 
-                      ? "border-emerald-500/40 bg-emerald-50 text-emerald-800" 
-                      : "border-amber-500/40 bg-amber-50 text-amber-800"
-                  }`}>
-                    {isLunas ? (
-                      <CheckCircle2 className="w-5 h-5 text-emerald-600 shrink-0" />
-                    ) : (
-                      <ShieldAlert className="w-5 h-5 text-amber-600 shrink-0" />
-                    )}
-                    <div>
-                      <p className="font-bold text-xs uppercase tracking-wider leading-none">
-                        {isLunas ? "LUNAS (TERVERIFIKASI)" : "BELUM LUNAS / KURANG BAYAR"}
-                      </p>
-                      <p className="text-[9px] mt-0.5 text-slate-600">
-                        {isLunas 
-                          ? "Pembayaran telah diterima dan dibukukan resmi."
-                          : `Sisa kewajiban: ${formatRupiah(kurang)}`}
-                      </p>
+              <div className="flex justify-between items-start my-2.5 pt-1.5 gap-4">
+                {/* Left Column: Official Bank Account Box */}
+                <div className="w-[48%]">
+                  <div className="p-2.5 rounded bg-slate-50 border border-slate-200 text-[9.5px] space-y-1">
+                    <p className="font-bold text-slate-900 uppercase tracking-wide">
+                      Rekening Resmi Pembayaran:
+                    </p>
+                    <div className="pl-0.5 space-y-0.5">
+                      <p className="text-slate-800 font-mono font-bold text-[11px]">Bank BCA: 7175095764</p>
+                      <p className="text-slate-700 font-medium">a/n ANISA SUSANTI</p>
+                      <p className="text-slate-500 text-[8.5px] italic">Biro Jasa SUN89 Operasional</p>
                     </div>
                   </div>
-
-                  <div className="p-2 rounded bg-slate-50 border border-slate-200 text-[9px] space-y-0.5">
-                    <p className="font-bold text-slate-800 uppercase">Rekening Resmi Pembayaran:</p>
-                    <p className="text-slate-700 font-mono font-semibold">BCA: 7175095764</p>
-                    <p className="text-slate-600">a/n ANISA SUSANTI (Biro Jasa SUN89)</p>
-                  </div>
+                  <p className="text-[8.5px] text-slate-500 mt-1.5 pl-0.5 leading-relaxed">
+                    * Harap cantumkan Nomor Order atau Nomor Invoice saat melakukan konfirmasi transfer.
+                  </p>
                 </div>
 
-                {/* Subtotals & Balances */}
-                <div className="w-1/2 pl-3">
+                {/* Right Column: Financial Figures + Status Stamp Underneath */}
+                <div className="w-[52%]">
                   <div className="space-y-1 text-[10px]">
                     <div className="flex justify-between py-1 border-b border-slate-200">
                       <span className="text-slate-600">Total Tagihan:</span>
@@ -273,11 +270,38 @@ export function InvoiceA5Dialog({ open, onOpenChange, data }: InvoiceA5DialogPro
                       <span>Total Terbayar:</span>
                       <span className="font-mono font-bold">{formatRupiah(dibayar)}</span>
                     </div>
-                    <div className="flex justify-between py-1.5 border-b-2 border-slate-900">
+                    <div className="flex justify-between py-1 border-b-2 border-slate-900">
                       <span className="font-bold text-slate-900">Sisa Tagihan:</span>
                       <span className={`font-mono font-bold ${kurang > 0 ? "text-rose-600" : "text-emerald-700"}`}>
                         {formatRupiah(kurang)}
                       </span>
+                    </div>
+
+                    {/* Status Badge Positioned Under Sisa Tagihan */}
+                    <div className="pt-1.5">
+                      <div className={`p-2 rounded border flex items-center justify-between gap-2 ${
+                        isLunas 
+                          ? "border-emerald-500/40 bg-emerald-50 text-emerald-800" 
+                          : "border-amber-500/40 bg-amber-50 text-amber-800"
+                      }`}>
+                        <div className="flex items-center gap-1.5 min-w-0">
+                          {isLunas ? (
+                            <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+                          ) : (
+                            <ShieldAlert className="w-4 h-4 text-amber-600 shrink-0" />
+                          )}
+                          <div className="min-w-0">
+                            <p className="font-bold text-[10.5px] uppercase tracking-wider leading-none">
+                              {isLunas ? "LUNAS (TERVERIFIKASI)" : "BELUM LUNAS / KURANG BAYAR"}
+                            </p>
+                            <p className="text-[8.5px] mt-0.5 text-slate-600 truncate">
+                              {isLunas 
+                                ? "Pembayaran telah diterima sah."
+                                : `Sisa kewajiban: ${formatRupiah(kurang)}`}
+                            </p>
+                          </div>
+                        </div>
+                      </div>
                     </div>
                   </div>
                 </div>
@@ -285,23 +309,23 @@ export function InvoiceA5Dialog({ open, onOpenChange, data }: InvoiceA5DialogPro
             </div>
 
             {/* INVOICE FOOTER SIGNATURES */}
-            <div className="pt-6 border-t border-slate-300">
+            <div className="pt-4 border-t border-slate-300">
               <div className="flex justify-between items-end text-center text-[10px]">
                 <div className="w-36">
-                  <p className="text-slate-500 mb-12">Tanda Terima Pelanggan</p>
+                  <p className="text-slate-500 mb-9 text-[9.5px]">Tanda Terima Pelanggan</p>
                   <div className="border-t border-slate-400 font-semibold text-slate-800 pt-0.5">
                     ( {customer.slice(0, 20)} )
                   </div>
                 </div>
                 <div className="w-40 text-center">
                   <p className="text-[9px] text-slate-500 mb-0.5">Bogor, {tanggalStr}</p>
-                  <p className="text-slate-500 mb-10">Biro Jasa SUN89</p>
+                  <p className="text-slate-500 mb-8 text-[9.5px]">Biro Jasa SUN89</p>
                   <div className="border-t border-slate-400 font-semibold text-slate-800 pt-0.5">
                     ( Bagian Keuangan )
                   </div>
                 </div>
               </div>
-              <p className="text-center text-[8px] text-slate-400 mt-3 uppercase tracking-wider">
+              <p className="text-center text-[8px] text-slate-400 mt-2.5 uppercase tracking-wider">
                 Dokumen ini merupakan bukti pembayaran sah yang diterbitkan oleh sistem komputerisasi Biro Jasa SUN89
               </p>
             </div>
@@ -336,36 +360,6 @@ export function InvoiceA5Dialog({ open, onOpenChange, data }: InvoiceA5DialogPro
           </div>
         </DialogFooter>
       </DialogContent>
-
-      {/* Embedded CSS for Exact A5 Print Layout */}
-      <style>{`
-        @media print {
-          @page {
-            size: A5 portrait;
-            margin: 6mm 8mm;
-          }
-          body * {
-            visibility: hidden;
-          }
-          #invoice-a5-print-area, #invoice-a5-print-area * {
-            visibility: visible;
-          }
-          #invoice-a5-print-area {
-            position: fixed !important;
-            left: 0 !important;
-            top: 0 !important;
-            width: 148mm !important;
-            min-height: 205mm !important;
-            margin: 0 !important;
-            padding: 5mm !important;
-            background: white !important;
-            color: black !important;
-            box-shadow: none !important;
-            border: none !important;
-            z-index: 999999 !important;
-          }
-        }
-      `}</style>
     </Dialog>
   );
 }

@@ -5,6 +5,7 @@ import { Printer, Download, MessageCircle, Wallet, ArrowDownRight } from "lucide
 import { toast } from "sonner";
 import { LOGO_SUN89_BASE64 } from "../assets/logoSun89Base64";
 import { formatRupiah, formatDateDDMMYYYY, angkaKeTerbilang } from "../utils/financeFormatters";
+import { printA5Document } from "../utils/printA5Iframe";
 
 export interface VoucherRefundData {
   orderNo?: string;
@@ -56,14 +57,20 @@ export function VoucherRefundDialog({ open, onOpenChange, data }: VoucherRefundD
   const approvedBy = data.approvedBy || "Supervisor";
   const phone = data.noHp || data.nomorHP || data["No HP / WhatsApp"] || data.phone || "";
 
+  // Format nama file: nomor order - nama customer - plat nomor polisi
+  const cleanOrder = String(orderNo || "ORD").trim().replace(/[/\\?%*:|"<>]/g, "-");
+  const cleanCustomer = String(customer || "Customer").trim().replace(/[/\\?%*:|"<>]/g, "-");
+  const cleanNopol = String(nopol || "").trim().toUpperCase().replace(/[/\\?%*:|"<>]/g, "-");
+  const voucherFileName = `${cleanOrder} - ${cleanCustomer} - ${cleanNopol} (Voucher Refund)`;
+
   const handlePrint = () => {
-    window.print();
+    printA5Document(printAreaRef.current, voucherFileName);
     toast.success("Voucher pengeluaran kas siap dicetak!");
   };
 
   const handleDownload = () => {
-    window.print();
-    toast.info("Pilih 'Save as PDF' di jendela cetak browser.");
+    printA5Document(printAreaRef.current, voucherFileName);
+    toast.info("Pilih 'Save as PDF' di jendela cetak browser (nama file terisi otomatis).");
   };
 
   const handleSendWhatsApp = () => {

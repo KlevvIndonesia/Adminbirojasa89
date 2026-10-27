@@ -11,6 +11,7 @@ import { Label } from "./ui/label";
 import { Badge } from "./ui/badge";
 import { Printer, FileCheck, CheckCircle2, AlertTriangle, ArrowDownRight, ArrowUpRight, Scale } from "lucide-react";
 import { formatRupiah, formatDateDDMMYYYY, angkaKeTerbilang } from "../utils/financeFormatters";
+import { printA5Document } from "../utils/printA5Iframe";
 import { LOGO_SUN89_BASE64 } from "../assets/logoSun89Base64";
 
 export interface KasTransactionItem {
@@ -93,7 +94,7 @@ export function RekonsiliasiKasModal({
   }, [selectedDate]);
 
   const handlePrint = () => {
-    window.print();
+    printA5Document(printAreaRef.current, `BeritaAcara_${nomorBA.replace(/[^a-zA-Z0-9_-]/g, "_")}`);
   };
 
   return (
