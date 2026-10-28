@@ -1,12 +1,11 @@
-import React, { useRef, useState } from "react";
+import React, { useRef } from "react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from "./ui/dialog";
 import { Button } from "./ui/button";
-import { Printer, Download, CheckCircle2, ShieldAlert, MessageCircle, Copy } from "lucide-react";
+import { Printer, Download, CheckCircle2, ShieldAlert, MessageCircle } from "lucide-react";
 import { toast } from "sonner";
 import { LOGO_SUN89_BASE64 } from "../assets/logoSun89Base64";
 import { formatRupiah, formatDateDDMMYYYY } from "../utils/financeFormatters";
 import { printA5Document } from "../utils/printA5Iframe";
-import { copyElementAsImageToClipboard, downloadElementAsImage } from "../utils/clipboardImage";
 
 export interface InvoiceA5Data {
   orderNo?: string;
@@ -39,7 +38,6 @@ interface InvoiceA5DialogProps {
 
 export function InvoiceA5Dialog({ open, onOpenChange, data }: InvoiceA5DialogProps) {
   const printAreaRef = useRef<HTMLDivElement>(null);
-  const [isCopyingImage, setIsCopyingImage] = useState(false);
 
   if (!data) return null;
 
@@ -102,29 +100,7 @@ export function InvoiceA5Dialog({ open, onOpenChange, data }: InvoiceA5DialogPro
     toast.info("Pilih 'Save as PDF' / 'Simpan sebagai PDF' di jendela cetak (nama file terisi otomatis).");
   };
 
-  const handleCopyImage = async () => {
-    if (!printAreaRef.current) return;
-    try {
-      setIsCopyingImage(true);
-      const ok = await copyElementAsImageToClipboard(printAreaRef.current);
-      if (ok) {
-        toast.success("Gambar faktur berhasil disalin ke clipboard! Silakan tekan Ctrl + V di WhatsApp atau aplikasi lain untuk menempelkan gambar.", {
-          duration: 6000,
-        });
-      } else {
-        await downloadElementAsImage(printAreaRef.current, pdfFileName);
-        toast.info("Gambar faktur diunduh sebagai file PNG (Clipboard browser tidak diizinkan).");
-      }
-    } catch (err) {
-      console.error("Gagal menyalin gambar faktur:", err);
-      toast.error("Gagal menyalin gambar faktur. Mengunduh file PNG...");
-      await downloadElementAsImage(printAreaRef.current, pdfFileName);
-    } finally {
-      setIsCopyingImage(false);
-    }
-  };
-
-  const handleSendWhatsApp = async () => {
+  const handleSendWhatsApp = () => {
     if (!phone || !phone.trim() || phone === "-") {
       toast.warning("Nomor WhatsApp konsumen tidak tersedia pada data transaksi ini.");
       return;
@@ -136,20 +112,6 @@ export function InvoiceA5Dialog({ open, onOpenChange, data }: InvoiceA5DialogPro
       cleanPhone = "62" + cleanPhone;
     }
 
-    // 1. Otomatis salin gambar faktur ke Clipboard (Opsi A)
-    let imageCopied = false;
-    if (printAreaRef.current) {
-      try {
-        setIsCopyingImage(true);
-        imageCopied = await copyElementAsImageToClipboard(printAreaRef.current);
-      } catch (err) {
-        console.warn("[SUN89] Gagal auto-copy gambar ke clipboard:", err);
-      } finally {
-        setIsCopyingImage(false);
-      }
-    }
-
-    // 2. Format pesan WhatsApp sesuai template resmi
     const messageText = `Halo ${customer},
 
 kami dari Biro Jasa SUN89 menginformasikan tagihan pengurusan ${layanan} (No. Polisi: ${String(nopol).toUpperCase()}, Order: ${orderNo}) memiliki sisa tagihan sebesar ${formatRupiah(kurang)}.
@@ -159,18 +121,11 @@ Bank BCA: 7175095764
 a/n ANISA SUSANTI (Biro Jasa SUN89)
 
 Mohon konfirmasi jadwal pelunasan.
-Terima kasih.
-*(Faktur tagihan resmi terlampir)*`;
+Terima kasih.`;
+
     const waUrl = `https://wa.me/${cleanPhone}?text=${encodeURIComponent(messageText)}`;
     window.open(waUrl, "_blank");
-
-    if (imageCopied) {
-      toast.success("Gambar faktur tersalin ke clipboard! Tekan Ctrl + V di chat WhatsApp untuk menempelkan gambar.", {
-        duration: 8000,
-      });
-    } else {
-      toast.info(`Membuka WhatsApp ke ${phone}. Silakan lampirkan faktur ke chat.`);
-    }
+    toast.success(`Membuka WhatsApp untuk mengirim tagihan ke ${customer} (${phone})`);
   };
 
   return (
@@ -398,20 +353,7 @@ Terima kasih.
               type="button"
               variant="outline"
               size="sm"
-              onClick={handleCopyImage}
-              disabled={isCopyingImage}
-              className="h-8 text-xs gap-1.5 text-blue-600 border-blue-500/40 hover:bg-blue-50 dark:hover:bg-blue-950/40 hover:text-blue-700 font-medium"
-              title="Salin gambar faktur ke clipboard untuk langsung di-paste (Ctrl + V) ke WhatsApp"
-            >
-              <Copy className="w-3.5 h-3.5" />
-              <span>{isCopyingImage ? "Menyalin..." : "Salin Gambar (Ctrl+V)"}</span>
-            </Button>
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
               onClick={handleSendWhatsApp}
-              disabled={isCopyingImage}
               className="h-8 text-xs gap-1.5 text-emerald-600 border-emerald-500/40 hover:bg-emerald-50 dark:hover:bg-emerald-950/40 hover:text-emerald-700 font-semibold"
               title="Kirim rincian tagihan faktur ke WhatsApp customer"
             >

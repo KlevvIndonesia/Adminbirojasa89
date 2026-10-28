@@ -59,7 +59,6 @@
     "embla-carousel-react": "npm:embla-carousel-react",
     "express": "^5.2.1",
     "heic2any": "^0.0.4",
-    "html-to-image": "^1.11.13",
     "input-otp": "npm:input-otp",
     "lucide-react": "npm:lucide-react",
     "motion": "npm:motion",
