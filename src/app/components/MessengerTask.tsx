@@ -43,6 +43,8 @@ import {
   Receipt,
   CheckCheck,
   Layers,
+  ArrowRightLeft,
+  Lock,
 } from "lucide-react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription } from "./ui/dialog";
 import { Label } from "./ui/label";
@@ -69,6 +71,7 @@ import {
   addSamsatComponentToOrder,
   getMasterSamsatComponents,
   MessengerComponentProgress,
+  reassignMessengerTaskAction,
 } from "../data/messengerTaskAdapter";
 import { useKaryawanPengguna } from "../data/karyawanPenggunaAdapter";
 import { APP_CONFIG } from "../config/appConfig";
@@ -119,7 +122,9 @@ export function MessengerTask() {
   const { karyawan } = useKaryawanPengguna();
   
   // Real derived operational tasks from active orders (strictly field messenger tasks with assigned courier)
-  const taskData = useMemo(() => deriveAssignedMessengerTasks(activeOrders), [activeOrders]);
+  // Real derived operational field tasks (Stage 2 Penjadwalan Jemput, Stage 4 Proses Samsat, Stage 7 Pengantaran)
+  // Menampilkan seluruh tugas lapangan baik yang sudah ditugaskan maupun yang Belum Ditugaskan
+  const taskData = useMemo(() => deriveMessengerTasksFromOrders(activeOrders), [activeOrders]);
 
   // Real derived completed messenger task history (all field tasks finished by messengers)
   const historyData = useMemo(() => deriveAllMessengerHistory(activeOrders, archivedOrders), [activeOrders, archivedOrders]);
@@ -132,6 +137,21 @@ export function MessengerTask() {
   const [filterStatus, setFilterStatus] = useState("all");
   const [filterMessenger, setFilterMessenger] = useState("all");
   const [filterTaskType, setFilterTaskType] = useState("all");
+  const [filterAssignment, setFilterAssignment] = useState<"all" | "unassigned" | "assigned">("all");
+
+  // Quick Assign Dialog State
+  const [isAssignDialogOpen, setIsAssignDialogOpen] = useState(false);
+  const [assignTargetTask, setAssignTargetTask] = useState<MessengerTaskItem | null>(null);
+  const [selectedAssignMessenger, setSelectedAssignMessenger] = useState("");
+  const [assignTaskDate, setAssignTaskDate] = useState("");
+  const [assignTaskNotes, setAssignTaskNotes] = useState("");
+
+  // Formal Reassignment Dialog State (Alihkan Tugas Resmi)
+  const [isReassignDialogOpen, setIsReassignDialogOpen] = useState(false);
+  const [reassignTargetTask, setReassignTargetTask] = useState<MessengerTaskItem | null>(null);
+  const [selectedReassignMessenger, setSelectedReassignMessenger] = useState("");
+  const [reassignReason, setReassignReason] = useState("");
+  const [isReassignSubmitting, setIsReassignSubmitting] = useState(false);
   const [currentPage, setCurrentPage] = useState(1);
   const [itemsPerPage, setItemsPerPage] = useState(25);
   const [isAddDialogOpen, setIsAddDialogOpen] = useState(false);
@@ -268,8 +288,13 @@ export function MessengerTask() {
       const matchStatus = filterStatus === "all" || item.status === filterStatus;
       const matchMessenger = filterMessenger === "all" || item.messenger === filterMessenger;
       const matchTaskType = filterTaskType === "all" || item.keteranganTugas === filterTaskType;
+      const isUnassigned = !item.messenger || item.messenger === "Belum Ditugaskan" || item.messenger === "-";
+      const matchAssignment =
+        filterAssignment === "all" ? true :
+        filterAssignment === "unassigned" ? isUnassigned :
+        !isUnassigned;
       
-      return matchSearch && matchStatus && matchMessenger && matchTaskType;
+      return matchSearch && matchStatus && matchMessenger && matchTaskType && matchAssignment;
     });
   };
 
@@ -289,11 +314,12 @@ export function MessengerTask() {
     setFilterMessenger("all");
     setFilterStatus("all");
     setFilterTaskType("all");
+    setFilterAssignment("all");
     setCurrentPage(1);
   };
 
   const hasActiveFilters = Boolean(
-    searchTerm || filterMessenger !== "all" || filterStatus !== "all" || filterTaskType !== "all"
+    searchTerm || filterMessenger !== "all" || filterStatus !== "all" || filterTaskType !== "all" || filterAssignment !== "all"
   );
 
   // Available messengers in history
@@ -364,6 +390,137 @@ export function MessengerTask() {
     selesai: taskData.filter(t => t.status === "Selesai").length,
     pending: taskData.filter(t => t.status === "Pending").length,
   }), [taskData]);
+
+  const handleOpenAssignDialog = (task: MessengerTaskItem) => {
+    setAssignTargetTask(task);
+    setSelectedAssignMessenger("");
+    setAssignTaskDate(new Date().toISOString().split("T")[0]);
+    setAssignTaskNotes("");
+    setIsAssignDialogOpen(true);
+  };
+
+  const handleConfirmAssign = () => {
+    if (!assignTargetTask) return;
+    if (!selectedAssignMessenger) {
+      toast.error("Pilih kurir terlebih dahulu!");
+      return;
+    }
+    const orderNo = assignTargetTask.noBerkas;
+    const currentOrder = orderStore.getOrderByNo(orderNo);
+    if (!currentOrder) {
+      toast.error("Order tidak ditemukan");
+      return;
+    }
+
+    const courierName = selectedAssignMessenger.trim();
+    const courierId = resolveMessengerEmployeeId(courierName);
+    const targetDate = assignTaskDate || new Date().toISOString().split("T")[0];
+
+    // Initialize acceptance status to PENDING so task enters courier's Tugas Baru
+    const updatedAcceptance = {
+      ...(currentOrder.taskAcceptance || {}),
+      [assignTargetTask.keteranganTugas]: {
+        status: "PENDING" as const,
+        courierId,
+        courierName,
+        isLocked: false,
+      },
+    };
+
+    if (assignTargetTask.keteranganTugas === "Pengantaran Dokumen") {
+      orderStore.updateOrder(orderNo, {
+        messengerPengantar: courierName,
+        assignedMessengerName: courierName,
+        assignedMessengerId: courierId,
+        tanggalPengantaran: targetDate,
+        isDeliveryScheduled: true,
+        taskAcceptance: updatedAcceptance,
+        deliveryStatus: "Terjadwal Antar",
+        catatanPengantaran: assignTaskNotes || currentOrder.catatanPengantaran,
+      });
+    } else if (assignTargetTask.keteranganTugas === "Proses Samsat") {
+      orderStore.updateOrder(orderNo, {
+        samsatMessenger: courierName,
+        samsatMessengerNama: courierName,
+        samsatMessengerId: courierId,
+        assignedMessengerName: courierName,
+        assignedMessengerId: courierId,
+        tanggalProsesSamsat: targetDate,
+        isSamsatScheduled: true,
+        taskAcceptance: updatedAcceptance,
+        samsatStatus: "Terjadwal Samsat",
+        catatanSamsat: assignTaskNotes || currentOrder.catatanSamsat,
+      });
+    } else {
+      // Jemput Dokumen
+      orderStore.updateOrder(orderNo, {
+        messenger: courierName,
+        assignedMessengerName: courierName,
+        assignedMessengerId: courierId,
+        tanggalJemput: targetDate,
+        isScheduled: true,
+        taskAcceptance: updatedAcceptance,
+        messengerTaskStatus: "Terjadwal Jemput",
+        catatanPenjadwalan: assignTaskNotes || currentOrder.catatanPenjadwalan,
+      });
+    }
+
+    setIsAssignDialogOpen(false);
+    setAssignTargetTask(null);
+    toast.success(`Kurir ${courierName} berhasil ditugaskan! Tugas masuk ke tab Tugas Baru kurir.`);
+  };
+
+  const handleOpenReassignDialog = (task: MessengerTaskItem) => {
+    setReassignTargetTask(task);
+    setSelectedReassignMessenger("");
+    setReassignReason("");
+    setIsReassignDialogOpen(true);
+  };
+
+  const handleConfirmReassign = async () => {
+    if (!reassignTargetTask) return;
+    if (!selectedReassignMessenger) {
+      toast.error("Pilih kurir pengganti terlebih dahulu!");
+      return;
+    }
+    const cleanReason = reassignReason.trim();
+    if (!cleanReason || cleanReason.length < 5) {
+      toast.error("Alasan pengalihan tugas wajib diisi minimal 5 karakter!");
+      return;
+    }
+
+    const orderNo = reassignTargetTask.noBerkas;
+    const newCourierName = selectedReassignMessenger.trim();
+    const newCourierId = resolveMessengerEmployeeId(newCourierName) || "emp-msg";
+
+    const adminUser = {
+      userName: "Admin Kantor",
+      role: "admin",
+      employeeId: "admin",
+    };
+
+    setIsReassignSubmitting(true);
+    try {
+      const res = await reassignMessengerTaskAction(
+        orderNo,
+        reassignTargetTask.keteranganTugas,
+        newCourierName,
+        newCourierId,
+        cleanReason,
+        adminUser
+      );
+      if (res.success) {
+        toast.success(`Tugas order ${orderNo} berhasil dialihkan ke ${newCourierName} (masuk ke Tugas Baru)!`);
+        setIsReassignDialogOpen(false);
+        setReassignTargetTask(null);
+        setReassignReason("");
+      } else {
+        toast.error(res.error || "Gagal mengalihkan tugas");
+      }
+    } finally {
+      setIsReassignSubmitting(false);
+    }
+  };
 
   const handleAddTask = () => {
     if (!newTaskData.customer.trim() || !newTaskData.jenisTugas.trim()) {
@@ -506,15 +663,16 @@ export function MessengerTask() {
           setEditTaskData(null);
           toast.success(`Pengantaran order ${orderNo} selesai & dokumen telah diterima klien!`);
           return;
-        } else if (currentOrder.currentStep === 2 || currentOrder.currentStep === 3) {
-          // Advance from Jemput Dokumen to Proses Samsat
-          orderStore.advanceOrder(orderNo, "Proses Samsat", {
+        } else if (currentOrder.currentStep === 2) {
+          // Advance from Jemput Dokumen to Stage 3 (Verifikasi Dokumen Fisik di Loket)
+          orderStore.advanceOrder(orderNo, "Verifikasi Dokumen", {
             ...updates,
-            currentSamsatProcess: currentOrder.samsatProcesses?.[0]?.name || "Loket Pembukuan Samsat",
+            pickupCompleted: true,
+            messengerTaskStatus: "Dokumen Sudah Tersedia",
           });
           setIsEditDialogOpen(false);
           setEditTaskData(null);
-          toast.success(`Penjemputan berkas ${orderNo} selesai, lanjut ke Proses Samsat!`);
+          toast.success(`Penjemputan berkas ${orderNo} selesai! Berkas siap diverifikasi di Stage 3.`);
           return;
         }
       }
@@ -957,6 +1115,22 @@ export function MessengerTask() {
                   />
                 </div>
                 <Select 
+                  value={filterAssignment} 
+                  onValueChange={(value) => {
+                    setFilterAssignment(value as any);
+                    handleFilterChange();
+                  }}
+                >
+                  <SelectTrigger className="w-full sm:w-[155px] bg-input-background border-border h-9 text-xs">
+                    <SelectValue placeholder="Semua Penugasan" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all" className="text-xs">Semua Penugasan</SelectItem>
+                    <SelectItem value="unassigned" className="text-xs font-semibold text-amber-600 dark:text-amber-400">Belum Ditugaskan</SelectItem>
+                    <SelectItem value="assigned" className="text-xs text-emerald-600 dark:text-emerald-400 font-medium">Sudah Ditugaskan</SelectItem>
+                  </SelectContent>
+                </Select>
+                <Select 
                   value={filterMessenger} 
                   onValueChange={(value) => {
                     setFilterMessenger(value);
@@ -1054,9 +1228,32 @@ export function MessengerTask() {
                             {task.noBerkas}
                           </TableCell>
                           <TableCell className="text-xs">
-                            <span className={task.messenger === "Belum Ditugaskan" ? "text-amber-500 font-medium" : "text-foreground"}>
-                              {task.messenger}
-                            </span>
+                            {!task.messenger || task.messenger === "Belum Ditugaskan" || task.messenger === "-" ? (
+                              <Badge variant="outline" className="text-amber-600 dark:text-amber-400 border-amber-500/40 bg-amber-500/10 font-medium text-[11px] px-1.5 py-0.5">
+                                Belum Ditugaskan
+                              </Badge>
+                            ) : (
+                              <div>
+                                <span className="text-foreground font-medium block">{task.messenger}</span>
+                                {task.acceptanceStatus === "PENDING" && task.status !== "Selesai" && (
+                                  <Badge variant="outline" className="text-[10px] font-semibold px-1.5 py-0 bg-amber-500/15 text-amber-700 dark:text-amber-400 border-amber-300 dark:border-amber-800 flex items-center gap-1 w-fit mt-0.5">
+                                    <Clock className="w-2.5 h-2.5" />
+                                    Menunggu Diterima
+                                  </Badge>
+                                )}
+                                {(task.isLocked || task.acceptanceStatus === "ACCEPTED") && task.status !== "Selesai" && (
+                                  <Badge variant="outline" className="text-[10px] font-semibold px-1.5 py-0 bg-blue-500/15 text-blue-700 dark:text-blue-300 border-blue-300 dark:border-blue-800 flex items-center gap-1 w-fit mt-0.5">
+                                    <Lock className="w-2.5 h-2.5" />
+                                    Diterima (Terkunci)
+                                  </Badge>
+                                )}
+                                {task.reassignedFrom && (
+                                  <span className="block text-[10px] text-muted-foreground truncate max-w-[140px] mt-0.5" title={`Dialihkan dari ${task.reassignedFrom} (${task.reassignReason || ""})`}>
+                                    ex: {task.reassignedFrom}
+                                  </span>
+                                )}
+                              </div>
+                            )}
                           </TableCell>
                           <TableCell className="font-medium text-foreground text-xs">{task.customer}</TableCell>
                           <TableCell className="text-xs text-foreground/80">{task.jenisTugas}</TableCell>
@@ -1069,7 +1266,15 @@ export function MessengerTask() {
                           <TableCell className="max-w-[180px] truncate text-xs text-muted-foreground" title={task.lokasi}>
                             {task.lokasi}
                           </TableCell>
-                          <TableCell className="font-mono text-xs text-foreground/80">{task.tanggalTerima}</TableCell>
+                          <TableCell className="text-xs">
+                            <div className="font-mono text-foreground/80">{task.tanggalTerima}</div>
+                            {task.targetCompletionDate && (
+                              <div className="text-[10px] text-muted-foreground flex items-center gap-1 mt-0.5" title="Estimasi Selesai Order Customer">
+                                <Calendar className="w-2.5 h-2.5 text-primary shrink-0" />
+                                <span>Est: {new Date(task.targetCompletionDate).toLocaleDateString("id-ID", { day: "numeric", month: "short" })}</span>
+                              </div>
+                            )}
+                          </TableCell>
                           <TableCell className="text-center text-xs">
                             <Badge status={task.status}>
                               <span className="flex items-center gap-1">
@@ -1098,7 +1303,42 @@ export function MessengerTask() {
                               >
                                 <Edit className="w-3.5 h-3.5" />
                               </Button>
-                              {task.status !== "Selesai" && (
+                              {(!task.messenger || task.messenger === "Belum Ditugaskan" || task.messenger === "-") ? (
+                                <Button
+                                  size="sm"
+                                  variant="default"
+                                  className="h-7 px-2 text-[11px] font-semibold gap-1 bg-primary hover:bg-primary/90 text-primary-foreground rounded transition-colors shadow-2xs"
+                                  onClick={() => handleOpenAssignDialog(task)}
+                                  title="Tugaskan Kurir untuk Tugas Lapangan Ini"
+                                >
+                                  <UserCheck className="w-3.5 h-3.5 shrink-0" />
+                                  <span>Tugaskan</span>
+                                </Button>
+                              ) : task.status !== "Selesai" ? (
+                                <>
+                                  {task.acceptanceStatus === "PENDING" ? (
+                                    <Button
+                                      size="sm"
+                                      variant="outline"
+                                      className="h-7 px-1.5 text-[11px] font-semibold gap-1 rounded text-muted-foreground hover:text-foreground"
+                                      onClick={() => handleOpenAssignDialog(task)}
+                                      title="Ganti Kurir (Sebelum Diterima Kurir)"
+                                    >
+                                      <UserCheck className="w-3.5 h-3.5" />
+                                      <span className="hidden xl:inline">Ganti</span>
+                                    </Button>
+                                  ) : (
+                                    <Button
+                                      size="sm"
+                                      variant="outline"
+                                      className="h-7 px-1.5 text-[11px] font-semibold gap-1 border-blue-500/40 text-blue-700 dark:text-blue-300 bg-blue-500/10 hover:bg-blue-500/20 rounded transition-colors"
+                                      onClick={() => handleOpenReassignDialog(task)}
+                                      title="Alihkan Tugas Resmi (Memerlukan Alasan Pengalihan)"
+                                    >
+                                      <ArrowRightLeft className="w-3.5 h-3.5 text-blue-600 dark:text-blue-400 shrink-0" />
+                                      <span className="hidden xl:inline">Alihkan</span>
+                                    </Button>
+                                  )}
                                 <Button
                                   size="sm"
                                   variant="outline"
@@ -1109,7 +1349,8 @@ export function MessengerTask() {
                                   <ShieldAlert className="w-3.5 h-3.5 text-amber-600 dark:text-amber-400 shrink-0" />
                                   <span className="hidden xl:inline">Ambil Alih</span>
                                 </Button>
-                              )}
+                                </>
+                              ) : null}
                             </div>
                           </TableCell>
                         </TableRow>
@@ -2581,6 +2822,197 @@ export function MessengerTask() {
             >
               <ShieldAlert className="w-3.5 h-3.5" />
               {isSubmittingTakeover ? "Memproses..." : "Konfirmasi Selesaikan Tugas (Ambil Alih)"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Quick Assign Messenger Dialog */}
+      <Dialog open={isAssignDialogOpen} onOpenChange={setIsAssignDialogOpen}>
+        <DialogContent className="w-full sm:max-w-md p-4 sm:p-6 text-xs">
+          <DialogHeader className="pb-2 border-b border-border/80">
+            <DialogTitle className="text-base font-semibold text-foreground flex items-center gap-2">
+              <UserCheck className="w-4 h-4 text-primary" />
+              Tugaskan Kurir Lapangan
+            </DialogTitle>
+            <DialogDescription className="text-xs text-muted-foreground">
+              Alokasikan tugas {assignTargetTask?.keteranganTugas} ({assignTargetTask?.noBerkas}) kepada messenger
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4 py-3">
+            <div className="p-3 bg-muted/40 rounded-lg border border-border/60 space-y-1">
+              <div className="flex justify-between items-center text-xs">
+                <span className="text-muted-foreground">No. Order / Berkas:</span>
+                <span className="font-mono font-bold text-primary">{assignTargetTask?.noBerkas}</span>
+              </div>
+              <div className="flex justify-between items-center text-xs">
+                <span className="text-muted-foreground">Customer:</span>
+                <span className="font-medium text-foreground">{assignTargetTask?.customer}</span>
+              </div>
+              <div className="flex justify-between items-center text-xs">
+                <span className="text-muted-foreground">Tugas Operasional:</span>
+                <Badge variant="secondary" className="text-[11px] font-medium">{assignTargetTask?.keteranganTugas}</Badge>
+              </div>
+              <div className="flex justify-between items-center text-xs">
+                <span className="text-muted-foreground">Lokasi:</span>
+                <span className="truncate max-w-[200px] text-foreground">{assignTargetTask?.lokasi}</span>
+              </div>
+            </div>
+
+            <div className="space-y-1.5">
+              <Label className="text-xs font-semibold">Pilih Messenger / Kurir <span className="text-destructive">*</span></Label>
+              <Select value={selectedAssignMessenger} onValueChange={setSelectedAssignMessenger}>
+                <SelectTrigger className="bg-input-background border-border h-9 text-xs">
+                  <SelectValue placeholder="Pilih messenger operasional..." />
+                </SelectTrigger>
+                <SelectContent>
+                  {assignableMessengers.map((m) => (
+                    <SelectItem key={m} value={m} className="text-xs">
+                      {m}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+
+            <div className="space-y-1.5">
+              <Label className="text-xs font-semibold">Tanggal Tugas Operasional</Label>
+              <Input
+                type="date"
+                value={assignTaskDate}
+                onChange={(e) => setAssignTaskDate(e.target.value)}
+                className="bg-input-background border-border h-9 text-xs font-mono"
+              />
+            </div>
+
+            <div className="space-y-1.5">
+              <Label className="text-xs font-semibold">Catatan Tugas untuk Kurir (Opsional)</Label>
+              <Textarea
+                placeholder="Contoh: Titik temu di satpam pos depan, hubungi klien sebelum jalan..."
+                value={assignTaskNotes}
+                onChange={(e) => setAssignTaskNotes(e.target.value)}
+                rows={2}
+                className="bg-input-background border-border text-xs resize-none"
+              />
+            </div>
+          </div>
+          <DialogFooter className="pt-2 border-t border-border/80 flex flex-row items-center justify-end gap-2">
+            <Button variant="outline" size="sm" onClick={() => setIsAssignDialogOpen(false)} className="h-8 text-xs">
+              Batal
+            </Button>
+            <Button
+              size="sm"
+              onClick={handleConfirmAssign}
+              disabled={!selectedAssignMessenger}
+              className="h-8 text-xs bg-primary hover:bg-primary/90 text-primary-foreground font-semibold gap-1.5 shadow-2xs"
+            >
+              <Check className="w-3.5 h-3.5" />
+              Simpan & Tugaskan
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Formal Reassignment Dialog (Alihkan Tugas Resmi) */}
+      <Dialog open={isReassignDialogOpen} onOpenChange={setIsReassignDialogOpen}>
+        <DialogContent className="w-full sm:max-w-md p-4 sm:p-6 text-xs text-left">
+          <DialogHeader className="pb-2 border-b border-border/80">
+            <DialogTitle className="text-base font-semibold text-foreground flex items-center gap-2">
+              <ArrowRightLeft className="w-4 h-4 text-blue-600" />
+              Alihkan Tugas Kurir Resmi (Reassign)
+            </DialogTitle>
+            <DialogDescription className="text-xs text-muted-foreground">
+              Tugas ini telah diterima dan terkunci. Pengalihan tugas membutuhkan alasan operasional wajib dan akan dicatat dalam riwayat audit.
+            </DialogDescription>
+          </DialogHeader>
+
+          {reassignTargetTask && (
+            <div className="space-y-3.5 py-2">
+              <div className="p-3 rounded-lg bg-muted/50 border border-border space-y-1.5 text-xs">
+                <div className="flex justify-between">
+                  <span className="text-muted-foreground">Nomor Order:</span>
+                  <span className="font-bold text-foreground font-mono">{reassignTargetTask.noBerkas}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-muted-foreground">Customer:</span>
+                  <span className="font-medium text-foreground">{reassignTargetTask.customer}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-muted-foreground">Keterangan Tugas:</span>
+                  <span className="font-semibold text-primary">{reassignTargetTask.keteranganTugas}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-muted-foreground">Kurir Saat Ini:</span>
+                  <span className="font-semibold text-amber-600 dark:text-amber-400">{reassignTargetTask.messenger}</span>
+                </div>
+              </div>
+
+              <div className="space-y-1">
+                <Label className="text-xs font-semibold">
+                  Pilih Kurir Pengganti <span className="text-rose-500">*</span>
+                </Label>
+                <Select value={selectedReassignMessenger} onValueChange={setSelectedReassignMessenger}>
+                  <SelectTrigger className="h-9 text-xs">
+                    <SelectValue placeholder="Pilih Kurir Baru" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {assignableMessengers
+                      .filter((m) => m !== "Belum Ditugaskan" && m !== reassignTargetTask.messenger)
+                      .map((messenger) => (
+                        <SelectItem key={messenger} value={messenger} className="text-xs">
+                          {messenger}
+                        </SelectItem>
+                      ))}
+                  </SelectContent>
+                </Select>
+              </div>
+
+              <div className="space-y-1">
+                <Label className="text-xs font-semibold">
+                  Alasan Pengalihan Tugas <span className="text-rose-500">*</span>
+                </Label>
+                <Textarea
+                  value={reassignReason}
+                  onChange={(e) => setReassignReason(e.target.value)}
+                  placeholder="Contoh: Kurir terkendala cuaca buruk / kendaraan mogok / rute dialihkan..."
+                  rows={3}
+                  className="text-xs rounded-lg"
+                />
+              </div>
+            </div>
+          )}
+
+          <DialogFooter className="gap-2 pt-2 border-t border-border/80">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => {
+                setIsReassignDialogOpen(false);
+                setReassignTargetTask(null);
+                setReassignReason("");
+              }}
+              disabled={isReassignSubmitting}
+              className="h-8 text-xs"
+            >
+              Batal
+            </Button>
+            <Button
+              size="sm"
+              onClick={handleConfirmReassign}
+              disabled={isReassignSubmitting || !selectedReassignMessenger || !reassignReason.trim()}
+              className="h-8 text-xs bg-blue-600 hover:bg-blue-700 text-white font-semibold gap-1.5 shadow-2xs"
+            >
+              {isReassignSubmitting ? (
+                <>
+                  <RotateCcw className="w-3.5 h-3.5 animate-spin" />
+                  Mengalihkan...
+                </>
+              ) : (
+                <>
+                  <ArrowRightLeft className="w-3.5 h-3.5" />
+                  Konfirmasi Alihkan Tugas
+                </>
+              )}
             </Button>
           </DialogFooter>
         </DialogContent>

@@ -19,6 +19,9 @@ import {
   verifyPayment,
   cancelOrder,
   approveOrderDocuments,
+  acceptMessengerTask,
+  declineMessengerTask,
+  reassignMessengerTask,
 } from "../controllers/orderController";
 import { requireAuth, requireRoles, requireStageAuthority } from "../middleware/auth";
 import {
@@ -47,7 +50,7 @@ orderRouter.post(
 orderRouter.put(
   "/:orderNo",
   requireAuth,
-  requireRoles("administrator", "admin", "finance", "svp"),
+  requireRoles("administrator", "admin", "finance", "svp", "messenger"),
   validateOrderUpdatePayload,
   updateOrder
 );
@@ -123,4 +126,26 @@ orderRouter.post(
   requireAuth,
   requireRoles("administrator", "admin", "svp"),
   approveOrderDocuments
+);
+
+// Task Lifecycle Operations: Accept, Decline, Reassign
+orderRouter.post(
+  "/:orderNo/tasks/:taskType/accept",
+  requireAuth,
+  requireRoles("administrator", "admin", "messenger"),
+  acceptMessengerTask
+);
+
+orderRouter.post(
+  "/:orderNo/tasks/:taskType/decline",
+  requireAuth,
+  requireRoles("administrator", "admin", "messenger"),
+  declineMessengerTask
+);
+
+orderRouter.post(
+  "/:orderNo/tasks/:taskType/reassign",
+  requireAuth,
+  requireRoles("administrator", "admin", "svp"),
+  reassignMessengerTask
 );

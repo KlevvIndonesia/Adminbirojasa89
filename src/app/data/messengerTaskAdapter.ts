@@ -8,11 +8,14 @@ import { orderStore, OperationalOrder, StageName, STAGES } from "./orderStore";
 import { AdditionalProcessItem, CustomCostItem } from "../../domain/order/types";
 import { pricingStore, resolveSamsatId } from "./pricingStore";
 import { auditLog } from "../utils/auditLog";
+import { APP_CONFIG } from "../config/appConfig";
 
 import {
   MessengerTaskType,
   MessengerTaskStatus,
   MessengerTaskStatusCode,
+  MessengerAcceptanceStatus,
+  TaskLifecycleStatus,
   MessengerTaskItem,
   MessengerHistoryItem,
   MessengerComponentProgress,
@@ -38,6 +41,8 @@ export type {
   MessengerTaskType,
   MessengerTaskStatus,
   MessengerTaskStatusCode,
+  MessengerAcceptanceStatus,
+  TaskLifecycleStatus,
   MessengerTaskItem,
   MessengerHistoryItem,
   MessengerComponentProgress,
@@ -260,6 +265,40 @@ function deriveSingleTaskFromOrder(order: OperationalOrder): MessengerTaskItem {
     }
   }
 
+  // Derive acceptance status, lock status & reassignment details
+  const taskAcceptanceEntry = order.taskAcceptance?.[keteranganTugas];
+  let acceptanceStatus: "PENDING" | "ACCEPTED" | "DECLINED" | undefined = taskAcceptanceEntry?.status;
+  let isLocked = Boolean(taskAcceptanceEntry?.isLocked);
+
+  if (!acceptanceStatus) {
+    if (status === "Dalam Proses" || status === "Selesai" || order.startedAt) {
+      acceptanceStatus = "ACCEPTED";
+      isLocked = true;
+    } else if (messenger && messenger !== "Belum Ditugaskan" && messenger !== "Datang Langsung (Loket)") {
+      acceptanceStatus = "PENDING";
+      isLocked = false;
+    }
+  } else if (acceptanceStatus === "ACCEPTED") {
+    isLocked = true;
+  }
+
+  // Lifecycle status derivation (7-stage state machine)
+  let lifecycleStatus: any = "MENUNGGU_PENUGASAN";
+  if (!messenger || messenger === "Belum Ditugaskan" || messenger === "-") {
+    lifecycleStatus = "MENUNGGU_PENUGASAN";
+  } else if (status === "Selesai") {
+    lifecycleStatus = "SELESAI";
+  } else if (status === "Dibatalkan") {
+    lifecycleStatus = "DIBATALKAN";
+  } else if (status === "Dalam Proses") {
+    lifecycleStatus = "SEDANG_DIKERJAKAN";
+  } else if (acceptanceStatus === "PENDING") {
+    lifecycleStatus = "MENUNGGU_DITERIMA";
+  } else if (acceptanceStatus === "ACCEPTED") {
+    lifecycleStatus = "DITERIMA";
+  }
+
+  const targetCompletionDate = order.estimasiSelesaiOrder || order.deadlineAt;
   const deadlineStatus = calculateDeadlineStatus(order.deadlineAt);
 
   // Convert component progress record to array if available
@@ -281,6 +320,16 @@ function deriveSingleTaskFromOrder(order: OperationalOrder): MessengerTaskItem {
     assignedMessengerId,
     status,
     statusCode,
+    lifecycleStatus,
+    acceptanceStatus,
+    acceptedAt: taskAcceptanceEntry?.acceptedAt,
+    declinedAt: taskAcceptanceEntry?.declinedAt,
+    declineReason: taskAcceptanceEntry?.declineReason,
+    isLocked,
+    reassignedFrom: taskAcceptanceEntry?.reassignedFrom,
+    reassignReason: taskAcceptanceEntry?.reassignReason,
+    reassignedAt: taskAcceptanceEntry?.reassignedAt,
+    targetCompletionDate,
     priority: order.messengerTaskPriority || "NORMAL",
     deadlineAt: order.deadlineAt,
     deadlineStatus,
@@ -796,6 +845,69 @@ export function getMessengerTasksForEmployee(
 }
 
 /**
+ * Returns new unaccepted tasks assigned to this employee (Tugas Baru)
+ */
+export function getNewTasksForEmployee(
+  activeOrders: Record<StageName, OperationalOrder[]>,
+  userOrEmployeeId: string | UserContext,
+  optionalUserName?: string
+): MessengerTaskItem[] {
+  const all = getMessengerTasksForEmployee(activeOrders, userOrEmployeeId, optionalUserName);
+  return all.filter((t) => t.acceptanceStatus === "PENDING" && t.status !== "Selesai" && t.statusCode !== "COMPLETED");
+}
+
+/**
+ * Returns active accepted / in-progress tasks assigned to this employee (Tugas Aktif)
+ */
+export function getActiveTasksForEmployee(
+  activeOrders: Record<StageName, OperationalOrder[]>,
+  userOrEmployeeId: string | UserContext,
+  optionalUserName?: string
+): MessengerTaskItem[] {
+  const all = getMessengerTasksForEmployee(activeOrders, userOrEmployeeId, optionalUserName);
+  return all.filter((t) => t.acceptanceStatus !== "PENDING" && t.status !== "Selesai" && t.statusCode !== "COMPLETED");
+}
+
+/**
+ * Returns active accepted / in-progress delivery & pickup tasks (Jemput Dokumen, Jemput Hasil Samsat, Pengantaran Dokumen)
+ */
+export function getActiveDeliveryPickupTasksForEmployee(
+  activeOrders: Record<StageName, OperationalOrder[]>,
+  userOrEmployeeId: string | UserContext,
+  optionalUserName?: string
+): MessengerTaskItem[] {
+  const all = getActiveTasksForEmployee(activeOrders, userOrEmployeeId, optionalUserName);
+  return all.filter(
+    (t) =>
+      t.keteranganTugas === "Jemput Dokumen" ||
+      t.keteranganTugas === "Jemput Hasil Samsat" ||
+      t.keteranganTugas === "Pengantaran Dokumen"
+  );
+}
+
+/**
+ * Returns active accepted / in-progress Samsat tasks (Proses Samsat)
+ */
+export function getActiveSamsatTasksForEmployee(
+  activeOrders: Record<StageName, OperationalOrder[]>,
+  userOrEmployeeId: string | UserContext,
+  optionalUserName?: string
+): MessengerTaskItem[] {
+  const all = getActiveTasksForEmployee(activeOrders, userOrEmployeeId, optionalUserName);
+  return all.filter((t) => t.keteranganTugas === "Proses Samsat");
+}
+
+/**
+ * Returns all active operational field tasks currently unassigned and open to be taken
+ */
+export function getAvailableUnassignedTasks(
+  activeOrders: Record<StageName, OperationalOrder[]>
+): MessengerTaskItem[] {
+  const allTasks = deriveMessengerTasksFromOrders(activeOrders);
+  return allTasks.filter(isTaskAvailableUnassigned);
+}
+
+/**
  * Returns task history for the given employeeId (Stage 8 or archived orders).
  */
 export function getMessengerTaskHistoryForEmployee(
@@ -983,8 +1095,21 @@ export function startMessengerTask(orderNo: string, user: UserContext): { succes
   const existingTimeline = order.messengerTimeline || [];
   const resolvedEmpId = user.employeeId || resolveMessengerEmployeeId(user.userName) || user.userId || "EMP-MSG-001";
 
+  // Lock task upon starting
+  const updatedAcceptance = {
+    ...(order.taskAcceptance || {}),
+    [task.keteranganTugas]: {
+      status: "ACCEPTED" as const,
+      acceptedAt: (order.taskAcceptance?.[task.keteranganTugas]?.acceptedAt) || nowIso,
+      courierId: resolvedEmpId,
+      courierName: user.userName,
+      isLocked: true,
+    },
+  };
+
   const updates: Partial<OperationalOrder> = {
     startedAt: order.startedAt || nowIso,
+    taskAcceptance: updatedAcceptance,
     messengerTimeline: [timelineEvent, ...existingTimeline],
   };
 
@@ -1037,6 +1162,318 @@ export function startMessengerTask(orderNo: string, user: UserContext): { succes
 
   const success = orderStore.updateOrder(orderNo, updates);
   return { success, error: success ? undefined : "Gagal memperbarui order di store" };
+}
+
+function getAuthHeader(): Record<string, string> {
+  try {
+    if (typeof window !== "undefined" && window.localStorage) {
+      const token = window.localStorage.getItem("auth_token") || window.localStorage.getItem("sun89_auth_token");
+      if (token) {
+        return { Authorization: `Bearer ${token}` };
+      }
+    }
+    if (typeof process !== "undefined" && process.env?.AUTH_TOKEN) {
+      return { Authorization: `Bearer ${process.env.AUTH_TOKEN}` };
+    }
+  } catch {}
+  return {};
+}
+
+/**
+ * Messenger accepts a new task (Terima Tugas)
+ * Locks the task to this messenger and transitions from Tugas Baru to Tugas Aktif
+ */
+export async function acceptMessengerTaskAction(
+  orderNo: string,
+  taskType: string,
+  user: UserContext
+): Promise<{ success: boolean; error?: string }> {
+  const order = orderStore.getOrderByNo(orderNo);
+  if (!order) return { success: false, error: `Order ${orderNo} tidak ditemukan` };
+
+  const nowIso = new Date().toISOString();
+  const resolvedEmpId = user.employeeId || resolveMessengerEmployeeId(user.userName) || user.userId || "EMP-MSG-001";
+
+  // Double-accept race condition protection
+  const existingAcceptance = (order.taskAcceptance || {})[taskType];
+  if (
+    existingAcceptance?.isLocked &&
+    existingAcceptance.courierId &&
+    existingAcceptance.courierId !== resolvedEmpId &&
+    existingAcceptance.courierName !== user.userName
+  ) {
+    return {
+      success: false,
+      error: `Tugas ini sudah diterima dan terkunci oleh kurir lain (${existingAcceptance.courierName}).`,
+    };
+  }
+
+  // Backend API call
+  try {
+    const authHeaders = getAuthHeader();
+    if (authHeaders.Authorization) {
+      const res = await fetch(
+        `${APP_CONFIG.apiBaseUrl}/orders/${orderNo}/tasks/${encodeURIComponent(taskType)}/accept`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json", ...authHeaders },
+        }
+      );
+      if (!res.ok) {
+        const payload = await res.json().catch(() => ({}));
+        return { success: false, error: payload.message || `Gagal menerima tugas (${res.status})` };
+      }
+    }
+  } catch (err) {
+    console.warn("API accept error, falling back to local store update:", err);
+  }
+
+  // Update orderStore
+  const updatedAcceptance = {
+    ...(order.taskAcceptance || {}),
+    [taskType]: {
+      status: "ACCEPTED" as const,
+      acceptedAt: nowIso,
+      courierId: resolvedEmpId,
+      courierName: user.userName,
+      isLocked: true,
+    },
+  };
+
+  const timelineEvent: MessengerTimelineEvent = {
+    id: `tl-acc-${Date.now()}`,
+    timestamp: nowIso,
+    title: `Tugas ${taskType} Diterima`,
+    note: `Tugas diterima oleh ${user.userName} (Penugasan Terkunci).`,
+    author: user.userName,
+    type: "STATUS_CHANGE",
+  };
+  const existingTimeline = order.messengerTimeline || [];
+
+  const orderUpdates: Partial<OperationalOrder> = {
+    taskAcceptance: updatedAcceptance,
+    messengerTimeline: [timelineEvent, ...existingTimeline],
+  };
+
+  if (taskType === "Jemput Dokumen") {
+    orderUpdates.messenger = user.userName;
+    orderUpdates.assignedMessengerName = user.userName;
+    orderUpdates.assignedMessengerId = resolvedEmpId;
+    orderUpdates.isScheduled = true;
+    if (!order.tanggalJemput) orderUpdates.tanggalJemput = nowIso.split("T")[0];
+  } else if (taskType === "Proses Samsat") {
+    orderUpdates.samsatMessenger = user.userName;
+    orderUpdates.samsatMessengerNama = user.userName;
+    orderUpdates.samsatMessengerId = resolvedEmpId;
+    orderUpdates.isSamsatScheduled = true;
+    if (!order.tanggalProsesSamsat) orderUpdates.tanggalProsesSamsat = nowIso.split("T")[0];
+  } else if (taskType === "Jemput Hasil Samsat") {
+    orderUpdates.samsatPickupMessenger = user.userName;
+    orderUpdates.samsatPickupMessengerNama = user.userName;
+    orderUpdates.samsatPickupMessengerId = resolvedEmpId;
+    orderUpdates.samsatPickupStatus = "Terjadwal";
+  } else if (taskType === "Pengantaran Dokumen") {
+    orderUpdates.messengerPengantar = user.userName;
+    (orderUpdates as any).deliveryMessengerId = resolvedEmpId;
+    orderUpdates.isDeliveryScheduled = true;
+    if (!order.tanggalPengantaran) orderUpdates.tanggalPengantaran = nowIso.split("T")[0];
+  }
+
+  const success = orderStore.updateOrder(orderNo, orderUpdates);
+
+  return { success, error: success ? undefined : "Gagal mengupdate status tugas di store" };
+}
+
+/**
+ * Messenger declines a task (Tolak Tugas dengan Alasan)
+ * Resets task to unassigned so admin can reassign
+ */
+export async function declineMessengerTaskAction(
+  orderNo: string,
+  taskType: string,
+  reason: string,
+  user: UserContext
+): Promise<{ success: boolean; error?: string }> {
+  const order = orderStore.getOrderByNo(orderNo);
+  if (!order) return { success: false, error: `Order ${orderNo} tidak ditemukan` };
+
+  const cleanReason = (reason || "").trim();
+  if (!cleanReason) {
+    return { success: false, error: "Alasan penolakan tugas wajib diisi." };
+  }
+
+  const nowIso = new Date().toISOString();
+  const resolvedEmpId = user.employeeId || resolveMessengerEmployeeId(user.userName) || user.userId || "EMP-MSG-001";
+
+  // Backend API call
+  try {
+    const authHeaders = getAuthHeader();
+    if (authHeaders.Authorization) {
+      const res = await fetch(
+        `${APP_CONFIG.apiBaseUrl}/orders/${orderNo}/tasks/${encodeURIComponent(taskType)}/decline`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json", ...authHeaders },
+          body: JSON.stringify({ reason: cleanReason }),
+        }
+      );
+      if (!res.ok) {
+        const payload = await res.json().catch(() => ({}));
+        return { success: false, error: payload.message || `Gagal menolak tugas (${res.status})` };
+      }
+    }
+  } catch (err) {
+    console.warn("API decline error, falling back to local store update:", err);
+  }
+
+  const updatedAcceptance = {
+    ...(order.taskAcceptance || {}),
+    [taskType]: {
+      status: "DECLINED" as const,
+      declinedAt: nowIso,
+      declineReason: cleanReason,
+      courierId: resolvedEmpId,
+      courierName: user.userName,
+      isLocked: false,
+    },
+  };
+
+  const timelineEvent: MessengerTimelineEvent = {
+    id: `tl-dec-${Date.now()}`,
+    timestamp: nowIso,
+    title: `Tugas ${taskType} Ditolak`,
+    note: `Tugas ditolak oleh ${user.userName}. Alasan: ${cleanReason}`,
+    author: user.userName,
+    type: "STATUS_CHANGE",
+  };
+  const existingTimeline = order.messengerTimeline || [];
+
+  const updates: Partial<OperationalOrder> = {
+    taskAcceptance: updatedAcceptance,
+    messengerTimeline: [timelineEvent, ...existingTimeline],
+  };
+
+  if (taskType === "Jemput Dokumen") {
+    updates.messenger = "Belum Ditugaskan";
+    updates.assignedMessengerName = "Belum Ditugaskan";
+    updates.assignedMessengerId = undefined;
+  } else if (taskType === "Proses Samsat") {
+    updates.samsatMessenger = "Belum Ditugaskan";
+    updates.samsatMessengerNama = "Belum Ditugaskan";
+    updates.samsatMessengerId = undefined;
+  } else if (taskType === "Jemput Hasil Samsat") {
+    updates.samsatPickupMessenger = undefined;
+    updates.samsatPickupMessengerNama = undefined;
+    updates.samsatPickupMessengerId = undefined;
+    updates.samsatPickupStatus = "Belum Dijadwal";
+  } else if (taskType === "Pengantaran Dokumen") {
+    updates.messengerPengantar = "Belum Ditugaskan";
+    (updates as any).deliveryMessengerId = undefined;
+  }
+
+  const success = orderStore.updateOrder(orderNo, updates);
+  return { success, error: success ? undefined : "Gagal memperbarui status tugas di store" };
+}
+
+/**
+ * Admin Reassigns Task (Alihkan Tugas Resmi dengan Catatan & Audit Log)
+ * Moves task to new courier's Tugas Baru
+ */
+export async function reassignMessengerTaskAction(
+  orderNo: string,
+  taskType: string,
+  newCourierName: string,
+  newCourierId: string,
+  reason: string,
+  adminUser: UserContext
+): Promise<{ success: boolean; error?: string }> {
+  const order = orderStore.getOrderByNo(orderNo);
+  if (!order) return { success: false, error: `Order ${orderNo} tidak ditemukan` };
+
+  const cleanReason = (reason || "").trim();
+  if (!cleanReason) {
+    return { success: false, error: "Alasan pengalihan tugas wajib diisi." };
+  }
+  if (!newCourierName || !newCourierName.trim()) {
+    return { success: false, error: "Nama kurir pengganti wajib dipilih." };
+  }
+
+  const nowIso = new Date().toISOString();
+  const currentAcceptance = (order.taskAcceptance || {})[taskType];
+  const oldCourier = currentAcceptance?.courierName || order.messenger || "Kurir Sebelumnya";
+
+  // Backend API call
+  try {
+    const authHeaders = getAuthHeader();
+    if (authHeaders.Authorization) {
+      const res = await fetch(
+        `${APP_CONFIG.apiBaseUrl}/orders/${orderNo}/tasks/${encodeURIComponent(taskType)}/reassign`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json", ...authHeaders },
+          body: JSON.stringify({
+            newCourierName: newCourierName.trim(),
+            newCourierId,
+            reason: cleanReason,
+          }),
+        }
+      );
+      if (!res.ok) {
+        const payload = await res.json().catch(() => ({}));
+        return { success: false, error: payload.message || `Gagal mengalihkan tugas (${res.status})` };
+      }
+    }
+  } catch (err) {
+    console.warn("API reassign error, falling back to local store update:", err);
+  }
+
+  const updatedAcceptance = {
+    ...(order.taskAcceptance || {}),
+    [taskType]: {
+      status: "PENDING" as const,
+      courierId: newCourierId,
+      courierName: newCourierName.trim(),
+      isLocked: false,
+      reassignedFrom: oldCourier,
+      reassignReason: cleanReason,
+      reassignedAt: nowIso,
+    },
+  };
+
+  const timelineEvent: MessengerTimelineEvent = {
+    id: `tl-reassign-${Date.now()}`,
+    timestamp: nowIso,
+    title: `Tugas ${taskType} Dialihkan`,
+    note: `Tugas dialihkan dari ${oldCourier} ke ${newCourierName.trim()} oleh ${adminUser.userName}. Alasan: ${cleanReason}`,
+    author: adminUser.userName,
+    type: "ASSIGNMENT",
+  };
+  const existingTimeline = order.messengerTimeline || [];
+
+  const updates: Partial<OperationalOrder> = {
+    taskAcceptance: updatedAcceptance,
+    messengerTimeline: [timelineEvent, ...existingTimeline],
+  };
+
+  if (taskType === "Jemput Dokumen") {
+    updates.messenger = newCourierName.trim();
+    updates.assignedMessengerName = newCourierName.trim();
+    updates.assignedMessengerId = newCourierId;
+  } else if (taskType === "Proses Samsat") {
+    updates.samsatMessenger = newCourierName.trim();
+    updates.samsatMessengerNama = newCourierName.trim();
+    updates.samsatMessengerId = newCourierId;
+  } else if (taskType === "Jemput Hasil Samsat") {
+    updates.samsatPickupMessenger = newCourierName.trim();
+    updates.samsatPickupMessengerNama = newCourierName.trim();
+    updates.samsatPickupMessengerId = newCourierId;
+  } else if (taskType === "Pengantaran Dokumen") {
+    updates.messengerPengantar = newCourierName.trim();
+    (updates as any).deliveryMessengerId = newCourierId;
+  }
+
+  const success = orderStore.updateOrder(orderNo, updates);
+  return { success, error: success ? undefined : "Gagal mengalihkan tugas di store" };
 }
 
 /**
@@ -2229,13 +2666,41 @@ export function completeSamsatProcess(
 
   const existingTimeline = order.messengerTimeline || [];
 
+  // Check if auto spawn already exists to prevent duplication (Requirement #8)
+  const isAlreadySpawned = Boolean(
+    order.taskAcceptance?.["Jemput Hasil Samsat"] ||
+    existingTimeline.some((e) => e.title?.includes("Tugas Otomatis: Jemput Hasil Samsat"))
+  );
+
+  const timelineEventsToPrepend: MessengerTimelineEvent[] = [];
+  if (!isAlreadySpawned) {
+    timelineEventsToPrepend.push({
+      id: `tl-spawn-${Date.now()}`,
+      timestamp: nowIso,
+      title: "Tugas Otomatis: Jemput Hasil Samsat",
+      note: "Sistem otomatis membuat tugas penjemputan berkas hasil Samsat ke kantor (tersedia bagi kurir).",
+      author: "Sistem Otomasi",
+      type: "STATUS_CHANGE",
+    });
+  }
+  timelineEventsToPrepend.push(timelineEvent);
+
+  const updatedAcceptance = {
+    ...(order.taskAcceptance || {}),
+    ["Jemput Hasil Samsat"]: {
+      status: "PENDING" as const,
+      isLocked: false,
+    },
+  };
+
   // Update samsat status to "Selesai" and setup samsatPickupStatus without premature advanceOrder
   const success = orderStore.updateOrder(orderNo, {
     samsatStatus: "Selesai",
     samsatCompletedAt: nowIso,
-    samsatPickupStatus: order.samsatPickupStatus || "Belum Dijadwal Jemput Samsat",
+    samsatPickupStatus: "Belum Dijadwal",
+    taskAcceptance: updatedAcceptance,
     messengerTaskNotes: note?.trim() || order.messengerTaskNotes,
-    messengerTimeline: [timelineEvent, ...existingTimeline],
+    messengerTimeline: [...timelineEventsToPrepend, ...existingTimeline],
   });
 
   if (success) {
@@ -2253,5 +2718,60 @@ export function completeSamsatProcess(
   }
 
   return { success, error: success ? undefined : "Gagal menyelesaikan pengurusan Samsat" };
+}
+
+/**
+ * Release Samsat Task back to the Pool (Daftar Tugas)
+ * Allows another courier to continue remaining Samsat components without resetting progress. (Requirement #7)
+ */
+export function releaseSamsatTaskAction(
+  orderNo: string,
+  user: UserContext,
+  notes?: string
+): { success: boolean; error?: string } {
+  const order = orderStore.getOrderByNo(orderNo);
+  if (!order) return { success: false, error: "Order tidak ditemukan" };
+
+  const nowIso = new Date().toISOString();
+  const timelineEvent: MessengerTimelineEvent = {
+    id: `tl-rel-${Date.now()}`,
+    timestamp: nowIso,
+    title: "Tugas Samsat Dikembalikan ke Daftar Tugas",
+    note: notes || `Kurir ${user.userName} menyimpan progres dan mengembalikan sisa pengurusan Samsat ke pool untuk dilanjutkan rekan kurir.`,
+    author: user.userName,
+    type: "STATUS_CHANGE",
+  };
+
+  const updatedAcceptance = {
+    ...(order.taskAcceptance || {}),
+    ["Proses Samsat"]: {
+      status: "PENDING" as const,
+      isLocked: false,
+    },
+  };
+
+  const success = orderStore.updateOrder(orderNo, {
+    samsatMessenger: "Belum Ditugaskan",
+    samsatMessengerNama: "Belum Ditugaskan",
+    samsatMessengerId: "Belum Ditugaskan",
+    taskAcceptance: updatedAcceptance,
+    messengerTimeline: [timelineEvent, ...(order.messengerTimeline || [])],
+  });
+
+  if (success) {
+    try {
+      auditLog.log({
+        userId: user.employeeId || "emp-messenger",
+        userName: user.userName,
+        userRole: toAuditRole(user.role),
+        action: "UPDATE",
+        module: "Proses Samsat",
+        details: `Tugas Samsat untuk order ${orderNo} dikembalikan ke Daftar Tugas oleh ${user.userName}`,
+        metadata: { orderNo },
+      });
+    } catch {}
+  }
+
+  return { success, error: success ? undefined : "Gagal melepaskan tugas" };
 }
 

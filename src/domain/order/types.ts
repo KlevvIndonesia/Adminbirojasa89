@@ -317,6 +317,27 @@ export interface OperationalOrder {
   deadlineAt?: string;
   startedAt?: string;
 
+  // Customer Target Delivery Estimate & Actual Finish (Layer 1)
+  estimasiSelesaiOrder?: string; // Overall Customer Target Completion Date (YYYY-MM-DD or ISO)
+  tanggalSelesaiAktualOrder?: string; // Actual overall completion timestamp
+
+  // Multi-day & Multi-messenger Samsat Stages (Layer 2)
+  samsatStageExecutions?: any[];
+
+  // Task Acceptance & Locking Metadata (Layer 3)
+  taskAcceptance?: Record<string, {
+    status: "PENDING" | "ACCEPTED" | "DECLINED";
+    acceptedAt?: string;
+    courierId?: string;
+    courierName?: string;
+    isLocked?: boolean;
+    declinedAt?: string;
+    declineReason?: string;
+    reassignedFrom?: string;
+    reassignReason?: string;
+    reassignedAt?: string;
+  }>;
+
   // Master Pricing Snapshot & Service Method (Batch 5)
   metodeLayanan?: "Antar Jemput" | "Datang Langsung";
   costBreakdown?: OrderCostBreakdownItem[];

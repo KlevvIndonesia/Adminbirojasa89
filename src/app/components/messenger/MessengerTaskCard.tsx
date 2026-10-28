@@ -11,6 +11,11 @@ import {
   ArrowRight,
   CheckCircle2,
   ExternalLink,
+  Calendar,
+  Check,
+  X,
+  AlertCircle,
+  Lock,
 } from "lucide-react";
 import {
   MessengerTaskItem,
@@ -24,6 +29,9 @@ interface MessengerTaskCardProps {
   onViewDetail: (task: MessengerTaskItem) => void;
   onStartTask?: (task: MessengerTaskItem) => void;
   onContinueTask?: (task: MessengerTaskItem) => void;
+  onAcceptTask?: (task: MessengerTaskItem) => void;
+  onDeclineTask?: (task: MessengerTaskItem) => void;
+  isNewTaskMode?: boolean;
 }
 
 export function MessengerTaskCard({
@@ -31,11 +39,16 @@ export function MessengerTaskCard({
   onViewDetail,
   onStartTask,
   onContinueTask,
+  onAcceptTask,
+  onDeclineTask,
+  isNewTaskMode,
 }: MessengerTaskCardProps) {
+  const isPendingAcceptance = task.acceptanceStatus === "PENDING" || isNewTaskMode;
   const isStartable =
-    task.status === "Belum Diambil" ||
+    !isPendingAcceptance &&
+    (task.status === "Belum Diambil" ||
     task.statusCode === "NOT_STARTED" ||
-    task.statusCode === "READY";
+    task.statusCode === "READY");
   const isInProgress =
     task.status === "Dalam Proses" || task.statusCode === "IN_PROGRESS";
   const isWaiting =
@@ -116,6 +129,24 @@ export function MessengerTaskCard({
           >
             {task.keteranganTugas}
           </Badge>
+          {task.acceptanceStatus === "PENDING" && !isCompleted && (
+            <Badge
+              variant="outline"
+              className="text-xs font-semibold px-2 py-0.5 bg-amber-500/15 text-amber-700 dark:text-amber-400 border-amber-300 dark:border-amber-800 flex items-center gap-1"
+            >
+              <Clock className="w-3 h-3" />
+              Menunggu Diterima
+            </Badge>
+          )}
+          {(task.isLocked || task.acceptanceStatus === "ACCEPTED") && !isCompleted && (
+            <Badge
+              variant="outline"
+              className="text-xs font-semibold px-2 py-0.5 bg-blue-500/15 text-blue-700 dark:text-blue-300 border-blue-300 dark:border-blue-800 flex items-center gap-1"
+            >
+              <Lock className="w-3 h-3" />
+              Diterima
+            </Badge>
+          )}
           {(!task.messenger || task.messenger === "Belum Ditugaskan" || !task.assignedMessengerId) && !isCompleted && (
             <Badge
               variant="outline"
@@ -171,6 +202,40 @@ export function MessengerTaskCard({
               <span>•</span>
               <span className="truncate font-medium">{task.jenisTugas}</span>
             </div>
+
+            {/* Target Selesai Order (Customer Overall Completion Target) */}
+            {task.targetCompletionDate && (
+              <div className="flex items-center gap-1.5 text-xs text-muted-foreground mt-2">
+                <Calendar className="w-3.5 h-3.5 text-primary shrink-0" />
+                <span>
+                  Target Selesai Order:{" "}
+                  <strong className="text-foreground">
+                    {new Date(task.targetCompletionDate).toLocaleDateString("id-ID", {
+                      day: "numeric",
+                      month: "short",
+                      year: "numeric",
+                    })}
+                  </strong>
+                </span>
+              </div>
+            )}
+
+            {/* Reassignment Notice if task was reassigned from another courier */}
+            {task.reassignedFrom && (
+              <div className="text-xs bg-amber-500/10 text-amber-800 dark:text-amber-300 border border-amber-500/30 px-2.5 py-1.5 rounded-lg font-medium flex items-start gap-1.5 mt-2">
+                <AlertCircle className="w-3.5 h-3.5 text-amber-600 dark:text-amber-400 shrink-0 mt-0.5" />
+                <div className="min-w-0">
+                  <span>
+                    Dialihkan dari <strong>{task.reassignedFrom}</strong>
+                  </span>
+                  {task.reassignReason && (
+                    <span className="block text-[11px] text-amber-700/80 dark:text-amber-300/80 italic mt-0.5">
+                      Alasan: &ldquo;{task.reassignReason}&rdquo;
+                    </span>
+                  )}
+                </div>
+              </div>
+            )}
           </div>
 
           {/* Status Badge */}
@@ -178,13 +243,14 @@ export function MessengerTaskCard({
             <span
               className={cn(
                 "inline-block px-3 py-1 rounded-full text-xs sm:text-sm font-semibold",
-                isStartable && "bg-blue-100 dark:bg-blue-950/60 text-blue-700 dark:text-blue-300 border border-blue-200 dark:border-blue-800",
+                isPendingAcceptance && "bg-amber-100 dark:bg-amber-950/60 text-amber-800 dark:text-amber-200 border border-amber-300 dark:border-amber-800",
+                !isPendingAcceptance && isStartable && "bg-blue-100 dark:bg-blue-950/60 text-blue-700 dark:text-blue-300 border border-blue-200 dark:border-blue-800",
                 isInProgress && "bg-emerald-100 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800",
                 isWaiting && "bg-amber-100 dark:bg-amber-950/60 text-amber-700 dark:text-amber-300 border border-amber-200 dark:border-amber-800",
                 isCompleted && "bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300"
               )}
             >
-              {getStatusDisplayLabel(task.statusCode || task.status)}
+              {isPendingAcceptance ? "Menunggu Konfirmasi" : getStatusDisplayLabel(task.statusCode || task.status)}
             </span>
             {task.waitingReason && (
               <p className="text-xs text-amber-600 dark:text-amber-400 font-semibold mt-1 truncate max-w-[150px]">
@@ -228,23 +294,51 @@ export function MessengerTaskCard({
         </div>
       </div>
 
-      {/* Action Footer: Single Primary Action Button with Touch Target >= 44px */}
-      <div className="pt-3 border-t border-border/60 flex items-center justify-end">
-        <Button
-          size="sm"
-          onClick={handlePrimaryAction}
-          className={cn(
-            "h-11 px-5 text-sm sm:text-base font-semibold rounded-xl shadow-2xs w-full sm:w-auto transition-all min-h-[44px]",
-            isStartable && "bg-primary hover:bg-primary/90 text-primary-foreground",
-            isInProgress && "bg-emerald-600 hover:bg-emerald-700 text-white",
-            (isCompleted || isWaiting) && "bg-secondary text-secondary-foreground hover:bg-secondary/80 border border-border"
-          )}
-        >
-          {isStartable && <Play className="w-4 h-4 mr-2 fill-current" />}
-          {isInProgress && <ArrowRight className="w-4 h-4 mr-2" />}
-          {(isCompleted || isWaiting) && <Eye className="w-4 h-4 mr-2" />}
-          {getPrimaryActionLabel()}
-        </Button>
+      {/* Action Footer: Touch Target >= 44px */}
+      <div className="pt-3 border-t border-border/60 flex items-center justify-end gap-2">
+        {isPendingAcceptance ? (
+          <>
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={(e) => {
+                e.stopPropagation();
+                onDeclineTask?.(task);
+              }}
+              className="h-11 px-4 text-sm font-semibold rounded-xl border-rose-300 dark:border-rose-800 text-rose-600 dark:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-950/30 transition-all min-h-[44px]"
+            >
+              <X className="w-4 h-4 mr-1.5" />
+              Tolak
+            </Button>
+            <Button
+              size="sm"
+              onClick={(e) => {
+                e.stopPropagation();
+                onAcceptTask?.(task);
+              }}
+              className="h-11 px-5 text-sm font-semibold rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white shadow-2xs transition-all min-h-[44px]"
+            >
+              <Check className="w-4 h-4 mr-1.5" />
+              Terima Tugas
+            </Button>
+          </>
+        ) : (
+          <Button
+            size="sm"
+            onClick={handlePrimaryAction}
+            className={cn(
+              "h-11 px-5 text-sm sm:text-base font-semibold rounded-xl shadow-2xs w-full sm:w-auto transition-all min-h-[44px]",
+              isStartable && "bg-primary hover:bg-primary/90 text-primary-foreground",
+              isInProgress && "bg-emerald-600 hover:bg-emerald-700 text-white",
+              (isCompleted || isWaiting) && "bg-secondary text-secondary-foreground hover:bg-secondary/80 border border-border"
+            )}
+          >
+            {isStartable && <Play className="w-4 h-4 mr-2 fill-current" />}
+            {isInProgress && <ArrowRight className="w-4 h-4 mr-2" />}
+            {(isCompleted || isWaiting) && <Eye className="w-4 h-4 mr-2" />}
+            {getPrimaryActionLabel()}
+          </Button>
+        )}
       </div>
     </Card>
   );

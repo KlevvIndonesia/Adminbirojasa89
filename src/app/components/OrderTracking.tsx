@@ -735,7 +735,7 @@ export function OrderTracking({
     return handleSavePaymentVerificationAndCorrection();
   };
 
-  // Stage 1 -> Stage 2 (Verifikasi -> Penjadwalan)
+  // Stage 1 -> Stage 2 (Verifikasi -> Penjadwalan) atau langsung ke Stage 3 jika Datang Langsung
   const handleVerifyOrder = () => {
     if (!selectedOrder) return;
 
@@ -744,13 +744,41 @@ export function OrderTracking({
     const isBayarDiAwal = selectedOrder.payment?.tipePembayaran === "Bayar di Awal";
     const isPaymentVerified = selectedOrder.payment?.isPaymentVerified;
     if (isBayarDiAwal && !isPaymentVerified) {
-      toast.error("Pembayaran 'Bayar di Awal' wajib diverifikasi terlebih dahulu sebelum order dapat dilanjutkan ke tahap Penjadwalan!");
+      toast.error("Pembayaran 'Bayar di Awal' wajib diverifikasi terlebih dahulu sebelum order dapat dilanjutkan ke tahap berikutnya!");
+      return;
+    }
+
+    const isDatangLangsung = selectedOrder.metodeLayanan === "Datang Langsung";
+
+    if (isDatangLangsung) {
+      confirmAndAdvance(
+        selectedOrder.orderNo,
+        "Stage 3 – Verifikasi Dokumen Fisik",
+        `Order ${selectedOrder.orderNo} menggunakan metode Datang Langsung (berkas diserahkan langsung di loket). Verifikasi awal disetujui dan order akan langsung dialihkan ke Stage 3 (Verifikasi Dokumen Fisik di Loket)?`,
+        () => {
+          const nowStr = new Date().toISOString();
+          advanceOrder(selectedOrder.orderNo, "Verifikasi Dokumen", {
+            isVerified: true,
+            verifiedBy: userName,
+            verifiedAt: nowStr,
+            pickupCompleted: true,
+            messengerTaskStatus: "Dokumen Sudah Tersedia",
+            messenger: "Datang Langsung (Loket)",
+            assignedMessengerName: "Datang Langsung (Loket)",
+            catatanPenjadwalan: "Klien datang langsung ke loket kantor Biro Jasa SUN89",
+          });
+
+          setIsVerifyWorkspaceOpen(false);
+          toast.success(`Order ${selectedOrder.orderNo} (Datang Langsung) berhasil diverifikasi dan langsung masuk ke Stage 3 (Verifikasi Dokumen Fisik di Loket)!`);
+          setSelectedOrder(null);
+        }
+      );
       return;
     }
 
     confirmAndAdvance(
       selectedOrder.orderNo,
-      "Stage 2 — Penjadwalan",
+      "Stage 2 – Penjadwalan",
       "Apakah Anda yakin verifikasi awal data identitas customer dan kelayakan berkas order telah sesuai untuk dipindahkan ke tahap Penjadwalan?",
       () => {
         const nowStr = new Date().toISOString();
@@ -3232,6 +3260,40 @@ export function OrderTracking({
           <ScrollArea className="flex-1 p-4 sm:p-5 overflow-y-auto">
             {selectedOrder && (
               <div className="space-y-4 sm:space-y-5 text-xs">
+                {/* Estimasi Waktu Penyelesaian Customer vs Status Proses (Requirement #1) */}
+                <div className="flex flex-wrap items-center gap-3 p-3 rounded-xl bg-primary/5 border border-primary/20 text-xs">
+                  <div className="flex items-center gap-1.5">
+                    <Calendar className="w-4 h-4 text-primary shrink-0" />
+                    <span className="text-muted-foreground">Estimasi Selesai Order:</span>
+                    <span className="font-bold text-foreground">
+                      {selectedOrder.estimasiSelesaiOrder || selectedOrder.deadlineAt
+                        ? new Date(selectedOrder.estimasiSelesaiOrder || selectedOrder.deadlineAt!).toLocaleDateString("id-ID", {
+                            day: "numeric",
+                            month: "short",
+                            year: "numeric",
+                          })
+                        : "Sesuai estimasi layanan"}
+                    </span>
+                  </div>
+                  <span className="text-border hidden sm:inline">•</span>
+                  <div className="flex items-center gap-1.5">
+                    <Clock className="w-4 h-4 text-blue-600 shrink-0" />
+                    <span className="text-muted-foreground">Tahap Pengerjaan:</span>
+                    <span className="font-semibold text-primary">{selectedOrder.currentStageName}</span>
+                  </div>
+                  {Boolean(selectedOrder.tanggalSelesaiAktualOrder || selectedOrder.tanggalDiterima) && (
+                    <>
+                      <span className="text-border hidden sm:inline">•</span>
+                      <div className="flex items-center gap-1.5">
+                        <CheckCircle className="w-4 h-4 text-emerald-600 shrink-0" />
+                        <span className="text-muted-foreground">Selesai Aktual:</span>
+                        <span className="font-bold text-emerald-600">
+                          {selectedOrder.tanggalSelesaiAktualOrder || selectedOrder.tanggalDiterima}
+                        </span>
+                      </div>
+                    </>
+                  )}
+                </div>
                 {/* 1. Data Pemilik & Kontak */}
                 <div>
                   <h4 className="font-semibold text-sm text-foreground flex items-center gap-1.5 mb-2.5">

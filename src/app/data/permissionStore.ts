@@ -165,10 +165,10 @@ const DEFAULT_PERMISSIONS: PermissionMatrix = {
   admin: {
     modules: {
       dashboard: { view: true, manage: true },
-      // Finance: NO ACCESS
-      finance: { view: false, manage: false },
+      // Finance: Kas Messenger & Review Pengajuan Biaya Allowed
+      finance: { view: true, manage: true },
       "finance-profit": { view: false, manage: false },
-      "finance-kas-messenger": { view: false, manage: false },
+      "finance-kas-messenger": { view: true, manage: true },
       "finance-kas-kantor": { view: false, manage: false },
       "finance-pengeluaran": { view: false, manage: false },
       "finance-penjualan": { view: false, manage: false },
@@ -351,11 +351,16 @@ class PermissionStore {
       const saved = localStorage.getItem(STORAGE_KEY);
       if (saved) {
         const parsed = JSON.parse(saved);
+        const adminPerms = parsed.admin || DEFAULT_PERMISSIONS.admin;
+        if (adminPerms && adminPerms.modules) {
+          adminPerms.modules["finance-kas-messenger"] = { view: true, manage: true };
+          adminPerms.modules["finance"] = { view: true, manage: true };
+        }
         // Ensure all roles exist
         return {
           svp: parsed.svp || DEFAULT_PERMISSIONS.svp,
           administrator: parsed.administrator || parsed.svp || DEFAULT_PERMISSIONS.administrator,
-          admin: parsed.admin || DEFAULT_PERMISSIONS.admin,
+          admin: adminPerms,
           finance: parsed.finance || DEFAULT_PERMISSIONS.finance,
           messenger: parsed.messenger || DEFAULT_PERMISSIONS.messenger,
         };

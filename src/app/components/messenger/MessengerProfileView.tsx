@@ -13,6 +13,7 @@ import {
   Smartphone,
   Info,
   AlertTriangle,
+  ArrowLeft,
 } from "lucide-react";
 import {
   Dialog,
@@ -29,11 +30,13 @@ import { useFinanceStore } from "../../data/financeStore";
 interface MessengerProfileViewProps {
   currentUser: UserContext;
   onLogout: () => void;
+  onBack?: () => void;
 }
 
 export function MessengerProfileView({
   currentUser,
   onLogout,
+  onBack,
 }: MessengerProfileViewProps) {
   const { activeOrders } = useOrderStore();
   const { reimbursements } = useFinanceStore();
@@ -75,6 +78,17 @@ export function MessengerProfileView({
 
   return (
     <div className="w-full space-y-4 max-w-xl mx-auto pb-6 text-left">
+      {onBack && (
+        <Button
+          variant="ghost"
+          onClick={onBack}
+          className="flex items-center gap-2 text-primary font-bold hover:bg-primary/10 pl-1 rounded-xl -ml-1 text-sm sm:text-base min-h-[44px]"
+        >
+          <ArrowLeft className="w-5 h-5" />
+          Kembali ke Dashboard
+        </Button>
+      )}
+
       {/* Profile Card Header */}
       <Card className="p-4 sm:p-6 rounded-2xl border bg-card shadow-xs space-y-4">
         <div className="flex items-center gap-4">

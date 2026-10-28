@@ -1,4 +1,4 @@
-import { useState, useMemo, useRef } from "react";
+import { useState, useMemo, useRef, useEffect } from "react";
 import { Card } from "../ui/card";
 import { Button } from "../ui/button";
 import { Badge } from "../ui/badge";
@@ -59,8 +59,12 @@ const REIMBURSEMENT_CATEGORIES: ReimbursementCategory[] = [
 type FilterStatus = "ALL" | ReimbursementStatus;
 
 export function MessengerReimbursementView({ currentUser }: MessengerReimbursementViewProps) {
-  const { reimbursements, submitReimbursement } = useFinanceStore();
+  const { reimbursements, submitReimbursement, refreshReimbursements } = useFinanceStore();
   const { activeOrders } = useOrderStore();
+
+  useEffect(() => {
+    refreshReimbursements();
+  }, [refreshReimbursements]);
 
   const [selectedFilter, setSelectedFilter] = useState<FilterStatus>("ALL");
   const [isSubmitModalOpen, setIsSubmitModalOpen] = useState(false);
@@ -85,11 +89,16 @@ export function MessengerReimbursementView({ currentUser }: MessengerReimburseme
     return getMessengerTasksForEmployee(activeOrders, currentUser);
   }, [activeOrders, currentUser]);
 
-  // Strictly filter reimbursements for current messenger by employee ID
+  // Strictly filter reimbursements for current messenger by employee ID or name
   const myReimbursements = useMemo(() => {
-    if (!currentUser.employeeId) return [];
-    return reimbursements.filter((r) => r.employeeId === currentUser.employeeId);
-  }, [reimbursements, currentUser.employeeId]);
+    const curEmpId = (currentUser.employeeId || "").toLowerCase().trim();
+    const curName = (currentUser.userName || "").toLowerCase().trim();
+    return reimbursements.filter((r) => {
+      const matchId = curEmpId && r.employeeId?.toLowerCase().trim() === curEmpId;
+      const matchName = curName && r.messengerName?.toLowerCase().trim() === curName;
+      return matchId || matchName;
+    });
+  }, [reimbursements, currentUser.employeeId, currentUser.userName]);
 
   // KPI Calculations
   const kpis = useMemo(() => {
@@ -148,7 +157,7 @@ export function MessengerReimbursementView({ currentUser }: MessengerReimburseme
     reader.readAsDataURL(file);
   };
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     const cleanAmount = parseInt(amountStr.replace(/[^0-9]/g, ""), 10);
     if (isNaN(cleanAmount) || cleanAmount <= 0) {
@@ -158,7 +167,7 @@ export function MessengerReimbursementView({ currentUser }: MessengerReimburseme
 
     setIsSubmitting(true);
     try {
-      submitReimbursement({
+      const res = await submitReimbursement({
         employeeId: currentUser.employeeId || "EMP-MSG-001",
         messengerName: currentUser.userName,
         category,
@@ -170,8 +179,13 @@ export function MessengerReimbursementView({ currentUser }: MessengerReimburseme
         receiptName: receiptUrl ? "kuitansi.jpg" : undefined,
       });
 
+      if (!res.success) {
+        toast.error(res.error || "Gagal mengirim pengajuan biaya ke server.");
+        return;
+      }
+
       toast.success(
-        `Pengajuan ${category} sebesar Rp ${cleanAmount.toLocaleString("id-ID")} berhasil dikirim ke Finance!`
+        `Pengajuan ${category} sebesar Rp ${cleanAmount.toLocaleString("id-ID")} berhasil diverifikasi dan disimpan ke server!`
       );
       setIsSubmitModalOpen(false);
       // Reset form
@@ -181,7 +195,7 @@ export function MessengerReimbursementView({ currentUser }: MessengerReimburseme
       setNote("");
       setReceiptUrl("");
     } catch (err: any) {
-      toast.error(err?.message || "Gagal mengirim pengajuan");
+      toast.error(err?.message || "Gagal mengirim pengajuan biaya");
     } finally {
       setIsSubmitting(false);
     }

@@ -60,6 +60,26 @@ class AuditLogService {
     if (!authHeaders.Authorization) {
       return;
     }
+
+    // Role Guard: Only administrator and svp have authority to read all system audit logs
+    let isAllowedRole = false;
+    try {
+      if (typeof window !== "undefined" && window.localStorage) {
+        const raw = window.localStorage.getItem("auth_user");
+        if (raw) {
+          const u = JSON.parse(raw);
+          if (u.role === "administrator" || u.role === "svp") {
+            isAllowedRole = true;
+          }
+        }
+      }
+    } catch {}
+
+    if (!isAllowedRole) {
+      this.isLoadingState = false;
+      return;
+    }
+
     this.isLoadingState = true;
     try {
       const baseUrl = APP_CONFIG.apiBaseUrl.replace(/\/$/, "");
@@ -93,6 +113,9 @@ class AuditLogService {
         if (typeof window !== "undefined") {
           window.dispatchEvent(new CustomEvent("sun89_auth_unauthorized"));
         }
+      } else if (res.status === 403) {
+        this.isLoadingState = false;
+        return;
       } else {
         throw new Error(`Gagal memuat riwayat aktivitas (HTTP ${res.status})`);
       }

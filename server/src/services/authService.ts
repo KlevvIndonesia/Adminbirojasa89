@@ -54,12 +54,15 @@ export class AuthService {
     };
     const role = roleMap[userEntity.jabatan] || "admin";
 
+    const resolvedEmployeeId = userEntity.employee_id || (role === 'messenger' ? (userEntity.nama.toLowerCase().includes('andi') ? 'EMP-MSG-002' : 'EMP-MSG-001') : undefined);
+
     const token = generateToken({
       userId: `usr-${userEntity.id}`,
       email: userEntity.email,
       nama: userEntity.nama,
       jabatan: userEntity.jabatan,
       role,
+      employeeId: resolvedEmployeeId,
     });
 
     // Record login audit log
@@ -83,6 +86,7 @@ export class AuthService {
         nama: userEntity.nama,
         jabatan: userEntity.jabatan,
         role,
+        employeeId: resolvedEmployeeId,
         status: userEntity.status,
       },
     };

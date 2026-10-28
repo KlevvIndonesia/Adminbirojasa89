@@ -512,20 +512,38 @@ export class OrderService {
       }
     }
 
-    // Role field scoping: Messenger may only update task execution and delivery fields
+    // Role field scoping: Messenger may only update task execution, field assignment, and delivery fields
     if (user && user.role === "messenger") {
       const allowedMessengerFields = new Set([
-        "messengerTaskStatus", "messengerTaskNotes", "catatanKendala",
+        // Task timing & completion
+        "startedAt", "completedAt",
+        "messengerTaskStatus", "messengerTaskNotes", "catatanKendala", "catatanPenjadwalan", "catatanSamsat", "catatanPengantaran",
+
+        // Pickup (Stage 2)
         "pickupChecklist", "pickupProof", "pickupCompleted", "pickupCompletedAt",
+        "checklistSebelumBerangkat",
+        "messenger", "assignedMessengerName", "assignedMessengerId", "isScheduled", "tanggalJemput",
+
+        // Samsat (Stage 4)
+        "samsatMessenger", "samsatMessengerId", "isSamsatScheduled", "tanggalProsesSamsat",
         "samsatJourneyStartedAt", "samsatArrivedAt", "samsatCompletedAt",
         "samsatStatus", "samsatSubstatus", "samsatProcesses", "currentSamsatProcess",
-        "additionalProcesses", "samsatPickupStartedAt", "samsatPickupCompletedAt",
-        "samsatPickupNotes", "deliveryStartedAt", "deliveryStatus", "deliveryHandover",
+        "additionalProcesses", "samsatPickupStatus", "samsatPickupMessenger", "samsatPickupMessengerId",
+        "samsatPickupStartedAt", "samsatPickupCompletedAt", "samsatPickupNotes", "samsatResultProof",
+        "messengerComponentProgress", "customCostItems",
+
+        // Delivery (Stage 7)
+        "messengerPengantar", "deliveryMessengerId", "isDeliveryScheduled", "tanggalPengantaran",
+        "deliveryStartedAt", "deliveryStatus", "deliveryHandover",
         "deliveryProof", "receiverName", "tanggalDiterima", "isReceived",
-        "messengerComponentProgress", "messengerTimeline"
+
+        // Timeline, Acceptance & Multi-Stage Execution
+        "messengerTimeline", "taskAcceptance", "samsatStageExecutions",
+        "estimasiSelesaiOrder", "tanggalSelesaiAktualOrder"
       ]);
       for (const k of Object.keys(updates)) {
-        if (!allowedMessengerFields.has(k)) {
+        const isMutasiBreakdown = k.startsWith("mutasiKeluar") || k.startsWith("mutasiMasuk");
+        if (!allowedMessengerFields.has(k) && !isMutasiBreakdown) {
           throw new ApiError(403, "FORBIDDEN", `Messenger tidak memiliki wewenang untuk mengubah field '${k}'.`);
         }
       }
@@ -578,6 +596,22 @@ export class OrderService {
 
     if ((safeUpdates as any).biayaLainnya !== undefined) {
       (safeUpdates as any).biaya_lainnya = Number((safeUpdates as any).biayaLainnya);
+    }
+
+    // Auto-Spawn follow-up pickup task when Samsat is marked completed (Requirement #4)
+    if (safeUpdates.samsatStatus === "Selesai") {
+      if (!existing.samsatPickupStatus || existing.samsatPickupStatus === "Belum Dijadwal" || existing.samsatPickupStatus === "Belum Dijadwal Jemput Samsat") {
+        safeUpdates.samsatPickupStatus = "Belum Dijadwal";
+        const updatedAcceptance = {
+          ...(existing.taskAcceptance || {}),
+          ...(safeUpdates.taskAcceptance || {}),
+          ["Jemput Hasil Samsat"]: {
+            status: "PENDING" as const,
+            isLocked: false,
+          },
+        };
+        safeUpdates.taskAcceptance = updatedAcceptance;
+      }
     }
 
     return runInTransaction(() => {
@@ -1267,6 +1301,299 @@ export class OrderService {
       });
 
       return updated;
+    });
+  }
+
+  /**
+   * Messenger Accepts Task (Tugas Baru -> Tugas Aktif & Terkunci)
+   * Enforces race condition protection against double acceptance
+   */
+  public acceptMessengerTask(orderNo: string, taskType: string, user: TokenPayload): OperationalOrder {
+    const existing = this.getByOrderNo(orderNo);
+    const nowIso = new Date().toISOString();
+    const courierName = user.nama || (user as any).userName || "Messenger Lapangan";
+    const courierId = (user as any).employeeId || user.userId || "EMP-MSG";
+
+    const currentAcceptance = (existing.taskAcceptance || {})[taskType];
+    if (currentAcceptance?.isLocked && currentAcceptance.courierId && currentAcceptance.courierId !== courierId) {
+      throw new ApiError(409, "TASK_ALREADY_ACCEPTED", `Tugas ${taskType} pada order ${orderNo} sudah diterima dan dikunci oleh kurir lain (${currentAcceptance.courierName || "Petugas lain"}).`);
+    }
+
+    const updatedAcceptance = {
+      ...(existing.taskAcceptance || {}),
+      [taskType]: {
+        status: "ACCEPTED" as const,
+        acceptedAt: nowIso,
+        courierId,
+        courierName,
+        isLocked: true,
+      },
+    };
+
+    const taskUpdates: Partial<OperationalOrder> = {
+      taskAcceptance: updatedAcceptance,
+    };
+
+    const timelineEvent: any = {
+      id: `tl-acc-${Date.now()}`,
+      timestamp: nowIso,
+      title: `Tugas ${taskType} Diterima`,
+      note: `Tugas operasional diterima dan dikunci oleh kurir ${courierName}`,
+      author: courierName,
+      type: "STATUS_CHANGE",
+    };
+    const existingTimeline = existing.messengerTimeline || [];
+    taskUpdates.messengerTimeline = [timelineEvent, ...existingTimeline];
+
+    // Align order-level courier assignment fields
+    if (taskType === "Jemput Dokumen") {
+      taskUpdates.messenger = courierName;
+      taskUpdates.assignedMessengerName = courierName;
+      taskUpdates.assignedMessengerId = courierId;
+      taskUpdates.isScheduled = true;
+      if (!existing.tanggalJemput) taskUpdates.tanggalJemput = nowIso.split("T")[0];
+    } else if (taskType === "Proses Samsat") {
+      taskUpdates.samsatMessenger = courierName;
+      taskUpdates.samsatMessengerNama = courierName;
+      taskUpdates.samsatMessengerId = courierId;
+      taskUpdates.isSamsatScheduled = true;
+      if (!existing.tanggalProsesSamsat) taskUpdates.tanggalProsesSamsat = nowIso.split("T")[0];
+    } else if (taskType === "Jemput Hasil Samsat") {
+      taskUpdates.samsatPickupMessenger = courierName;
+      taskUpdates.samsatPickupMessengerNama = courierName;
+      taskUpdates.samsatPickupMessengerId = courierId;
+      taskUpdates.samsatPickupStatus = "Terjadwal";
+    } else if (taskType === "Pengantaran Dokumen") {
+      taskUpdates.messengerPengantar = courierName;
+      (taskUpdates as any).deliveryMessengerId = courierId;
+      taskUpdates.isDeliveryScheduled = true;
+      if (!existing.tanggalPengantaran) taskUpdates.tanggalPengantaran = nowIso.split("T")[0];
+    }
+
+    return runInTransaction(() => {
+      dbOrderRepository.updateOrder(orderNo, taskUpdates);
+      const updated = this.getByOrderNo(orderNo);
+
+      dbAuditRepository.save({
+        id: `log-task-accept-${Date.now()}`,
+        userId: courierId,
+        userName: courierName,
+        userRole: (user.role as any) || "messenger",
+        action: "ACCEPT_TASK",
+        module: "Messenger Task",
+        details: `Kurir ${courierName} menerima dan mengunci tugas ${taskType} pada order ${orderNo}`,
+        metadata: { orderNo, taskType, courierId, courierName, acceptedAt: nowIso },
+        createdAt: nowIso,
+      });
+
+      return updated;
+    });
+  }
+
+  /**
+   * Messenger Declines Task (Tolak Tugas -> Menunggu Penugasan Kembali)
+   */
+  public declineMessengerTask(orderNo: string, taskType: string, reason: string, user: TokenPayload): OperationalOrder {
+    const existing = this.getByOrderNo(orderNo);
+    const nowIso = new Date().toISOString();
+    const courierName = user.nama || (user as any).userName || "Messenger Lapangan";
+    const courierId = (user as any).employeeId || user.userId || "EMP-MSG";
+
+    const cleanReason = (reason || "").trim() || "Tidak dapat menjalankan tugas";
+
+    const updatedAcceptance = {
+      ...(existing.taskAcceptance || {}),
+      [taskType]: {
+        status: "DECLINED" as const,
+        declinedAt: nowIso,
+        declineReason: cleanReason,
+        courierId,
+        courierName,
+        isLocked: false,
+      },
+    };
+
+    const taskUpdates: Partial<OperationalOrder> = {
+      taskAcceptance: updatedAcceptance,
+    };
+
+    const timelineEvent: any = {
+      id: `tl-dec-${Date.now()}`,
+      timestamp: nowIso,
+      title: `Tugas ${taskType} Ditolak`,
+      note: `Tugas ditolak oleh ${courierName}. Alasan: ${cleanReason}`,
+      author: courierName,
+      type: "STATUS_CHANGE",
+    };
+    const existingTimeline = existing.messengerTimeline || [];
+    taskUpdates.messengerTimeline = [timelineEvent, ...existingTimeline];
+
+    // Reset courier assignment so it returns to unassigned
+    if (taskType === "Jemput Dokumen") {
+      taskUpdates.messenger = "Belum Ditugaskan";
+      taskUpdates.assignedMessengerName = "Belum Ditugaskan";
+      taskUpdates.assignedMessengerId = undefined;
+    } else if (taskType === "Proses Samsat") {
+      taskUpdates.samsatMessenger = "Belum Ditugaskan";
+      taskUpdates.samsatMessengerNama = "Belum Ditugaskan";
+      taskUpdates.samsatMessengerId = undefined;
+    } else if (taskType === "Jemput Hasil Samsat") {
+      taskUpdates.samsatPickupMessenger = undefined;
+      taskUpdates.samsatPickupMessengerNama = undefined;
+      taskUpdates.samsatPickupMessengerId = undefined;
+      taskUpdates.samsatPickupStatus = "Belum Dijadwal";
+    } else if (taskType === "Pengantaran Dokumen") {
+      taskUpdates.messengerPengantar = "Belum Ditugaskan";
+      (taskUpdates as any).deliveryMessengerId = undefined;
+    }
+
+    return runInTransaction(() => {
+      dbOrderRepository.updateOrder(orderNo, taskUpdates);
+      const updated = this.getByOrderNo(orderNo);
+
+      dbAuditRepository.save({
+        id: `log-task-decline-${Date.now()}`,
+        userId: courierId,
+        userName: courierName,
+        userRole: (user.role as any) || "messenger",
+        action: "DECLINE_TASK",
+        module: "Messenger Task",
+        details: `Kurir ${courierName} menolak tugas ${taskType} pada order ${orderNo}. Alasan: ${cleanReason}`,
+        metadata: { orderNo, taskType, courierId, courierName, reason: cleanReason },
+        createdAt: nowIso,
+      });
+
+      return updated;
+    });
+  }
+
+  /**
+   * Admin Reassigns Task (Alihkan Tugas Resmi dengan Catatan & Audit Log)
+   */
+  public reassignMessengerTask(
+    orderNo: string,
+    taskType: string,
+    newCourierName: string,
+    newCourierId: string,
+    reason: string,
+    adminUser: TokenPayload
+  ): OperationalOrder {
+    const existing = this.getByOrderNo(orderNo);
+    const nowIso = new Date().toISOString();
+    const adminName = adminUser.nama || "Admin Kantor";
+    const cleanReason = (reason || "").trim();
+
+    if (!cleanReason) {
+      throw new ApiError(400, "REASON_REQUIRED", "Alasan pengalihan tugas wajib diisi.");
+    }
+    if (!newCourierName || !newCourierName.trim()) {
+      throw new ApiError(400, "COURIER_REQUIRED", "Nama kurir pengganti wajib dipilih.");
+    }
+
+    const currentAcceptance = (existing.taskAcceptance || {})[taskType];
+    const oldCourier = currentAcceptance?.courierName || existing.messenger || "Kurir Sebelumnya";
+
+    const updatedAcceptance = {
+      ...(existing.taskAcceptance || {}),
+      [taskType]: {
+        status: "PENDING" as const,
+        courierId: newCourierId,
+        courierName: newCourierName.trim(),
+        isLocked: false,
+        reassignedFrom: oldCourier,
+        reassignReason: cleanReason,
+        reassignedAt: nowIso,
+      },
+    };
+
+    const taskUpdates: Partial<OperationalOrder> = {
+      taskAcceptance: updatedAcceptance,
+    };
+
+    const timelineEvent: any = {
+      id: `tl-reassign-${Date.now()}`,
+      timestamp: nowIso,
+      title: `Tugas ${taskType} Dialihkan`,
+      note: `Tugas dialihkan dari ${oldCourier} ke ${newCourierName.trim()} oleh ${adminName}. Alasan: ${cleanReason}`,
+      author: adminName,
+      type: "ASSIGNMENT",
+    };
+    const existingTimeline = existing.messengerTimeline || [];
+    taskUpdates.messengerTimeline = [timelineEvent, ...existingTimeline];
+
+    if (taskType === "Jemput Dokumen") {
+      taskUpdates.messenger = newCourierName.trim();
+      taskUpdates.assignedMessengerName = newCourierName.trim();
+      taskUpdates.assignedMessengerId = newCourierId;
+    } else if (taskType === "Proses Samsat") {
+      taskUpdates.samsatMessenger = newCourierName.trim();
+      taskUpdates.samsatMessengerNama = newCourierName.trim();
+      taskUpdates.samsatMessengerId = newCourierId;
+    } else if (taskType === "Jemput Hasil Samsat") {
+      taskUpdates.samsatPickupMessenger = newCourierName.trim();
+      taskUpdates.samsatPickupMessengerNama = newCourierName.trim();
+      taskUpdates.samsatPickupMessengerId = newCourierId;
+    } else if (taskType === "Pengantaran Dokumen") {
+      taskUpdates.messengerPengantar = newCourierName.trim();
+      (taskUpdates as any).deliveryMessengerId = newCourierId;
+    }
+
+    return runInTransaction(() => {
+      dbOrderRepository.updateOrder(orderNo, taskUpdates);
+      const updated = this.getByOrderNo(orderNo);
+
+      dbAuditRepository.save({
+        id: `log-task-reassign-${Date.now()}`,
+        userId: adminUser.userId || "usr-admin",
+        userName: adminName,
+        userRole: (adminUser.role as any) || "admin",
+        action: "REASSIGN_TASK",
+        module: "Messenger Task",
+        details: `Admin ${adminName} mengalihkan tugas ${taskType} order ${orderNo} dari ${oldCourier} ke ${newCourierName}. Alasan: ${cleanReason}`,
+        metadata: { orderNo, taskType, oldCourier, newCourier: newCourierName, reason: cleanReason },
+        createdAt: nowIso,
+      });
+
+      return updated;
+    });
+  }
+
+  /**
+   * Automatic Spawn: Jemput Dokumen Hasil Samsat dari Samsat ke Kantor
+   * Automatically triggered when courier completes Samsat process
+   */
+  public autoSpawnSamsatResultPickup(orderNo: string, actorUser?: TokenPayload): OperationalOrder {
+    const existing = this.getByOrderNo(orderNo);
+    const nowIso = new Date().toISOString();
+    const actorName = actorUser?.nama || "Sistem Otomasi";
+
+    const updatedAcceptance = {
+      ...(existing.taskAcceptance || {}),
+      ["Jemput Hasil Samsat"]: {
+        status: "PENDING" as const,
+        isLocked: false,
+      },
+    };
+
+    const timelineEvent: any = {
+      id: `tl-autospawn-${Date.now()}`,
+      timestamp: nowIso,
+      title: "Tugas Otomatis: Jemput Hasil Samsat",
+      note: "Sistem otomatis membuat tugas penjemputan berkas hasil Samsat ke kantor (tersedia bagi kurir).",
+      author: actorName,
+      type: "STATUS_CHANGE",
+    };
+    const existingTimeline = existing.messengerTimeline || [];
+
+    const updates: Partial<OperationalOrder> = {
+      samsatPickupStatus: "Belum Dijadwal",
+      taskAcceptance: updatedAcceptance,
+      messengerTimeline: [timelineEvent, ...existingTimeline],
+    };
+
+    return runInTransaction(() => {
+      dbOrderRepository.updateOrder(orderNo, updates);
+      return this.getByOrderNo(orderNo);
     });
   }
 

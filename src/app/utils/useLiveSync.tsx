@@ -259,14 +259,25 @@ class LiveSyncManager {
           return false;
         }
 
-        // Parallel sync of Order and Finance domains
+        let isMessengerUser = false;
+        try {
+          if (typeof window !== "undefined" && window.localStorage) {
+            const raw = window.localStorage.getItem("auth_user");
+            if (raw) {
+              const u = JSON.parse(raw);
+              if (u.role === "messenger") isMessengerUser = true;
+            }
+          }
+        } catch {}
+
+        // Parallel sync of Order and Finance domains (couriers only sync order domain, never finance)
         await Promise.allSettled([
           typeof (orderStore as any)?.refresh === "function"
             ? (orderStore as any).refresh(isSilent)
             : typeof (orderStore as any)?.initFromApi === "function"
               ? (orderStore as any).initFromApi()
               : Promise.resolve(),
-          typeof (financeRepository as any)?.initFromApi === "function"
+          (!isMessengerUser && typeof (financeRepository as any)?.initFromApi === "function")
             ? (financeRepository as any).initFromApi()
             : Promise.resolve(),
         ]);

@@ -18,7 +18,7 @@ function resolveAuthenticatedMessenger(user: any): { employeeId: string; name: s
 
   if (!employeeId && name) {
     const resolved = messengerService.resolveMessengerEmpId(name);
-    if (resolved && resolved !== "EMP-MSG-001") {
+    if (resolved) {
       employeeId = resolved;
     }
   }
@@ -177,7 +177,17 @@ export async function getReimbursements(req: Request, res: Response, next: NextF
 export async function createReimbursement(req: Request, res: Response, next: NextFunction): Promise<void> {
   try {
     normalizeReimbursementPayload(req.body);
-    const data = messengerService.createReimbursement(req.body, (req as any).user);
+    const user = (req as any).user;
+    if (user?.role === "messenger") {
+      const authMessenger = resolveAuthenticatedMessenger(user);
+      if (!req.body.employeeId || req.body.employeeId.startsWith("usr-")) {
+        req.body.employeeId = authMessenger.employeeId || "EMP-MSG-001";
+      }
+      if (!req.body.messengerName) {
+        req.body.messengerName = authMessenger.name || user.nama || "Messenger";
+      }
+    }
+    const data = messengerService.createReimbursement(req.body, user);
 
     res.status(201).json({
       success: true,

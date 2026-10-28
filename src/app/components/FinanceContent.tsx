@@ -1,4 +1,4 @@
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect } from "react";
 import { useParams, useNavigate, Navigate } from "react-router";
 import { Card } from "./ui/card";
 import { Button } from "./ui/button";
@@ -616,9 +616,31 @@ export function FinanceContent({ tab }: FinanceContentProps) {
     updatePengeluaran,
     deletePengeluaran,
     reimbursements,
+    refreshReimbursements,
     reviewReimbursement,
     payReimbursement,
   } = useFinanceStore();
+
+  const currentUser = useMemo(() => {
+    try {
+      const savedUserStr = localStorage.getItem("auth_user");
+      if (savedUserStr) {
+        const u = JSON.parse(savedUserStr);
+        return {
+          role: u.role || "admin",
+          userName: u.nama || u.name || "Admin User",
+          userId: u.userId || String(u.id || ""),
+        };
+      }
+    } catch {}
+    return { role: "admin", userName: "Admin User", userId: "" };
+  }, []);
+
+  useEffect(() => {
+    if (tab === "kas-messenger") {
+      refreshReimbursements();
+    }
+  }, [tab, refreshReimbursements]);
 
   // User role checking for Supervisor / Admin Void privileges
   const isSpvOrAdmin = useMemo(() => {
@@ -1649,13 +1671,26 @@ Terima kasih.`;
     };
 
     const handleOpenReview = (r: ReimbursementRequest) => {
+      if (r.status === "Dibayar") {
+        toast.info(`Pengajuan ${r.id} sudah dicairkan.`);
+        return;
+      }
+      if (r.status === "Disetujui") {
+        toast.info(`Pengajuan ${r.id} sudah disetujui. Silakan klik Cairkan Kas untuk mencairkan.`);
+        return;
+      }
       setReviewTarget(r);
       setReviewApprovedAmount(String(r.approvedAmount !== undefined ? r.approvedAmount : r.amount));
       setReviewNotes(r.reviewNotes || "");
     };
 
-    const handleConfirmReview = (decision: "Disetujui" | "Ditolak") => {
+    const handleConfirmReview = async (decision: "Disetujui" | "Ditolak") => {
       if (!reviewTarget) return;
+      if (reviewTarget.status === "Dibayar" || (reviewTarget.status === "Disetujui" && decision === "Disetujui")) {
+        toast.error("Pengajuan ini sudah disetujui / dicairkan sebelumnya.");
+        setReviewTarget(null);
+        return;
+      }
       const cleanApproved = parseInt(String(reviewApprovedAmount).replace(/[^0-9]/g, ""), 10) || 0;
 
       if (decision === "Disetujui") {
@@ -1685,24 +1720,25 @@ Terima kasih.`;
           : reviewTarget.amount;
         const approvedAmt = decision === "Disetujui" ? cleanApproved : 0;
 
-        const ok = reviewReimbursement(
+        const res = await reviewReimbursement(
           reviewTarget.id,
           decision,
-          { role: "finance", userName: "Finance Admin" },
+          { role: currentUser.role, userName: currentUser.userName },
           reviewNotes.trim() || undefined,
           approvedAmt,
           rejectedAmt
         );
 
-        if (ok) {
+        if (res.success) {
           toast.success(
             decision === "Disetujui"
               ? `Pengajuan ${reviewTarget.id} berhasil disetujui sebesar ${formatRupiah(approvedAmt)}. Siap dicairkan!`
               : `Pengajuan ${reviewTarget.id} berhasil ditolak.`
           );
           setReviewTarget(null);
+          await refreshReimbursements();
         } else {
-          toast.error("Gagal memperbarui status pengajuan.");
+          toast.error(res.error || "Gagal memperbarui status pengajuan.");
         }
       } catch (err: any) {
         toast.error(err?.message || "Terjadi kesalahan saat memproses review.");

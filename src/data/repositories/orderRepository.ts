@@ -20,6 +20,7 @@ export interface IOrderRepository {
   saveOrder(order: OperationalOrder): void;
   saveOrderAsync?(order: OperationalOrder): Promise<OperationalOrder>;
   updateOrder(orderNo: string, updates: Partial<OperationalOrder>): boolean;
+  updateOrderAsync?(orderNo: string, updates: Partial<OperationalOrder>): Promise<boolean>;
   advanceOrder(orderNo: string, targetStage: StageName, updates?: Partial<OperationalOrder>): boolean;
   rollbackOrder(orderNo: string, targetStage: StageName, updates?: Partial<OperationalOrder>): boolean;
   archiveOrder(orderNo: string): boolean;
@@ -128,6 +129,13 @@ export class OrderRepository implements IOrderRepository {
   }
 
   public updateOrder(orderNo: string, updates: Partial<OperationalOrder>): boolean {
+    return this.provider.updateOrder(orderNo, updates);
+  }
+
+  public async updateOrderAsync(orderNo: string, updates: Partial<OperationalOrder>): Promise<boolean> {
+    if (typeof (this.provider as any).updateOrderAsync === "function") {
+      return (this.provider as any).updateOrderAsync(orderNo, updates);
+    }
     return this.provider.updateOrder(orderNo, updates);
   }
 

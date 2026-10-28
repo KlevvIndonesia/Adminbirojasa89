@@ -95,6 +95,7 @@ export interface TokenPayload {
   nama: string;
   jabatan: string;
   role: 'administrator' | 'finance' | 'admin' | 'messenger';
+  employeeId?: string;
   iat?: number;
   exp: number;
 }

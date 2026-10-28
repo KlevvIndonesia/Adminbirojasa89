@@ -197,3 +197,57 @@ export async function cancelOrder(req: AuthenticatedRequest, res: Response, next
     next(err);
   }
 }
+
+export async function acceptMessengerTask(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
+  try {
+    const { orderNo, taskType } = req.params;
+    const order = orderService.acceptMessengerTask(orderNo, decodeURIComponent(taskType), req.user!);
+    res.json({
+      success: true,
+      message: `Tugas ${decodeURIComponent(taskType)} berhasil diterima.`,
+      data: order,
+      timestamp: new Date().toISOString(),
+    });
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function declineMessengerTask(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
+  try {
+    const { orderNo, taskType } = req.params;
+    const { reason } = req.body || {};
+    const order = orderService.declineMessengerTask(orderNo, decodeURIComponent(taskType), reason, req.user!);
+    res.json({
+      success: true,
+      message: `Tugas ${decodeURIComponent(taskType)} berhasil ditolak.`,
+      data: order,
+      timestamp: new Date().toISOString(),
+    });
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function reassignMessengerTask(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
+  try {
+    const { orderNo, taskType } = req.params;
+    const { newCourierName, newCourierId, reason } = req.body || {};
+    const order = orderService.reassignMessengerTask(
+      orderNo,
+      decodeURIComponent(taskType),
+      newCourierName,
+      newCourierId,
+      reason,
+      req.user!
+    );
+    res.json({
+      success: true,
+      message: `Tugas ${decodeURIComponent(taskType)} berhasil dialihkan ke ${newCourierName}.`,
+      data: order,
+      timestamp: new Date().toISOString(),
+    });
+  } catch (err) {
+    next(err);
+  }
+}

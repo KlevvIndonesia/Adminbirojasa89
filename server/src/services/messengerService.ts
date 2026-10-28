@@ -451,6 +451,18 @@ export class MessengerService {
       throw new ApiError(404, "NOT_FOUND", `Pengajuan biaya '${id}' tidak ditemukan.`);
     }
 
+    if (existing.status === "Dibayar") {
+      throw new ApiError(400, "INVALID_STATE", "Pengajuan biaya sudah dicairkan/dibayar dan tidak dapat diubah lagi.");
+    }
+
+    if (existing.status === "Disetujui" && decision === "Disetujui") {
+      throw new ApiError(400, "ALREADY_APPROVED", "Pengajuan biaya ini sudah disetujui sebelumnya.");
+    }
+
+    if (existing.status === "Ditolak" && decision === "Ditolak") {
+      throw new ApiError(400, "ALREADY_REJECTED", "Pengajuan biaya ini sudah ditolak sebelumnya.");
+    }
+
     const finalApproved = approvedAmount !== undefined ? approvedAmount : (decision === "Disetujui" ? existing.amount : 0);
     const finalRejected = rejectedAmount !== undefined ? rejectedAmount : (decision === "Ditolak" ? existing.amount : (existing.amount - finalApproved));
 

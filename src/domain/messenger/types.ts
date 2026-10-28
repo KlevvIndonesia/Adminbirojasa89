@@ -7,6 +7,19 @@ import type { OperationalOrder } from "../order/types";
 
 export type MessengerTaskType = "Jemput Dokumen" | "Proses Samsat" | "Jemput Hasil Samsat" | "Pengantaran Dokumen";
 
+// Canonical Task Acceptance Status (Tugas Baru -> Diterima / Ditolak)
+export type MessengerAcceptanceStatus = "PENDING" | "ACCEPTED" | "DECLINED";
+
+// Canonical Task Lifecycle Status
+export type TaskLifecycleStatus =
+  | "MENUNGGU_PENUGASAN"
+  | "MENUNGGU_DITERIMA"
+  | "DITERIMA"
+  | "SEDANG_DIKERJAKAN"
+  | "MENUNGGU_TAHAPAN_BERIKUTNYA"
+  | "SELESAI"
+  | "DIBATALKAN";
+
 // Canonical Task Status Codes
 export type MessengerTaskStatusCode =
   | "NOT_STARTED"
@@ -184,6 +197,21 @@ export interface ReimbursementRequest {
   channel?: string;
 }
 
+// Multi-Day & Multi-Messenger Samsat Stage Execution
+export interface SamsatStageExecution {
+  stageId: string; // e.g. "samsat-cabut-berkas" or "samsat-daftar-masuk"
+  stageName: string; // "Cabut Berkas Samsat Asal" / "Pendaftaran Samsat Tujuan"
+  lokasiSamsat?: string;
+  assignedMessengerName?: string;
+  assignedMessengerId?: string;
+  acceptanceStatus: MessengerAcceptanceStatus;
+  status: "BELUM_MULAI" | "SEDANG_DIPROSES" | "MENUNGGU" | "SELESAI";
+  startedAt?: string;
+  completedAt?: string;
+  notes?: string;
+  proofPhotos?: string[];
+}
+
 // Full Operational Task Item
 export interface MessengerTaskItem {
   id: string | number;
@@ -199,6 +227,16 @@ export interface MessengerTaskItem {
   assignedMessengerId?: string;
   status: MessengerTaskStatus; // Legacy display string
   statusCode?: MessengerTaskStatusCode; // Canonical status code
+  lifecycleStatus?: TaskLifecycleStatus; // Canonical 7-state lifecycle
+  acceptanceStatus?: MessengerAcceptanceStatus; // PENDING | ACCEPTED | DECLINED
+  acceptedAt?: string;
+  declinedAt?: string;
+  declineReason?: string;
+  isLocked?: boolean;
+  reassignedFrom?: string;
+  reassignReason?: string;
+  reassignedAt?: string;
+  targetCompletionDate?: string; // Overall customer estimated completion
   priority?: TaskPriority;
   deadlineAt?: string;
   estimatedCompletedAt?: string;

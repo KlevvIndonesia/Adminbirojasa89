@@ -3209,9 +3209,70 @@ class FinanceStore {
     return this.reimbursementRequests;
   }
 
-  public submitReimbursement(
+  public async refreshReimbursements(): Promise<void> {
+    if (!this.isApiMode) return;
+    try {
+      const token = typeof window !== "undefined" ? localStorage.getItem("auth_token") : null;
+      if (token) {
+        const res = await fetch(`${APP_CONFIG.apiBaseUrl}/messenger/reimbursements`, {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        const payload = await res.json();
+        if (payload.success && Array.isArray(payload.data)) {
+          this.reimbursementRequests = payload.data;
+          this.notify();
+        }
+      }
+    } catch {}
+  }
+
+  public async submitReimbursement(
     data: Omit<ReimbursementRequest, "id" | "status" | "submittedAt">
-  ): ReimbursementRequest {
+  ): Promise<{ success: boolean; data?: ReimbursementRequest; error?: string }> {
+    if (this.isApiMode) {
+      try {
+        const token = typeof window !== "undefined" ? localStorage.getItem("auth_token") : null;
+        if (!token) {
+          return { success: false, error: "Sesi login tidak valid. Silakan login kembali." };
+        }
+
+        const res = await fetch(`${APP_CONFIG.apiBaseUrl}/messenger/reimbursements`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+          body: JSON.stringify(data),
+        });
+
+        const payload = await res.json();
+        if (!res.ok || !payload.success) {
+          const errMsg = payload.error?.message || payload.message || "Gagal menyimpan pengajuan biaya di server.";
+          return { success: false, error: errMsg };
+        }
+
+        const savedReq: ReimbursementRequest = payload.data;
+        this.reimbursementRequests = [
+          savedReq,
+          ...this.reimbursementRequests.filter((r) => r.id !== savedReq.id),
+        ];
+        this.notify();
+
+        try {
+          auditLog.log({
+            userId: data.employeeId,
+            userName: data.messengerName,
+            userRole: "messenger",
+            action: "CREATE",
+            module: "Reimbursement",
+            details: `Pengajuan biaya operasional ${data.category} sebesar Rp ${data.amount.toLocaleString("id-ID")}${data.orderNo ? ` (Order ${data.orderNo})` : ""}`,
+            metadata: { reimbursementId: savedReq.id, amount: data.amount, category: data.category, orderNo: data.orderNo },
+          });
+        } catch {}
+
+        return { success: true, data: savedReq };
+      } catch (err: any) {
+        return { success: false, error: err?.message || "Terjadi kesalahan jaringan saat mengirim pengajuan biaya." };
+      }
+    }
+
     const nextNum = this.reimbursementRequests.length + 1;
     const newReq: ReimbursementRequest = {
       ...data,
@@ -3220,62 +3281,88 @@ class FinanceStore {
       submittedAt: new Date().toISOString(),
     };
     this.reimbursementRequests.unshift(newReq);
-
-    try {
-      auditLog.log({
-        userId: data.employeeId,
-        userName: data.messengerName,
-        userRole: "messenger",
-        action: "CREATE",
-        module: "Reimbursement",
-        details: `Pengajuan biaya operasional ${data.category} sebesar Rp ${data.amount.toLocaleString("id-ID")}${data.orderNo ? ` (Order ${data.orderNo})` : ""}`,
-        metadata: { reimbursementId: newReq.id, amount: data.amount, category: data.category, orderNo: data.orderNo },
-      });
-    } catch {}
-
-    if (this.isApiMode) {
-      try {
-        const token = typeof window !== "undefined" ? localStorage.getItem("auth_token") : null;
-        if (token) {
-          fetch(`${APP_CONFIG.apiBaseUrl}/messenger/reimbursements`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-            body: JSON.stringify(newReq),
-          })
-            .then((res) => res.json())
-            .then((payload) => {
-              if (payload.success && payload.data) {
-                // Update with server assigned id if needed
-                newReq.id = payload.data.id;
-                this.notify();
-              }
-            })
-            .catch(() => {});
-        }
-      } catch {}
-    }
-
     this.notify();
-    return newReq;
+    return { success: true, data: newReq };
   }
 
-  public reviewReimbursement(
+  public async reviewReimbursement(
     id: string,
     decision: "Disetujui" | "Ditolak" | "Sedang Ditinjau",
     reviewer: { role: string; userName: string },
     reviewNotes?: string,
     approvedAmount?: number,
     rejectedAmount?: number
-  ): boolean {
+  ): Promise<{ success: boolean; data?: ReimbursementRequest; error?: string }> {
     if (reviewer.role === "messenger") {
-      return false; // Messengers cannot review or approve reimbursements!
+      return { success: false, error: "Messenger tidak memiliki hak untuk mereview pengajuan biaya." };
     }
 
     const req = this.reimbursementRequests.find((r) => r.id === id);
-    if (!req) return false;
+    if (!req && !this.isApiMode) {
+      return { success: false, error: `Pengajuan biaya '${id}' tidak ditemukan.` };
+    }
 
-    const finalApproved = approvedAmount !== undefined ? approvedAmount : (decision === "Disetujui" ? req.amount : 0);
-    const finalRejected = rejectedAmount !== undefined ? rejectedAmount : (decision === "Ditolak" ? req.amount : (req.amount - finalApproved));
+    const finalApproved = approvedAmount !== undefined ? approvedAmount : (decision === "Disetujui" ? (req?.amount || 0) : 0);
+    const finalRejected = rejectedAmount !== undefined ? rejectedAmount : (decision === "Ditolak" ? (req?.amount || 0) : ((req?.amount || 0) - finalApproved));
+
+    if (this.isApiMode) {
+      try {
+        const token = typeof window !== "undefined" ? localStorage.getItem("auth_token") : null;
+        if (!token) {
+          return { success: false, error: "Sesi login tidak valid. Silakan login kembali." };
+        }
+
+        const res = await fetch(`${APP_CONFIG.apiBaseUrl}/messenger/reimbursements/${id}/review`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+          body: JSON.stringify({
+            decision,
+            reviewNotes,
+            approvedAmount: finalApproved,
+            rejectedAmount: finalRejected,
+          }),
+        });
+
+        const payload = await res.json();
+        if (!res.ok || !payload.success) {
+          const errMsg = payload.message || payload.error?.message || `Gagal mereview pengajuan (HTTP ${res.status})`;
+          return { success: false, error: errMsg };
+        }
+
+        const updatedData: ReimbursementRequest = payload.data;
+        const idx = this.reimbursementRequests.findIndex((r) => r.id === id);
+        if (idx !== -1) {
+          this.reimbursementRequests[idx] = updatedData;
+        } else {
+          this.reimbursementRequests.unshift(updatedData);
+        }
+
+        try {
+          auditLog.log({
+            userId: "usr-finance",
+            userName: reviewer.userName,
+            userRole: reviewer.role as any,
+            action: "UPDATE",
+            module: "Reimbursement Review",
+            details: `Pengajuan biaya ${id} (${updatedData.messengerName}) diubah status menjadi ${decision}${finalApproved > 0 ? ` (Disetujui Rp ${finalApproved.toLocaleString("id-ID")})` : ""}`,
+            metadata: { id, status: decision, approvedAmount: finalApproved, rejectedAmount: finalRejected },
+          });
+        } catch {}
+
+        this.notify();
+        return { success: true, data: updatedData };
+      } catch (err: any) {
+        return { success: false, error: err?.message || "Terjadi kesalahan jaringan saat memproses review." };
+      }
+    }
+
+    if (!req) return { success: false, error: "Pengajuan tidak ditemukan." };
+    if (req.status === "Dibayar") {
+      return { success: false, error: "Pengajuan biaya sudah dicairkan/dibayar dan tidak dapat diubah lagi." };
+    }
+    if (req.status === "Disetujui" && decision === "Disetujui") {
+      return { success: false, error: "Pengajuan biaya ini sudah disetujui sebelumnya." };
+    }
 
     req.status = decision;
     req.reviewedAt = new Date().toISOString();
@@ -3296,26 +3383,8 @@ class FinanceStore {
       });
     } catch {}
 
-    if (this.isApiMode) {
-      try {
-        const token = typeof window !== "undefined" ? localStorage.getItem("auth_token") : null;
-        if (token) {
-          fetch(`${APP_CONFIG.apiBaseUrl}/messenger/reimbursements/${id}/review`, {
-            method: "PATCH",
-            headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-            body: JSON.stringify({
-              decision,
-              reviewNotes,
-              approvedAmount: finalApproved,
-              rejectedAmount: finalRejected,
-            }),
-          }).catch(() => {});
-        }
-      } catch {}
-    }
-
     this.notify();
-    return true;
+    return { success: true, data: req };
   }
 
   public payReimbursement(
@@ -3460,6 +3529,7 @@ export function useFinanceStore() {
     // Reimbursement (Pengajuan Biaya)
     reimbursements: financeStore.getReimbursements(),
     getReimbursements: financeStore.getReimbursements.bind(financeStore),
+    refreshReimbursements: financeStore.refreshReimbursements.bind(financeStore),
     submitReimbursement: financeStore.submitReimbursement.bind(financeStore),
     reviewReimbursement: financeStore.reviewReimbursement.bind(financeStore),
     payReimbursement: financeStore.payReimbursement.bind(financeStore),

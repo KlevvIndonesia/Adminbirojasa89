@@ -776,6 +776,28 @@ class OrderStore {
     return true;
   }
 
+  public async updateOrderAsync(orderNo: string, updates: Partial<OperationalOrder>): Promise<boolean> {
+    const success = await (this.repository as any).updateOrderAsync(orderNo, updates);
+    if (success) {
+      try {
+        const msgName = updates.messenger || updates.messengerPengantar;
+        if (msgName) {
+          auditLog.log({
+            userId: "usr-admin",
+            userName: "Admin",
+            userRole: "admin",
+            action: "UPDATE",
+            module: "Messenger Task",
+            details: `Penugasan messenger ${msgName} pada order ${orderNo}`,
+            metadata: { orderNo, messenger: msgName },
+          });
+        }
+      } catch {}
+      this.notify();
+    }
+    return success;
+  }
+
   // 4. Sinkronisasi status & pembayaran dari FinanceStore (Arah Balik: Finance -> Order)
   public syncPaymentFromFinance(payload: PaymentSyncPayload): boolean {
     const order = this.repository.getByOrderNo(payload.orderNo);
@@ -1190,6 +1212,7 @@ export function useOrderStore() {
     addOrderFromContractAsync: orderStore.addOrderFromContractAsync.bind(orderStore),
     advanceOrder: orderStore.advanceOrder.bind(orderStore),
     updateOrder: orderStore.updateOrder.bind(orderStore),
+    updateOrderAsync: orderStore.updateOrderAsync.bind(orderStore),
     verifyPayment: orderStore.verifyPayment.bind(orderStore),
     archiveOrder: orderStore.archiveOrder.bind(orderStore),
     deleteArchivedOrder: orderStore.deleteArchivedOrder.bind(orderStore),

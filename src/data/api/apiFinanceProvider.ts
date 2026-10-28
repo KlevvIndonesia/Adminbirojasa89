@@ -102,6 +102,24 @@ export class ApiFinanceProvider implements IFinanceDataProvider {
       this.isLoadingState = false;
       return;
     }
+
+    // Role Guard: Messengers only deal with operational field tasks and reimbursements, never office finance
+    let isMessengerUser = false;
+    try {
+      if (typeof window !== "undefined" && window.localStorage) {
+        const raw = window.localStorage.getItem("auth_user");
+        if (raw) {
+          const u = JSON.parse(raw);
+          if (u.role === "messenger") isMessengerUser = true;
+        }
+      }
+    } catch {}
+
+    if (isMessengerUser) {
+      this.isLoadingState = false;
+      return;
+    }
+
     this.isLoadingState = true;
     this.lastError = null;
     try {

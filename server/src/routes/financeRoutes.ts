@@ -37,21 +37,21 @@ export const financeRouter = Router();
 financeRouter.get(
   "/invoices",
   requireAuth,
-  requireRoles("administrator", "finance", "svp"),
+  requireRoles("administrator", "finance", "svp", "admin"),
   getInvoices
 );
 
 financeRouter.get(
   "/invoices/:id",
   requireAuth,
-  requireRoles("administrator", "finance", "svp"),
+  requireRoles("administrator", "finance", "svp", "admin"),
   getInvoiceById
 );
 
 financeRouter.get(
   "/invoices/:invoiceNo/payments",
   requireAuth,
-  requireRoles("administrator", "finance", "svp"),
+  requireRoles("administrator", "finance", "svp", "admin"),
   getInvoicePayments
 );
 
