@@ -16,6 +16,23 @@ export interface CanonicalServiceConfig {
   urutan: number;
 }
 
+
+export interface OrderCorrectionRecord {
+  id: string;
+  order_no: string;
+  category: string;
+  linked_duplicate_order_no: string | null;
+  reason: string;
+  status: "Diajukan" | "Disetujui" | "Ditolak";
+  requested_by: string;
+  requested_at: string;
+  reviewed_by: string | null;
+  reviewed_at: string | null;
+  review_notes: string | null;
+  created_at?: string;
+  updated_at?: string;
+}
+
 export const CANONICAL_SERVICES: CanonicalServiceConfig[] = [
   {
     id: "svc-perp-1th",
@@ -750,6 +767,26 @@ export function initializeSchema(targetDb: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS idx_pnl_customer ON laba_rugi_snapshots(customer_id);
     CREATE INDEX IF NOT EXISTS idx_pnl_service ON laba_rugi_snapshots(service_id);
     CREATE INDEX IF NOT EXISTS idx_pnl_locked_by ON laba_rugi_snapshots(locked_by_employee_id);
+
+    CREATE TABLE IF NOT EXISTS order_corrections (
+      id TEXT PRIMARY KEY,
+      order_no TEXT NOT NULL REFERENCES orders(order_no) ON DELETE CASCADE,
+      category TEXT NOT NULL,
+      linked_duplicate_order_no TEXT,
+      reason TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'Diajukan' CHECK(status IN ('Diajukan', 'Disetujui', 'Ditolak')),
+      requested_by TEXT NOT NULL,
+      requested_at TEXT NOT NULL DEFAULT (datetime('now')),
+      reviewed_by TEXT,
+      reviewed_at TEXT,
+      review_notes TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_order_corrections_order ON order_corrections(order_no);
+    CREATE INDEX IF NOT EXISTS idx_order_corrections_status ON order_corrections(status);
+
   `);
 
   migrateDocumentsTable(targetDb);

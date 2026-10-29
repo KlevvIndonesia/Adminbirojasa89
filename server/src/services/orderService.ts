@@ -92,6 +92,11 @@ export function resolveServiceIdentity(
   };
 }
 
+
+export interface CancelOrderOptions {
+  skipRefundPending?: boolean;
+}
+
 export class OrderService {
   private orderCounter = 0;
   private idempotencyCache = new Map<string, { order: OperationalOrder; timestamp: number }>();
@@ -1114,7 +1119,12 @@ export class OrderService {
     });
   }
 
-  public cancelOrder(orderNo: string, reason: string, user?: TokenPayload | null): OperationalOrder {
+  public cancelOrder(
+    orderNo: string,
+    reason: string,
+    user?: TokenPayload | null,
+    options?: CancelOrderOptions
+  ): OperationalOrder {
     if (!reason || !reason.trim()) {
       throw new ApiError(400, "VALIDATION_ERROR", "Alasan pembatalan order wajib diisi.");
     }
@@ -1153,7 +1163,7 @@ export class OrderService {
         };
 
         // QC-01 Fix: If customer already paid deposit/full amount, route funds to Cashback Terpending (Refund Liability)
-        if (paidAmount > 0) {
+        if (paidAmount > 0 && !options?.skipRefundPending) {
           invoiceUpdates.overpayment = paidAmount;
           invoiceUpdates.refundStatus = "PENDING";
           invoiceUpdates.settlementCondition = "OVERPAID";

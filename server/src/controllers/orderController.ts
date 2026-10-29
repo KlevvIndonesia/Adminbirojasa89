@@ -6,6 +6,7 @@
 import { Response, NextFunction } from "express";
 import { AuthenticatedRequest } from "../middleware/auth";
 import { orderService } from "../services/orderService";
+import { orderCorrectionService } from "../services/orderCorrectionService";
 
 export async function getOrders(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
   try {
@@ -245,6 +246,30 @@ export async function reassignMessengerTask(req: AuthenticatedRequest, res: Resp
       success: true,
       message: `Tugas ${decodeURIComponent(taskType)} berhasil dialihkan ke ${newCourierName}.`,
       data: order,
+      timestamp: new Date().toISOString(),
+    });
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function requestOrderCorrection(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction
+): Promise<void> {
+  try {
+    const { orderNo } = req.params;
+    const { category, linkedDuplicateOrderNo, reason } = req.body || {};
+    const result = orderCorrectionService.requestCorrection(
+      orderNo,
+      { category, linkedDuplicateOrderNo, reason },
+      req.user
+    );
+    res.status(201).json({
+      success: true,
+      message: `Pengajuan koreksi untuk order ${orderNo} berhasil dicatat.`,
+      data: result,
       timestamp: new Date().toISOString(),
     });
   } catch (err) {

@@ -27,6 +27,7 @@ import { notificationRouter } from "./routes/notificationRoutes";
 import { permissionRouter } from "./routes/permissionRoutes";
 import { paymentMethodRouter } from "./routes/paymentMethodRoutes";
 import { messengerRouter } from "./routes/messengerRoutes";
+import { orderCorrectionRouter } from "./routes/orderCorrectionRoutes";
 
 export function createApp(): Express {
   // Initialize Database Seeds if needed
@@ -57,7 +58,7 @@ export function createApp(): Express {
         return callback(new Error(`CORS Error: Origin '${origin}' is not authorized.`));
       },
       credentials: true,
-      methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+      methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
       allowedHeaders: ["Content-Type", "Authorization", "X-Requested-With", "X-Idempotency-Key", "x-idempotency-key", "Accept", "Cache-Control", "cache-control"],
     })
   );
@@ -142,6 +143,7 @@ export function createApp(): Express {
   app.use("/api/permissions", permissionRouter);
   app.use("/api/payment-methods", paymentMethodRouter);
   app.use("/api/messenger", messengerRouter);
+  app.use("/api/order-corrections", orderCorrectionRouter);
 
   // 404 handler for unknown routes
   app.use((req, res) => {

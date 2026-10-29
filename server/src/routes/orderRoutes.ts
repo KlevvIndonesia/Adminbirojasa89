@@ -18,6 +18,7 @@ import {
   clearArchivedOrders,
   verifyPayment,
   cancelOrder,
+  requestOrderCorrection,
   approveOrderDocuments,
   acceptMessengerTask,
   declineMessengerTask,
@@ -119,6 +120,13 @@ orderRouter.post(
   requireAuth,
   requireRoles("administrator", "admin", "svp", "finance"),
   cancelOrder
+);
+
+orderRouter.post(
+  "/:orderNo/request-correction",
+  requireAuth,
+  requireRoles("administrator", "admin", "svp", "finance", "staff"),
+  requestOrderCorrection
 );
 
 orderRouter.post(
