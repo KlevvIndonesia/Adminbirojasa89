@@ -42,6 +42,7 @@ export function MessengerWorkspace({ onLogout, currentUser }: MessengerWorkspace
   const [currentTab, setCurrentTab] = useState<MessengerTabType>("daftar-tugas");
   const [targetOrderNo, setTargetOrderNo] = useState<string | undefined>(undefined);
   const [isSamsatDetailActive, setIsSamsatDetailActive] = useState(false);
+  const [isDeliveryDetailActive, setIsDeliveryDetailActive] = useState(false);
 
   // Dynamic badge counts for courier awareness
   const poolCount = useMemo(() => {
@@ -169,6 +170,7 @@ export function MessengerWorkspace({ onLogout, currentUser }: MessengerWorkspace
                 currentUser={currentUser}
                 onNavigateToTab={handleNavigateToTab}
                 initialSelectedOrderNo={targetOrderNo}
+                onDetailActiveChange={setIsDeliveryDetailActive}
               />
             )}
 
@@ -198,8 +200,8 @@ export function MessengerWorkspace({ onLogout, currentUser }: MessengerWorkspace
         </ErrorBoundary>
       </main>
 
-      {/* Mobile Sticky Bottom Navigation Bar (Hidden only when Samsat Detail is open) */}
-      {!(currentTab === "samsat" && isSamsatDetailActive) && (
+      {/* Mobile Sticky Bottom Navigation Bar (Hidden when Samsat or Jemput Hasil Detail is open) */}
+      {!((currentTab === "samsat" && isSamsatDetailActive) || (currentTab === "antar-jemput" && isDeliveryDetailActive)) && (
         <nav
           aria-label="Navigasi Bawah Messenger"
           className="fixed bottom-0 left-0 right-0 z-40 w-full border-t border-border bg-card/95 backdrop-blur-md shadow-lg"
@@ -214,6 +216,8 @@ export function MessengerWorkspace({ onLogout, currentUser }: MessengerWorkspace
                 onClick={() => {
                   setCurrentTab(item.id);
                   setTargetOrderNo(undefined);
+                  setIsDeliveryDetailActive(false);
+                  setIsSamsatDetailActive(false);
                 }}
                 aria-label={item.label}
                 aria-current={isActive ? "page" : undefined}

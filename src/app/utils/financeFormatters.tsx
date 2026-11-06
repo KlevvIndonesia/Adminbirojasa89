@@ -83,7 +83,7 @@ export function formatDateDDMMYYYY(dateStr: string | null | undefined): string {
     return `${dd}/${mm}/${year}`;
   }
 
-  return trimmed;
+  return "-";
 }
 
 // Alias for backwards compatibility if needed
@@ -239,7 +239,7 @@ export function formatBerkasName(name: string | null | undefined): string {
 export function PlateNumberBadge({ plate }: { plate: string }) {
   if (!plate || plate === "-") return <span>-</span>;
   return (
-    <span className="finance-table__plate font-mono text-xs font-semibold tracking-wider uppercase text-foreground">
+    <span className="finance-table__plate font-mono text-[10px] font-semibold tracking-wider uppercase text-foreground">
       {plate.toUpperCase()}
     </span>
   );
@@ -262,7 +262,7 @@ export function PlainTextStatus({ status }: { status: string | null | undefined 
   // Debit / Kredit (Kas Kantor - Requirement 7): Pure neutral text, no bullet, dot, badge, pill, or background
   if (s === "debit" || s === "kredit") {
     return (
-      <span className="text-xs font-normal text-foreground whitespace-nowrap">
+      <span className="text-[10px] font-normal text-foreground whitespace-nowrap">
         {s === "debit" ? "Debit" : "Kredit"}
       </span>
     );
@@ -271,7 +271,7 @@ export function PlainTextStatus({ status }: { status: string | null | undefined 
   // Canonical Financial & Payment Statuses (Separated authoritatively)
   if (s === "lunas") {
     return (
-      <span className="text-xs font-semibold text-emerald-600 dark:text-emerald-400 whitespace-nowrap">
+      <span className="text-[10px] font-semibold text-emerald-600 dark:text-emerald-400 whitespace-nowrap">
         Lunas
       </span>
     );
@@ -279,7 +279,7 @@ export function PlainTextStatus({ status }: { status: string | null | undefined 
 
   if (s === "kurang bayar") {
     return (
-      <span className="text-xs font-semibold text-amber-600 dark:text-amber-400 whitespace-nowrap">
+      <span className="text-[10px] font-semibold text-amber-600 dark:text-amber-400 whitespace-nowrap">
         Kurang Bayar
       </span>
     );
@@ -287,7 +287,7 @@ export function PlainTextStatus({ status }: { status: string | null | undefined 
 
   if (s === "belum bayar" || s === "belum lunas") {
     return (
-      <span className="text-xs font-semibold text-amber-600 dark:text-amber-400 whitespace-nowrap">
+      <span className="text-[10px] font-semibold text-amber-600 dark:text-amber-400 whitespace-nowrap">
         Belum Bayar
       </span>
     );
@@ -295,7 +295,7 @@ export function PlainTextStatus({ status }: { status: string | null | undefined 
 
   if (s === "belum & kurang bayar") {
     return (
-      <span className="text-xs font-semibold text-amber-600 dark:text-amber-400 whitespace-nowrap">
+      <span className="text-[10px] font-semibold text-amber-600 dark:text-amber-400 whitespace-nowrap">
         Belum & Kurang Bayar
       </span>
     );
@@ -303,7 +303,7 @@ export function PlainTextStatus({ status }: { status: string | null | undefined 
 
   if (s === "profit terpending" || s === "profit pending") {
     return (
-      <span className="text-xs font-semibold text-blue-600 dark:text-blue-400 whitespace-nowrap">
+      <span className="text-[10px] font-semibold text-blue-600 dark:text-blue-400 whitespace-nowrap">
         Profit Terpending
       </span>
     );
@@ -311,7 +311,7 @@ export function PlainTextStatus({ status }: { status: string | null | undefined 
 
   if (s === "cashback terpending" || s === "cashback pending") {
     return (
-      <span className="text-xs font-semibold text-purple-600 dark:text-purple-400 whitespace-nowrap">
+      <span className="text-[10px] font-semibold text-purple-600 dark:text-purple-400 whitespace-nowrap">
         Cashback Terpending
       </span>
     );
@@ -319,7 +319,7 @@ export function PlainTextStatus({ status }: { status: string | null | undefined 
 
   if (s === "dibatalkan" || s === "batal") {
     return (
-      <span className="text-xs font-semibold text-rose-600 dark:text-rose-400 whitespace-nowrap">
+      <span className="text-[10px] font-semibold text-rose-600 dark:text-rose-400 whitespace-nowrap">
         Dibatalkan
       </span>
     );
@@ -336,7 +336,7 @@ export function PlainTextStatus({ status }: { status: string | null | undefined 
 
   if (CANONICAL_MAP[s]) {
     return (
-      <span className="text-xs font-normal text-foreground whitespace-nowrap">
+      <span className="text-[10px] font-normal text-foreground whitespace-nowrap">
         {CANONICAL_MAP[s]}
       </span>
     );
@@ -345,7 +345,7 @@ export function PlainTextStatus({ status }: { status: string | null | undefined 
   // Tagihan Status (Requirement 8): "Lunas", "Belum Lunas" plain text
   if (s.includes("belum lunas") || s.includes("belum bayar")) {
     return (
-      <span className="text-xs font-normal text-foreground whitespace-nowrap">
+      <span className="text-[10px] font-normal text-foreground whitespace-nowrap">
         Belum Lunas
       </span>
     );
@@ -354,7 +354,7 @@ export function PlainTextStatus({ status }: { status: string | null | undefined 
   // General Status (Requirement 6 & 20): Plain regular text
   const label = raw.charAt(0).toUpperCase() + raw.slice(1);
   return (
-    <span className="text-xs font-normal text-foreground whitespace-nowrap">
+    <span className="text-[10px] font-normal text-foreground whitespace-nowrap">
       {label}
     </span>
   );

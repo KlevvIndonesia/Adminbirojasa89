@@ -10,6 +10,7 @@ import { BiayaLayanan } from "./BiayaLayanan";
 import { ManajemenPengguna } from "./ManajemenPengguna";
 import { HargaDasarSamsat } from "./HargaDasarSamsat";
 import { MetodePembayaranMaster } from "./MetodePembayaranMaster";
+import { MasterLayanan } from "./MasterLayanan";
 import { EnhancedTable } from "./EnhancedTable";
 import { ProvinsiFilterSelect } from "./ProvinsiFilterSelect";
 import { toast } from "sonner";
@@ -505,6 +506,7 @@ export function MasterDataContent({ tab }: MasterDataContentProps) {
     );
   }
 
+  if (tab === "layanan") return <MasterLayanan />;
   if (tab === "metode-pembayaran") return <MetodePembayaranMaster />;
   if (tab === "biaya-layanan") return <BiayaLayanan />;
   if (tab === "harga-dasar-samsat") return <HargaDasarSamsat />;

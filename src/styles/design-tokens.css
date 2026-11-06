@@ -175,22 +175,22 @@
   min-width: 0;
 }
 
-/* Canonical Page Shell Padding */
+/* Canonical Page Shell Padding — Normalized with App Header & Breadcrumb (px-3 sm:px-4 md:px-6) */
 .page-shell {
   width: 100%;
   min-width: 0;
-  padding: 0.875rem; /* 14px mobile */
+  padding: 0.75rem; /* 12px mobile (matches px-3) */
 }
 
 @media (min-width: 640px) {
   .page-shell {
-    padding: 1.25rem; /* 20px tablet */
+    padding: 1rem; /* 16px tablet sm (matches sm:px-4) */
   }
 }
 
-@media (min-width: 1024px) {
+@media (min-width: 768px) {
   .page-shell {
-    padding: 1.5rem; /* 24px desktop */
+    padding: 1.5rem; /* 24px tablet md & desktop (matches md:px-6) */
   }
 }
 

@@ -20,6 +20,11 @@ export interface IPricingDataProvider {
   createSamsatOffice?(office: any): Promise<any> | any;
   updateSamsatOffice?(id: string, updates: any): Promise<boolean> | boolean;
   deleteSamsatOffice?(id: string): Promise<boolean> | boolean;
+  getSamsatOperationalTariffs?(samsatId?: string): Promise<any[]>;
+  updateSamsatOperationalTariff?(samsatId: string, pricingItemId: string, nominal: number): Promise<any>;
+  updateSamsatOperationalTariffsBatch?(samsatId: string, tariffs: Array<{ pricingItemId: string; nominal: number }>): Promise<any[]>;
+  deleteSamsatOperationalTariff?(idOrParams: string | { samsatId: string; pricingItemId: string }): Promise<boolean>;
+  batchReplicateServicePricing?(params: any): Promise<any>;
   subscribe(listener: () => void): () => void;
   isLoading?(): boolean;
   getError?(): Error | null;
@@ -119,6 +124,61 @@ export class MockPricingProvider implements IPricingDataProvider {
 
   public deleteSamsatOffice(id: string): boolean {
     return true;
+  }
+
+  private mockOperationalTariffs: Map<string, Map<string, number>> = new Map();
+
+  public async getSamsatOperationalTariffs(samsatId?: string): Promise<any[]> {
+    const result: any[] = [];
+    if (samsatId) {
+      const map = this.mockOperationalTariffs.get(samsatId);
+      if (map) {
+        map.forEach((nominal, pricing_item_id) => {
+          result.push({ id: `tar-${samsatId}-${pricing_item_id}`, samsat_id: samsatId, pricing_item_id, nominal, is_active: 1 });
+        });
+      }
+    } else {
+      this.mockOperationalTariffs.forEach((map, sId) => {
+        map.forEach((nominal, pricing_item_id) => {
+          result.push({ id: `tar-${sId}-${pricing_item_id}`, samsat_id: sId, pricing_item_id, nominal, is_active: 1 });
+        });
+      });
+    }
+    return result;
+  }
+
+  public async updateSamsatOperationalTariff(samsatId: string, pricingItemId: string, nominal: number): Promise<any> {
+    let map = this.mockOperationalTariffs.get(samsatId);
+    if (!map) {
+      map = new Map();
+      this.mockOperationalTariffs.set(samsatId, map);
+    }
+    map.set(pricingItemId, nominal);
+    this.notify();
+    return { id: `tar-${samsatId}-${pricingItemId}`, samsat_id: samsatId, pricing_item_id: pricingItemId, nominal, is_active: 1 };
+  }
+
+  public async updateSamsatOperationalTariffsBatch(
+    samsatId: string,
+    tariffs: Array<{ pricingItemId: string; nominal: number }>
+  ): Promise<any[]> {
+    for (const t of tariffs) {
+      await this.updateSamsatOperationalTariff(samsatId, t.pricingItemId, t.nominal);
+    }
+    return this.getSamsatOperationalTariffs(samsatId);
+  }
+
+  public async deleteSamsatOperationalTariff(idOrParams: string | { samsatId: string; pricingItemId: string }): Promise<boolean> {
+    if (typeof idOrParams === "object" && idOrParams.samsatId && idOrParams.pricingItemId) {
+      const map = this.mockOperationalTariffs.get(idOrParams.samsatId);
+      if (map) map.delete(idOrParams.pricingItemId);
+    }
+    this.notify();
+    return true;
+  }
+
+  public async batchReplicateServicePricing(params: any): Promise<any> {
+    return { success: true, updatedCount: 515, preservedCount: 0, totalCount: 515 };
   }
 
   public isLoading(): boolean {

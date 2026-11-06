@@ -6,6 +6,7 @@ import { toast } from "sonner";
 import { LOGO_SUN89_BASE64 } from "../assets/logoSun89Base64";
 import { formatRupiah, formatDateDDMMYYYY } from "../utils/financeFormatters";
 import { printA5Document } from "../utils/printA5Iframe";
+import { validateDocumentFinancialData } from "../../domain/finance/types";
 
 export interface InvoiceA5Data {
   orderNo?: string;
@@ -65,22 +66,41 @@ export function InvoiceA5Dialog({ open, onOpenChange, data }: InvoiceA5DialogPro
     ? data.Kekurangan
     : (data.sisaTagihan ?? data.sisa ?? data.kurang ?? 0);
 
-  const total = (typeof data["Total Tagihan Konsumen"] === "number" && data["Total Tagihan Konsumen"] > 0)
-    ? data["Total Tagihan Konsumen"]
-    : (typeof data.totalBiaya === "number" && data.totalBiaya > 0)
-    ? data.totalBiaya
-    : (typeof data.totalTagihan === "number" && data.totalTagihan > 0)
-    ? data.totalTagihan
-    : (uangMasuk + sisa > 0 ? uangMasuk + sisa : 150000);
+  // Distinguish Data States (Phase B2.2, B2.4 & B2.5 Canonical Validation):
+  const val = validateDocumentFinancialData(data);
+  const isUnloaded = val.isUnloaded;
+  const isInvalidData = val.isInvalidData;
+  const isNoSnapshot = val.isNoSnapshot;
+  const isValidZero = val.isValidZero;
+  const total = val.total;
+  const dibayar = val.dibayar;
+  const kurang = val.sisa;
+  const isLunas = val.isLunas;
+  const isValidToPrint = val.isValidToPrint;
 
-  const dibayar = uangMasuk;
-  const kurang = sisa > 0 ? sisa : Math.max(0, total - dibayar);
-  const isLunas = kurang <= 0;
+  const isCostVerified = Boolean(
+    data.isCostVerified === true ||
+    data.is_cost_verified === 1 ||
+    data.is_cost_verified === true ||
+    data.costVerificationStatus === "VERIFIED" ||
+    data.cost_verification_status === "VERIFIED"
+  );
+
+  const isPartialEstimate = (
+    data.costSnapshot?.completenessStatus === "PARTIAL_ESTIMATE" ||
+    data.completenessStatus === "PARTIAL_ESTIMATE" ||
+    data.cost_completeness_status === "PARTIAL_ESTIMATE" ||
+    data.costVerificationStatus === "PENDING_VERIFICATION" ||
+    data.cost_verification_status === "PENDING_VERIFICATION" ||
+    data.isDraftEstimate === true ||
+    data.is_draft_estimate === 1
+  ) && !isCostVerified;
 
   // Breakdown items
-  const biayaJasa = data["Biaya Jasa"] || data.biayaJasa || Math.round(total * 0.25) || 150000;
-  const swdkllj = data.swdkllj || (total > 300000 ? 143000 : 35000);
-  const pkb = data["Biaya Pokok Samsat"] || data.pkb || Math.max(0, total - biayaJasa - swdkllj);
+  const biayaSamsatExplicit = data["Biaya Pokok Samsat"] !== undefined ? Number(data["Biaya Pokok Samsat"]) : (data.biayaSamsat !== undefined ? Number(data.biayaSamsat) : (data.pkb !== undefined ? Number(data.pkb) : undefined));
+  const biayaJasa = data["Biaya Jasa"] !== undefined ? Number(data["Biaya Jasa"]) : (data.biayaJasa !== undefined ? Number(data.biayaJasa) : (biayaSamsatExplicit !== undefined ? Math.max(0, total - biayaSamsatExplicit) : 0));
+  const swdkllj = Number(data.swdkllj || 0);
+  const pkb = biayaSamsatExplicit !== undefined ? biayaSamsatExplicit : (data.pkb !== undefined ? Number(data.pkb) : Math.max(0, total - biayaJasa - swdkllj));
 
   const phone = data.nomorHP || data.noHp || data["No HP / WhatsApp"] || data.phone || "";
 
@@ -91,16 +111,28 @@ export function InvoiceA5Dialog({ open, onOpenChange, data }: InvoiceA5DialogPro
   const pdfFileName = `${cleanOrder} - ${cleanCustomer} - ${cleanNopol}`;
 
   const handlePrint = () => {
+    if (!val.isValidToPrint) {
+      toast.error(val.validationErrorMessage || "Faktur tidak dapat dicetak karena data tagihan tidak valid atau snapshot biaya belum tersedia.");
+      return;
+    }
     printA5Document(printAreaRef.current, pdfFileName);
     toast.success("Faktur invoice A5 siap dicetak!");
   };
 
   const handleDownload = () => {
+    if (!val.isValidToPrint) {
+      toast.error(val.validationErrorMessage || "Faktur tidak dapat diunduh karena data tagihan tidak valid.");
+      return;
+    }
     printA5Document(printAreaRef.current, pdfFileName);
     toast.info("Pilih 'Save as PDF' / 'Simpan sebagai PDF' di jendela cetak (nama file terisi otomatis).");
   };
 
   const handleSendWhatsApp = () => {
+    if (!val.isValidToPrint) {
+      toast.error(val.validationErrorMessage || "Tidak dapat mengirim tagihan melalui WhatsApp karena data tagihan tidak valid.");
+      return;
+    }
     if (!phone || !phone.trim() || phone === "-") {
       toast.warning("Nomor WhatsApp konsumen tidak tersedia pada data transaksi ini.");
       return;
@@ -112,7 +144,20 @@ export function InvoiceA5Dialog({ open, onOpenChange, data }: InvoiceA5DialogPro
       cleanPhone = "62" + cleanPhone;
     }
 
-    const messageText = `Halo ${customer},
+    const messageText = isPartialEstimate
+      ? `Halo ${customer},
+
+Kami dari Biro Jasa SUN89 menginformasikan estimasi biaya sementara untuk pengurusan ${layanan} (No. Polisi: ${String(nopol).toUpperCase()}, Order: ${orderNo}) dengan total estimasi sebesar ${formatRupiah(total)}.
+
+*Perhatian:*
+Nominal di atas merupakan ESTIMASI SEMENTARA. Biaya final Samsat akan kami konfirmasikan kembali setelah berkas diverifikasi di loket Samsat terkait. Dokumen ini bukan tagihan final.
+
+Rekening Resmi Biro Jasa SUN89:
+Bank BCA: 7175095764
+a/n ANISA SUSANTI (Biro Jasa SUN89)
+
+Terima kasih atas kepercayaan Anda.`
+      : `Halo ${customer},
 
 kami dari Biro Jasa SUN89 menginformasikan tagihan pengurusan ${layanan} (No. Polisi: ${String(nopol).toUpperCase()}, Order: ${orderNo}) memiliki sisa tagihan sebesar ${formatRupiah(kurang)}.
 
@@ -135,7 +180,7 @@ Terima kasih.`;
           <div className="flex items-center justify-between">
             <DialogTitle className="text-sm font-semibold flex items-center gap-2">
               <Printer className="w-4 h-4 text-primary" />
-              <span>Cetak Invoice Resmi A5</span>
+              <span>{isPartialEstimate ? "Cetak Dokumen Estimasi Biaya (A5)" : "Cetak Invoice Resmi A5"}</span>
             </DialogTitle>
             <span className="text-[11px] font-mono text-muted-foreground">{invoiceNo}</span>
           </div>
@@ -150,11 +195,27 @@ Terima kasih.`;
           <div
             id="invoice-a5-print-area"
             ref={printAreaRef}
-            className="w-full max-w-[148mm] min-h-[195mm] bg-white text-slate-900 p-5 rounded-md shadow-md border border-slate-200 text-[11px] flex flex-col justify-between"
+            className="relative w-full max-w-[148mm] min-h-[195mm] bg-white text-slate-900 p-5 rounded-md shadow-md border border-slate-200 text-[11px] flex flex-col justify-between overflow-hidden"
             style={{ fontFamily: "'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" }}
           >
+            {isPartialEstimate && (
+              <div className="absolute inset-0 flex items-center justify-center pointer-events-none select-none opacity-[0.07] rotate-[-25deg] z-0">
+                <span className="text-4xl font-extrabold uppercase text-amber-900 tracking-widest border-4 border-amber-900 p-4 rounded-xl">
+                  ESTIMASI SEMENTARA
+                </span>
+              </div>
+            )}
             {/* INVOICE HEADER */}
-            <div>
+            <div className="relative z-1">
+              {isInvalidData || isNoSnapshot || isUnloaded ? (
+                <div className="mb-2.5 p-2 rounded bg-rose-50 border border-rose-300 text-rose-900 text-center text-[10px] font-bold tracking-wider uppercase">
+                  ⚠️ DATA TAGIHAN TIDAK VALID / SNAPSHOT BELUM TERSEDIA — BUKAN FAKTUR RESMI
+                </div>
+              ) : isPartialEstimate ? (
+                <div className="mb-2.5 p-1.5 rounded bg-amber-500/15 border border-amber-500/40 text-amber-900 text-center text-[10px] font-bold tracking-wider uppercase">
+                  ⚠️ ESTIMASI SEMENTARA — BIAYA BELUM TERVERIFIKASI
+                </div>
+              ) : null}
               <div className="flex items-start justify-between pb-3 border-b-2 border-slate-900 gap-4">
                 {/* Logo & Company info - Stacked Vertically, Logo Enlarged, Header Text Removed */}
                 <div className="flex flex-col items-start gap-1 max-w-[62%]">
@@ -176,8 +237,12 @@ Terima kasih.`;
 
                 {/* Invoice Title & Meta - Single line per item, font sized to fit perfectly */}
                 <div className="text-right shrink-0">
-                  <span className="inline-block bg-slate-900 text-white font-bold text-xs uppercase px-2.5 py-0.5 rounded tracking-wider mb-2">
-                    INVOICE
+                  <span className={`inline-block font-bold text-xs uppercase px-2.5 py-0.5 rounded tracking-wider mb-2 ${
+                    isInvalidData || isNoSnapshot || isUnloaded
+                      ? "bg-rose-700 text-white"
+                      : isPartialEstimate ? "bg-amber-600 text-white" : "bg-slate-900 text-white"
+                  }`}>
+                    {isInvalidData || isNoSnapshot || isUnloaded ? "DATA TIDAK VALID" : isPartialEstimate ? "ESTIMASI BIAYA" : "INVOICE RESMI"}
                   </span>
                   <div className="text-[9px] space-y-1 text-right">
                     <p className="whitespace-nowrap">
@@ -268,6 +333,11 @@ Terima kasih.`;
                   <p className="text-[8.5px] text-slate-500 mt-1.5 pl-0.5 leading-relaxed">
                     * Harap cantumkan Nomor Order atau Nomor Invoice saat melakukan konfirmasi transfer.
                   </p>
+                  {isPartialEstimate && (
+                    <p className="text-[8.5px] text-amber-700 font-semibold mt-1 pl-0.5 leading-tight">
+                      * PERHATIAN: Rincian biaya Samsat di atas berstatus estimasi sementara dan dapat disesuaikan setelah verifikasi resmi loket Samsat.
+                    </p>
+                  )}
                 </div>
 
                 {/* Right Column: Financial Figures + Status Stamp Underneath */}
@@ -290,29 +360,55 @@ Terima kasih.`;
 
                     {/* Status Badge Positioned Under Sisa Tagihan */}
                     <div className="pt-1.5">
-                      <div className={`p-2 rounded border flex items-center justify-between gap-2 ${
-                        isLunas 
-                          ? "border-emerald-500/40 bg-emerald-50 text-emerald-800" 
-                          : "border-amber-500/40 bg-amber-50 text-amber-800"
-                      }`}>
-                        <div className="flex items-center gap-1.5 min-w-0">
-                          {isLunas ? (
-                            <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
-                          ) : (
-                            <ShieldAlert className="w-4 h-4 text-amber-600 shrink-0" />
-                          )}
-                          <div className="min-w-0">
-                            <p className="font-bold text-[10.5px] uppercase tracking-wider leading-none">
-                              {isLunas ? "LUNAS (TERVERIFIKASI)" : "BELUM LUNAS / KURANG BAYAR"}
-                            </p>
-                            <p className="text-[8.5px] mt-0.5 text-slate-600 truncate">
-                              {isLunas 
-                                ? "Pembayaran telah diterima sah."
-                                : `Sisa kewajiban: ${formatRupiah(kurang)}`}
-                            </p>
+                      {isInvalidData || isNoSnapshot ? (
+                        <div className="p-2 rounded border border-rose-500/40 bg-rose-50 text-rose-900 flex items-center justify-between gap-2">
+                          <div className="flex items-center gap-1.5 min-w-0">
+                            <ShieldAlert className="w-4 h-4 text-rose-600 shrink-0" />
+                            <div className="min-w-0">
+                              <p className="font-bold text-[10.5px] uppercase tracking-wider leading-none text-rose-800">
+                                {isNoSnapshot ? "SNAPSHOT BELUM TERSEDIA" : "DATA INVOICE TIDAK VALID"}
+                              </p>
+                              <p className="text-[8.5px] mt-0.5 text-rose-700 truncate">
+                                {isNoSnapshot ? "Tagihan Rp 0 tanpa snapshot biaya resmi." : "Periksa master konfigurasi atau data berkas."}
+                              </p>
+                            </div>
                           </div>
                         </div>
-                      </div>
+                      ) : (
+                        <div className={`p-2 rounded border flex items-center justify-between gap-2 ${
+                          isPartialEstimate
+                            ? "border-amber-500/40 bg-amber-50 text-amber-900"
+                            : isLunas 
+                              ? "border-emerald-500/40 bg-emerald-50 text-emerald-800" 
+                              : "border-amber-500/40 bg-amber-50 text-amber-800"
+                        }`}>
+                          <div className="flex items-center gap-1.5 min-w-0">
+                            {isPartialEstimate ? (
+                              <ShieldAlert className="w-4 h-4 text-amber-600 shrink-0" />
+                            ) : isLunas ? (
+                              <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+                            ) : (
+                              <ShieldAlert className="w-4 h-4 text-amber-600 shrink-0" />
+                            )}
+                            <div className="min-w-0">
+                              <p className="font-bold text-[10.5px] uppercase tracking-wider leading-none">
+                                {isPartialEstimate
+                                  ? "ESTIMASI SEMENTARA (MENUNGGU VERIFIKASI)"
+                                  : isLunas
+                                  ? "LUNAS (TERVERIFIKASI)"
+                                  : "BELUM LUNAS / KURANG BAYAR"}
+                              </p>
+                              <p className="text-[8.5px] mt-0.5 text-slate-600 truncate">
+                                {isPartialEstimate
+                                  ? "Biaya Samsat belum diverifikasi loket resmi."
+                                  : isLunas 
+                                  ? "Pembayaran telah diterima sah."
+                                  : `Sisa kewajiban: ${formatRupiah(kurang)}`}
+                              </p>
+                            </div>
+                          </div>
+                        </div>
+                      )}
                     </div>
                   </div>
                 </div>
@@ -354,19 +450,31 @@ Terima kasih.`;
               variant="outline"
               size="sm"
               onClick={handleSendWhatsApp}
-              className="h-8 text-xs gap-1.5 text-emerald-600 border-emerald-500/40 hover:bg-emerald-50 dark:hover:bg-emerald-950/40 hover:text-emerald-700 font-semibold"
+              disabled={!val.isValidToPrint}
+              className="h-8 text-xs gap-1.5 text-emerald-600 border-emerald-500/40 hover:bg-emerald-50 dark:hover:bg-emerald-950/40 hover:text-emerald-700 font-semibold disabled:opacity-50 disabled:pointer-events-none"
               title="Kirim rincian tagihan faktur ke WhatsApp customer"
             >
               <MessageCircle className="w-3.5 h-3.5" />
               <span>Kirim ke WhatsApp</span>
             </Button>
-            <Button variant="outline" size="sm" onClick={handleDownload} className="h-8 text-xs gap-1.5">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={handleDownload}
+              disabled={!val.isValidToPrint}
+              className="h-8 text-xs gap-1.5 disabled:opacity-50 disabled:pointer-events-none"
+            >
               <Download className="w-3.5 h-3.5" />
               <span>Unduh PDF</span>
             </Button>
-            <Button size="sm" onClick={handlePrint} className="h-8 text-xs bg-primary hover:bg-primary/90 text-primary-foreground gap-1.5 shadow-xs font-semibold">
+            <Button
+              size="sm"
+              onClick={handlePrint}
+              disabled={!val.isValidToPrint}
+              className="h-8 text-xs bg-primary hover:bg-primary/90 text-primary-foreground gap-1.5 shadow-xs font-semibold disabled:opacity-50 disabled:pointer-events-none"
+            >
               <Printer className="w-3.5 h-3.5" />
-              <span>Cetak Faktur (A5)</span>
+              <span>{isPartialEstimate ? "Cetak Estimasi (A5)" : "Cetak Faktur (A5)"}</span>
             </Button>
           </div>
         </DialogFooter>

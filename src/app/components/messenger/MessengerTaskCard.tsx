@@ -110,9 +110,8 @@ export function MessengerTaskCard({
 
   return (
     <Card
-      onClick={() => onViewDetail(task)}
       className={cn(
-        "p-4 sm:p-5 transition-all border hover:border-primary/40 active:bg-muted/30 cursor-pointer w-full bg-card shadow-xs rounded-2xl",
+        "p-4 sm:p-5 transition-all border w-full bg-card shadow-xs rounded-2xl",
         task.deadlineStatus === "APPROACHING" && !isCompleted && "border-amber-300 dark:border-amber-800 bg-amber-50/15 dark:bg-amber-950/10",
         task.deadlineStatus === "OVERDUE" && !isCompleted && "border-rose-300 dark:border-rose-800 bg-rose-50/15 dark:bg-rose-950/10"
       )}
@@ -294,40 +293,22 @@ export function MessengerTaskCard({
         </div>
       </div>
 
-      {/* Action Footer: Touch Target >= 44px */}
+      {/* Action Footer: Touch Target >= 48px, Card non-clickable, explicit Lihat Tugas */}
       <div className="pt-3 border-t border-border/60 flex items-center justify-end gap-2">
         {isPendingAcceptance ? (
-          <>
-            <Button
-              size="sm"
-              variant="outline"
-              onClick={(e) => {
-                e.stopPropagation();
-                onDeclineTask?.(task);
-              }}
-              className="h-11 px-4 text-sm font-semibold rounded-xl border-rose-300 dark:border-rose-800 text-rose-600 dark:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-950/30 transition-all min-h-[44px]"
-            >
-              <X className="w-4 h-4 mr-1.5" />
-              Tolak
-            </Button>
-            <Button
-              size="sm"
-              onClick={(e) => {
-                e.stopPropagation();
-                onAcceptTask?.(task);
-              }}
-              className="h-11 px-5 text-sm font-semibold rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white shadow-2xs transition-all min-h-[44px]"
-            >
-              <Check className="w-4 h-4 mr-1.5" />
-              Terima Tugas
-            </Button>
-          </>
+          <Button
+            variant="outline"
+            onClick={() => onViewDetail(task)}
+            className="w-full sm:w-auto h-12 min-h-[48px] px-5 text-sm sm:text-base font-semibold rounded-xl border-primary/30 text-primary hover:bg-primary/5 transition-all flex items-center justify-center gap-2"
+          >
+            <Eye className="w-4 h-4 text-primary" />
+            <span>Lihat Tugas</span>
+          </Button>
         ) : (
           <Button
-            size="sm"
             onClick={handlePrimaryAction}
             className={cn(
-              "h-11 px-5 text-sm sm:text-base font-semibold rounded-xl shadow-2xs w-full sm:w-auto transition-all min-h-[44px]",
+              "h-12 min-h-[48px] px-5 text-sm sm:text-base font-semibold rounded-xl shadow-2xs w-full sm:w-auto transition-all",
               isStartable && "bg-primary hover:bg-primary/90 text-primary-foreground",
               isInProgress && "bg-emerald-600 hover:bg-emerald-700 text-white",
               (isCompleted || isWaiting) && "bg-secondary text-secondary-foreground hover:bg-secondary/80 border border-border"

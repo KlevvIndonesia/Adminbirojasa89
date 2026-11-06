@@ -274,140 +274,145 @@ export function ManajemenPengguna() {
         </div>
 
         {/* RESPONSIVE TABLE WRAPPER (Fill Width, horizontal scrollable if needed) */}
-        <div className="rounded-lg border border-border bg-card overflow-hidden shadow-2xs w-full flex-1 flex flex-col min-h-[220px]">
-          <Table className={cn("w-full min-w-[750px]", paginatedData.length === 0 && "h-full")}>
-            <TableHeader className="bg-muted/40 border-b border-border">
-              <TableRow className="hover:bg-transparent">
-                <TableHead className="w-[50px] text-center text-xs h-9 font-semibold text-foreground/80">No</TableHead>
-                <TableHead className="text-xs h-9 font-semibold text-foreground/80">Nama</TableHead>
-                <TableHead className="text-xs h-9 font-semibold text-foreground/80">Jabatan</TableHead>
-                <TableHead className="text-xs h-9 font-semibold text-foreground/80">Username / Email</TableHead>
-                <TableHead className="text-xs h-9 font-semibold text-foreground/80">Role</TableHead>
-                <TableHead className="text-center text-xs h-9 font-semibold text-foreground/80">Status Akun</TableHead>
-                <TableHead className="text-xs h-9 font-semibold text-foreground/80">Terakhir Login</TableHead>
-                <TableHead className="text-center text-xs h-9 font-semibold text-foreground/80 w-[160px]">Aksi</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {paginatedData.length > 0 ? (
-                paginatedData.map((item, index) => {
-                  const globalIndex = startIndex + index + 1;
-                  return (
-                    <TableRow
-                      key={item.id}
-                      className="hover:bg-muted/30 transition-colors border-b border-border/60 last:border-0 h-10"
-                    >
-                      <TableCell className="text-center text-xs text-muted-foreground font-mono">
-                        {globalIndex}
-                      </TableCell>
-                      <TableCell className="text-xs font-medium text-foreground">
-                        <div>
-                          <span>{item.nama}</span>
-                          <span className="text-[10px] text-muted-foreground block font-mono">
-                            {item.employeeId}
-                          </span>
-                        </div>
-                      </TableCell>
-                      <TableCell className="text-xs">
-                        <Badge variant="outline" className="text-[10px] font-mono uppercase">
-                          {item.jabatan}
-                        </Badge>
-                      </TableCell>
-                      <TableCell className="text-xs text-foreground/85 font-mono">
-                        {item.email}
-                      </TableCell>
-                      <TableCell className="text-xs capitalize font-medium text-foreground/80">
-                        {item.role}
-                      </TableCell>
-                      <TableCell className="text-center text-xs">
-                        {getStatusBadge(item.statusAkun)}
-                      </TableCell>
-                      <TableCell className="text-xs font-mono text-muted-foreground">
-                        {item.terakhirLogin}
-                      </TableCell>
-                      <TableCell className="text-center text-xs">
-                        <div className="flex items-center justify-center gap-1">
-                          {/* Toggle Status Button */}
-                          {item.statusAkun === "Aktif" ? (
-                            <Button
-                              size="sm"
-                              variant="ghost"
-                              onClick={() => handleOpenDeactivateDialog(item)}
-                              className="h-7 px-2 text-[11px] text-amber-600 hover:text-amber-700 hover:bg-amber-500/10 rounded transition-colors gap-1"
-                              title="Nonaktifkan akun pengguna"
-                            >
-                              <UserX className="w-3.5 h-3.5" />
-                              <span className="hidden lg:inline">Nonaktifkan</span>
-                            </Button>
-                          ) : (
-                            <Button
-                              size="sm"
-                              variant="ghost"
-                              onClick={() => handleActivateClick(item)}
-                              className="h-7 px-2 text-[11px] text-emerald-600 hover:text-emerald-700 hover:bg-emerald-500/10 rounded transition-colors gap-1"
-                              title="Aktifkan akun pengguna"
-                            >
-                              <UserCheck className="w-3.5 h-3.5" />
-                              <span className="hidden lg:inline">Aktifkan</span>
-                            </Button>
-                          )}
-
-                          {/* Reset Password Button */}
-                          <Button
-                            size="sm"
-                            variant="ghost"
-                            onClick={() => handleOpenResetDialog(item)}
-                            className="h-7 px-2 text-[11px] text-primary hover:text-primary/90 hover:bg-primary/10 rounded transition-colors gap-1"
-                            title="Reset kata sandi menggunakan tanggal lahir (DDMMYYYY)"
-                          >
-                            <KeyRound className="w-3.5 h-3.5" />
-                            <span className="hidden lg:inline">Reset</span>
-                          </Button>
-
-                          {/* View Detail Button */}
-                          <Button
-                            size="sm"
-                            variant="ghost"
-                            onClick={() => handleViewUser(item)}
-                            className="h-7 w-7 p-0 text-muted-foreground hover:text-foreground hover:bg-muted rounded transition-colors"
-                            title="Lihat rincian akun"
-                          >
-                            <Eye className="w-3.5 h-3.5" />
-                          </Button>
-                        </div>
-                      </TableCell>
-                    </TableRow>
-                  );
-                })
-              ) : (
-                <TableRow className="h-full hover:bg-transparent">
-                  <TableCell colSpan={8} className="p-6">
-                    <EmptyState
-                      icon={UserX}
-                      title="Data Pengguna Tidak Ditemukan"
-                      description={
-                        searchTerm
-                          ? `Tidak ditemukan akun pengguna yang cocok dengan "${searchTerm}".`
-                          : "Belum ada akun pengguna yang terdaftar atau sesuai dengan filter yang dipilih."
-                      }
-                    />
-                  </TableCell>
+        <div className="rounded-lg border border-border bg-card overflow-hidden shadow-2xs w-full flex-1 flex flex-col min-h-0">
+          <div className="w-full flex-1 flex flex-col min-h-0">
+            <Table 
+              containerClassName="overflow-y-auto overflow-x-auto max-h-[calc(100vh-270px)] sm:max-h-[calc(100vh-280px)] min-h-[160px]"
+              className={cn("w-full min-w-[750px]", paginatedData.length === 0 && "h-full")}
+            >
+              <TableHeader className="sticky top-0 z-10 bg-card border-b border-border shadow-2xs">
+                <TableRow className="hover:bg-transparent">
+                  <TableHead className="w-[50px] text-center text-xs h-9 font-semibold text-foreground/80 bg-card">No</TableHead>
+                  <TableHead className="text-xs h-9 font-semibold text-foreground/80 bg-card">Nama</TableHead>
+                  <TableHead className="text-xs h-9 font-semibold text-foreground/80 bg-card">Jabatan</TableHead>
+                  <TableHead className="text-xs h-9 font-semibold text-foreground/80 bg-card">Username / Email</TableHead>
+                  <TableHead className="text-xs h-9 font-semibold text-foreground/80 bg-card">Role</TableHead>
+                  <TableHead className="text-center text-xs h-9 font-semibold text-foreground/80 bg-card">Status Akun</TableHead>
+                  <TableHead className="text-xs h-9 font-semibold text-foreground/80 bg-card">Terakhir Login</TableHead>
+                  <TableHead className="text-center text-xs h-9 font-semibold text-foreground/80 w-[160px] bg-card">Aksi</TableHead>
                 </TableRow>
-              )}
-            </TableBody>
-          </Table>
-        </div>
+              </TableHeader>
+              <TableBody>
+                {paginatedData.length > 0 ? (
+                  paginatedData.map((item, index) => {
+                    const globalIndex = startIndex + index + 1;
+                    return (
+                      <TableRow
+                        key={item.id}
+                        className="hover:bg-muted/30 transition-colors border-b border-border/60 last:border-0 h-10"
+                      >
+                        <TableCell className="text-center text-xs text-muted-foreground font-mono">
+                          {globalIndex}
+                        </TableCell>
+                        <TableCell className="text-xs font-medium text-foreground">
+                          <div>
+                            <span>{item.nama}</span>
+                            <span className="text-[10px] text-muted-foreground block font-mono">
+                              {item.employeeId}
+                            </span>
+                          </div>
+                        </TableCell>
+                        <TableCell className="text-xs">
+                          <Badge variant="outline" className="text-[10px] font-mono uppercase">
+                            {item.jabatan}
+                          </Badge>
+                        </TableCell>
+                        <TableCell className="text-xs text-foreground/85 font-mono">
+                          {item.email}
+                        </TableCell>
+                        <TableCell className="text-xs capitalize font-medium text-foreground/80">
+                          {item.role}
+                        </TableCell>
+                        <TableCell className="text-center text-xs">
+                          {getStatusBadge(item.statusAkun)}
+                        </TableCell>
+                        <TableCell className="text-xs font-mono text-muted-foreground">
+                          {item.terakhirLogin}
+                        </TableCell>
+                        <TableCell className="text-center text-xs">
+                          <div className="flex items-center justify-center gap-1">
+                            {/* Toggle Status Button */}
+                            {item.statusAkun === "Aktif" ? (
+                              <Button
+                                size="sm"
+                                variant="ghost"
+                                onClick={() => handleOpenDeactivateDialog(item)}
+                                className="h-7 px-2 text-[11px] text-amber-600 hover:text-amber-700 hover:bg-amber-500/10 rounded transition-colors gap-1"
+                                title="Nonaktifkan akun pengguna"
+                              >
+                                <UserX className="w-3.5 h-3.5" />
+                                <span className="hidden lg:inline">Nonaktifkan</span>
+                              </Button>
+                            ) : (
+                              <Button
+                                size="sm"
+                                variant="ghost"
+                                onClick={() => handleActivateClick(item)}
+                                className="h-7 px-2 text-[11px] text-emerald-600 hover:text-emerald-700 hover:bg-emerald-500/10 rounded transition-colors gap-1"
+                                title="Aktifkan akun pengguna"
+                              >
+                                <UserCheck className="w-3.5 h-3.5" />
+                                <span className="hidden lg:inline">Aktifkan</span>
+                              </Button>
+                            )}
 
-        {/* STANDARDIZED TABLE PAGINATION */}
-        <div className="mt-auto pt-1 shrink-0">
-          <TablePagination
-            currentPage={currentPage}
-            totalItems={filteredData.length}
-            itemsPerPage={itemsPerPage}
-            onPageChange={setCurrentPage}
-            onItemsPerPageChange={handlePageSizeChange}
-            pageSizeOptions={[10, 25, 50, 100]}
-          />
+                            {/* Reset Password Button */}
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              onClick={() => handleOpenResetDialog(item)}
+                              className="h-7 px-2 text-[11px] text-primary hover:text-primary/90 hover:bg-primary/10 rounded transition-colors gap-1"
+                              title="Reset kata sandi menggunakan tanggal lahir (DDMMYYYY)"
+                            >
+                              <KeyRound className="w-3.5 h-3.5" />
+                              <span className="hidden lg:inline">Reset</span>
+                            </Button>
+
+                            {/* View Detail Button */}
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              onClick={() => handleViewUser(item)}
+                              className="h-7 w-7 p-0 text-muted-foreground hover:text-foreground hover:bg-muted rounded transition-colors"
+                              title="Lihat rincian akun"
+                            >
+                              <Eye className="w-3.5 h-3.5" />
+                            </Button>
+                          </div>
+                        </TableCell>
+                      </TableRow>
+                    );
+                  })
+                ) : (
+                  <TableRow className="h-full hover:bg-transparent">
+                    <TableCell colSpan={8} className="p-6">
+                      <EmptyState
+                        icon={UserX}
+                        title="Data Pengguna Tidak Ditemukan"
+                        description={
+                          searchTerm
+                            ? `Tidak ditemukan akun pengguna yang cocok dengan "${searchTerm}".`
+                            : "Belum ada akun pengguna yang terdaftar atau sesuai dengan filter yang dipilih."
+                        }
+                      />
+                    </TableCell>
+                  </TableRow>
+                )}
+              </TableBody>
+            </Table>
+          </div>
+
+          {/* STANDARDIZED TABLE PAGINATION */}
+          <div className="border-t border-border/80 p-3 bg-card shrink-0 mt-auto">
+            <TablePagination
+              currentPage={currentPage}
+              totalItems={filteredData.length}
+              itemsPerPage={itemsPerPage}
+              onPageChange={setCurrentPage}
+              onItemsPerPageChange={handlePageSizeChange}
+              pageSizeOptions={[10, 25, 50, 100]}
+            />
+          </div>
         </div>
       </Card>
 

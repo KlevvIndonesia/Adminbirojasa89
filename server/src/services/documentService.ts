@@ -58,6 +58,14 @@ export class DocumentService {
       if (!existingInv) {
         throw new ApiError(404, "INVOICE_NOT_FOUND", `Invoice dengan nomor '${trimmedInvoiceId}' tidak ditemukan.`);
       }
+      // Check cross-relation consistency if orderNo is also provided
+      if (trimmedOrderNo && existingInv.orderNo && existingInv.orderNo !== trimmedOrderNo) {
+        throw new ApiError(
+          400,
+          "INVOICE_ORDER_MISMATCH",
+          `Invoice '${trimmedInvoiceId}' terikat pada order '${existingInv.orderNo}', tidak sesuai dengan target order '${trimmedOrderNo}'.`
+        );
+      }
     }
 
     // 1. Magic bytes validation & sanitization
@@ -299,9 +307,23 @@ export class DocumentService {
     const role = (user.role || user.jabatan || "").toLowerCase();
     const uid = String(user.userId || (user as any).id || "");
 
-    // Superadmin and Admin have unrestricted access
-    if (role === "administrator" || role === "admin" || role === "svp") {
+    // Superadmin and SVP have unrestricted access
+    if (role === "administrator" || role === "svp") {
       return;
+    }
+
+    // Operational Admin: access to operational order documents or uploads owned by this admin
+    if (role === "admin") {
+      const isOwner = doc.uploadedById === uid;
+      const isOperationalOrder = Boolean(doc.orderNo);
+      if (isOperationalOrder || isOwner) {
+        return;
+      }
+      throw new ApiError(
+        403,
+        "FORBIDDEN_DOCUMENT_ACCESS",
+        "Staf operasional hanya memiliki wewenang mengakses dokumen yang terkait order operasional atau diunggah sendiri."
+      );
     }
 
     // Uploader always has access to their own uploads
@@ -336,14 +358,54 @@ export class DocumentService {
   }
 
   public linkOrder(id: string, orderNo: string, user: TokenPayload): boolean {
+    const trimmedOrderNo = orderNo && orderNo.trim() ? orderNo.trim() : "";
+    if (!trimmedOrderNo) {
+      throw new ApiError(400, "VALIDATION_ERROR", "Field 'orderNo' (atau alias 'order_no') wajib disertakan.");
+    }
+
+    // 1. Verify document exists
     const doc = this.docRepo.findById(id);
     if (!doc) {
       throw new ApiError(404, "DOCUMENT_NOT_FOUND", `Dokumen '${id}' tidak ditemukan.`);
     }
-    const success = this.docRepo.linkOrder(id, orderNo);
-    if (success && orderNo) {
-      try {
-        dbOrderRepository.updateOrder(orderNo, {
+
+    // 2. Verify target order exists
+    const targetOrder = dbOrderRepository.getByOrderNo(trimmedOrderNo);
+    if (!targetOrder) {
+      throw new ApiError(404, "ORDER_NOT_FOUND", `Target order dengan nomor '${trimmedOrderNo}' tidak ditemukan.`);
+    }
+
+    // 3. Verify cross-entity consistency with invoice if document is linked to an invoice
+    if (doc.invoiceId) {
+      const existingInv = dbFinanceRepository.getInvoiceByNo(doc.invoiceId);
+      if (existingInv && existingInv.orderNo && existingInv.orderNo !== trimmedOrderNo) {
+        throw new ApiError(
+          400,
+          "INVOICE_ORDER_MISMATCH",
+          `Dokumen terikat pada tagihan '${doc.invoiceId}' milik order '${existingInv.orderNo}', tidak sesuai dengan target order '${trimmedOrderNo}'.`
+        );
+      }
+    }
+
+    const previousOrderNo = doc.orderNo && doc.orderNo.trim() ? doc.orderNo.trim() : null;
+    const isOrderChanged = previousOrderNo !== trimmedOrderNo;
+
+    // Idempotency Guard: if relation has not changed, return true as idempotent success without side effects
+    if (!isOrderChanged) {
+      return true;
+    }
+
+    // 4. Atomic Transaction execution (Document link + Order Invalidation + Audit Trail)
+    return runInTransaction(() => {
+      // a. Update document relation in database
+      const success = this.docRepo.linkOrder(id, trimmedOrderNo);
+      if (!success) {
+        throw new ApiError(500, "DATABASE_ERROR", `Gagal memperbarui relasi order untuk dokumen '${id}'.`);
+      }
+
+      // b. Invalidate approval on previous order if relation changed
+      if (isOrderChanged && previousOrderNo) {
+        const prevUpdated = dbOrderRepository.updateOrder(previousOrderNo, {
           documentApproval: {
             stage5Verified: false,
             stage6Approved: false,
@@ -352,11 +414,61 @@ export class DocumentService {
           documentsVerified: false,
           approvedBySpv: false,
         } as any);
-      } catch {
-        // Non-blocking
+        if (!prevUpdated) {
+          throw new ApiError(
+            500,
+            "DATABASE_ERROR",
+            `Gagal menginvalidasi persetujuan dokumen pada order lama '${previousOrderNo}'.`
+          );
+        }
       }
-    }
-    return success;
+
+      // c. Invalidate approval on new target order
+      const targetUpdated = dbOrderRepository.updateOrder(trimmedOrderNo, {
+        documentApproval: {
+          stage5Verified: false,
+          stage6Approved: false,
+          approvedDocsSnapshot: [],
+        },
+        documentsVerified: false,
+        approvedBySpv: false,
+      } as any);
+      if (!targetUpdated) {
+        throw new ApiError(
+          500,
+          "DATABASE_ERROR",
+          `Gagal menginvalidasi persetujuan dokumen pada target order '${trimmedOrderNo}'.`
+        );
+      }
+
+      // d. Record audit log
+      const actorId = String(user.userId || (user as any).id || user.email || "unknown");
+      const actorRole = (user.role || user.jabatan || "admin") as any;
+      const actorName = user.nama || user.email || "System";
+      const nowIso = new Date().toISOString();
+
+      dbAuditRepository.save({
+        id: `audit-${Date.now()}-${crypto.randomBytes(3).toString("hex")}`,
+        userId: actorId,
+        userName: actorName,
+        userRole: actorRole,
+        action: "DOCUMENT_LINK_UPDATED",
+        module: "Dokumen",
+        details: `Dokumen '${doc.originalName}' (${id}) dihubungkan dari order '${previousOrderNo || "UNLINKED"}' ke order '${trimmedOrderNo}' oleh ${actorName}`,
+        metadata: {
+          documentId: id,
+          originalName: doc.originalName,
+          previousOrderNo: previousOrderNo || "UNLINKED",
+          newOrderNo: trimmedOrderNo,
+          actorId,
+          actorRole,
+          timestamp: nowIso,
+        },
+        createdAt: nowIso,
+      });
+
+      return true;
+    });
   }
 }
 

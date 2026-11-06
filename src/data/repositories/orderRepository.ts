@@ -22,8 +22,11 @@ export interface IOrderRepository {
   updateOrder(orderNo: string, updates: Partial<OperationalOrder>): boolean;
   updateOrderAsync?(orderNo: string, updates: Partial<OperationalOrder>): Promise<boolean>;
   advanceOrder(orderNo: string, targetStage: StageName, updates?: Partial<OperationalOrder>): boolean;
+  advanceOrderAsync?(orderNo: string, targetStage: StageName, updates?: Partial<OperationalOrder>): Promise<OperationalOrder | false>;
   rollbackOrder(orderNo: string, targetStage: StageName, updates?: Partial<OperationalOrder>): boolean;
+  rollbackOrderAsync?(orderNo: string, targetStage: StageName, updates?: Partial<OperationalOrder>): Promise<OperationalOrder | false>;
   archiveOrder(orderNo: string): boolean;
+  archiveOrderAsync?(orderNo: string): Promise<boolean>;
   deleteArchivedOrder(orderNo: string): boolean;
   deleteOrder?(orderNo: string): boolean | Promise<boolean>;
   clearArchivedOrders(): boolean;
@@ -143,11 +146,34 @@ export class OrderRepository implements IOrderRepository {
     return this.provider.advanceOrder(orderNo, targetStage, updates);
   }
 
+  public async advanceOrderAsync(orderNo: string, targetStage: StageName, updates: Partial<OperationalOrder> = {}): Promise<OperationalOrder | false> {
+    if (typeof (this.provider as any).advanceOrderAsync === "function") {
+      return (this.provider as any).advanceOrderAsync(orderNo, targetStage, updates);
+    }
+    const ok = this.provider.advanceOrder(orderNo, targetStage, updates);
+    return ok ? (this.getByOrderNo(orderNo) || false) : false;
+  }
+
   public rollbackOrder(orderNo: string, targetStage: StageName, updates: Partial<OperationalOrder> = {}): boolean {
     return this.provider.rollbackOrder(orderNo, targetStage, updates);
   }
 
+  public async rollbackOrderAsync(orderNo: string, targetStage: StageName, updates: Partial<OperationalOrder> = {}): Promise<OperationalOrder | false> {
+    if (typeof (this.provider as any).rollbackOrderAsync === "function") {
+      return (this.provider as any).rollbackOrderAsync(orderNo, targetStage, updates);
+    }
+    const ok = this.provider.rollbackOrder(orderNo, targetStage, updates);
+    return ok ? (this.getByOrderNo(orderNo) || false) : false;
+  }
+
   public archiveOrder(orderNo: string): boolean {
+    return this.provider.archiveOrder(orderNo);
+  }
+
+  public async archiveOrderAsync(orderNo: string): Promise<boolean> {
+    if (typeof (this.provider as any).archiveOrderAsync === "function") {
+      return (this.provider as any).archiveOrderAsync(orderNo);
+    }
     return this.provider.archiveOrder(orderNo);
   }
 

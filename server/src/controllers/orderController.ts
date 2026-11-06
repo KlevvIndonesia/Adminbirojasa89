@@ -7,6 +7,8 @@ import { Response, NextFunction } from "express";
 import { AuthenticatedRequest } from "../middleware/auth";
 import { orderService } from "../services/orderService";
 import { orderCorrectionService } from "../services/orderCorrectionService";
+import { ApiError } from "../middleware/errorHandler";
+import { resolveCanonicalActorEmployeeId } from "../utils/actorResolver";
 
 export async function getOrders(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
   try {
@@ -71,6 +73,10 @@ export async function advanceOrder(req: AuthenticatedRequest, res: Response, nex
   try {
     const { orderNo } = req.params;
     const { targetStage, updates } = req.body;
+    const actorEmployeeId = resolveCanonicalActorEmployeeId(req.user);
+    if (!actorEmployeeId) {
+      throw new ApiError(403, "FORBIDDEN", "Pengguna tidak memiliki identitas karyawan kanonikal yang terdaftar.");
+    }
     const order = orderService.advanceOrder(orderNo, targetStage, updates, req.user);
     res.json({ success: true, message: `Order berhasil dimajukan ke ${targetStage}.`, data: order, timestamp: new Date().toISOString() });
   } catch (err) {
@@ -82,8 +88,27 @@ export async function rollbackOrder(req: AuthenticatedRequest, res: Response, ne
   try {
     const { orderNo } = req.params;
     const { targetStage, updates } = req.body;
+    const actorEmployeeId = resolveCanonicalActorEmployeeId(req.user);
+    if (!actorEmployeeId) {
+      throw new ApiError(403, "FORBIDDEN", "Pengguna tidak memiliki identitas karyawan kanonikal yang terdaftar.");
+    }
     const order = orderService.rollbackOrder(orderNo, targetStage, updates, req.user);
     res.json({ success: true, message: `Order dikembalikan ke ${targetStage}.`, data: order, timestamp: new Date().toISOString() });
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function getOrderStatusHistory(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
+  try {
+    const { orderNo } = req.params;
+    const history = orderService.getStatusHistory(orderNo);
+    res.json({
+      success: true,
+      message: `Status history untuk order ${orderNo} berhasil diambil.`,
+      data: history,
+      timestamp: new Date().toISOString(),
+    });
   } catch (err) {
     next(err);
   }
@@ -110,7 +135,7 @@ export async function approveOrderDocuments(req: AuthenticatedRequest, res: Resp
       throw new ApiError(400, "VALIDATION_ERROR", "Field 'stage' harus bernilai 5 atau 6.");
     }
     if (stage === 6) {
-      const isSpv = req.user.role === "administrator" || req.user.jabatan === "SVP" || req.user.role === "svp";
+      const isSpv = req.user.role === "administrator" || req.user.jabatan === "SVP" || (req.user.role as string) === "svp";
       if (!isSpv) {
         throw new ApiError(403, "FORBIDDEN", "Hanya Supervisor / SVP yang berwenang menyetujui dokumen Stage 6.");
       }
@@ -187,6 +212,10 @@ export async function cancelOrder(req: AuthenticatedRequest, res: Response, next
   try {
     const { orderNo } = req.params;
     const reason = req.body.reason || req.body.alasan || "";
+    const actorEmployeeId = resolveCanonicalActorEmployeeId(req.user);
+    if (!actorEmployeeId) {
+      throw new ApiError(403, "FORBIDDEN", "Pengguna tidak memiliki identitas karyawan kanonikal yang terdaftar.");
+    }
     const order = orderService.cancelOrder(orderNo, reason, req.user);
     res.json({
       success: true,
@@ -218,6 +247,14 @@ export async function declineMessengerTask(req: AuthenticatedRequest, res: Respo
   try {
     const { orderNo, taskType } = req.params;
     const { reason } = req.body || {};
+    const role = (req.user?.role || "").toLowerCase();
+    if (role === "messenger" && reason && typeof reason === "string" && reason.trim().length > 0) {
+      throw new ApiError(
+        400,
+        "MESSENGER_NOTES_NOT_ALLOWED",
+        "Catatan operasional bebas (free-text notes) tidak diizinkan pada penolakan tugas."
+      );
+    }
     const order = orderService.declineMessengerTask(orderNo, decodeURIComponent(taskType), reason, req.user!);
     res.json({
       success: true,
@@ -274,5 +311,266 @@ export async function requestOrderCorrection(
     });
   } catch (err) {
     next(err);
+  }
+}
+
+export async function verifyOrderCost(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction
+): Promise<void> {
+  try {
+    const { orderNo } = req.params;
+    const { finalBiayaSamsat, finalTotalBiaya, notes } = req.body || {};
+    const result = orderService.verifyOrderCost(
+      orderNo,
+      { finalBiayaSamsat, finalTotalBiaya, notes },
+      req.user
+    );
+    res.json({
+      success: true,
+      message: `Biaya order ${orderNo} berhasil diverifikasi.`,
+      data: result,
+      timestamp: new Date().toISOString(),
+    });
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function startSamsatProcess(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
+  try {
+    const { orderNo } = req.params;
+    const updated = orderService.startSamsatProcess(orderNo, req.user!);
+    res.json({
+      success: true,
+      message: "Proses Samsat berhasil dimulai.",
+      data: updated,
+      timestamp: new Date().toISOString(),
+    });
+  } catch (error) {
+    next(error);
+  }
+}
+
+export async function completeSamsatProcess(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
+  try {
+    const { orderNo } = req.params;
+    const { note } = req.body || {};
+    const role = (req.user?.role || "").toLowerCase();
+    if (role === "messenger" && note && typeof note === "string" && note.trim().length > 0) {
+      throw new ApiError(
+        400,
+        "MESSENGER_NOTES_NOT_ALLOWED",
+        "Catatan operasional bebas (free-text notes) tidak diizinkan pada penyelesaian Samsat."
+      );
+    }
+    const updated = orderService.completeSamsatProcess(orderNo, { note }, req.user!);
+    res.json({
+      success: true,
+      message: "Proses Samsat berhasil diselesaikan.",
+      data: updated,
+      timestamp: new Date().toISOString(),
+    });
+  } catch (error) {
+    next(error);
+  }
+}
+
+export async function startPickupTask(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
+  try {
+    const { orderNo } = req.params;
+    const updated = orderService.startPickupTask(orderNo, req.user!);
+    res.json({
+      success: true,
+      message: "Penjemputan berkas berhasil dimulai.",
+      data: updated,
+      timestamp: new Date().toISOString(),
+    });
+  } catch (error) {
+    next(error);
+  }
+}
+
+export async function completePickupTask(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
+  try {
+    const { orderNo } = req.params;
+    const role = (req.user?.role || "").toLowerCase();
+    const body = req.body || {};
+    if (role === "messenger" && ((body.notes && typeof body.notes === "string" && body.notes.trim().length > 0) || (body.note && typeof body.note === "string" && body.note.trim().length > 0))) {
+      throw new ApiError(
+        400,
+        "MESSENGER_NOTES_NOT_ALLOWED",
+        "Catatan operasional bebas (free-text notes) tidak diizinkan pada penyelesaian penjemputan berkas."
+      );
+    }
+    const updated = orderService.completePickupTask(orderNo, body, req.user!);
+    res.json({
+      success: true,
+      message: "Penjemputan berkas berhasil diselesaikan.",
+      data: updated,
+      timestamp: new Date().toISOString(),
+    });
+  } catch (error) {
+    next(error);
+  }
+}
+
+export async function releasePickupTask(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
+  try {
+    const { orderNo } = req.params;
+    const { notes } = req.body || {};
+    const role = (req.user?.role || "").toLowerCase();
+    if (role === "messenger" && notes && typeof notes === "string" && notes.trim().length > 0) {
+      throw new ApiError(
+        400,
+        "MESSENGER_NOTES_NOT_ALLOWED",
+        "Catatan operasional bebas (free-text notes) tidak diizinkan pada penyerahan tugas."
+      );
+    }
+    const updated = orderService.releasePickupTask(orderNo, req.user!, notes);
+    res.json({
+      success: true,
+      message: "Tugas penjemputan berhasil diserahkan ke tim.",
+      data: updated,
+      timestamp: new Date().toISOString(),
+    });
+  } catch (error) {
+    next(error);
+  }
+}
+
+export async function startDeliveryTask(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
+  try {
+    const { orderNo } = req.params;
+    const updated = orderService.startDeliveryTask(orderNo, req.user!);
+    res.json({
+      success: true,
+      message: "Pengantaran berkas berhasil dimulai.",
+      data: updated,
+      timestamp: new Date().toISOString(),
+    });
+  } catch (error) {
+    next(error);
+  }
+}
+
+export async function completeDeliveryTask(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
+  try {
+    const { orderNo } = req.params;
+    const role = (req.user?.role || "").toLowerCase();
+    const body = req.body || {};
+    if (role === "messenger" && ((body.notes && typeof body.notes === "string" && body.notes.trim().length > 0) || (body.note && typeof body.note === "string" && body.note.trim().length > 0))) {
+      throw new ApiError(
+        400,
+        "MESSENGER_NOTES_NOT_ALLOWED",
+        "Catatan operasional bebas (free-text notes) tidak diizinkan pada penyelesaian pengantaran berkas."
+      );
+    }
+    const updated = orderService.completeDeliveryTask(orderNo, body, req.user!);
+    res.json({
+      success: true,
+      message: "Pengantaran berkas berhasil diselesaikan.",
+      data: updated,
+      timestamp: new Date().toISOString(),
+    });
+  } catch (error) {
+    next(error);
+  }
+}
+
+export async function releaseDeliveryTask(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
+  try {
+    const { orderNo } = req.params;
+    const { notes } = req.body || {};
+    const role = (req.user?.role || "").toLowerCase();
+    if (role === "messenger" && notes && typeof notes === "string" && notes.trim().length > 0) {
+      throw new ApiError(
+        400,
+        "MESSENGER_NOTES_NOT_ALLOWED",
+        "Catatan operasional bebas (free-text notes) tidak diizinkan pada penyerahan tugas."
+      );
+    }
+    const updated = orderService.releaseDeliveryTask(orderNo, req.user!, notes);
+    res.json({
+      success: true,
+      message: "Tugas pengantaran berhasil diserahkan ke tim.",
+      data: updated,
+      timestamp: new Date().toISOString(),
+    });
+  } catch (error) {
+    next(error);
+  }
+}
+
+export async function reportSamsatPickupKendala(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
+  try {
+    const { orderNo } = req.params;
+    const role = (req.user?.role || "").toLowerCase();
+    const body = req.body || {};
+    if (
+      role === "messenger" &&
+      ((body.notes && typeof body.notes === "string" && body.notes.trim().length > 0) ||
+        (body.note && typeof body.note === "string" && body.note.trim().length > 0) ||
+        (body.catatanKendala && typeof body.catatanKendala === "string" && body.catatanKendala.trim().length > 0))
+    ) {
+      throw new ApiError(
+        400,
+        "MESSENGER_NOTES_NOT_ALLOWED",
+        "Catatan operasional bebas (free-text notes) tidak diizinkan pada pelaporan kendala jemput hasil."
+      );
+    }
+    const updated = orderService.reportSamsatPickupKendala(orderNo, req.user!, body);
+    res.json({
+      success: true,
+      message: "Kendala penjemputan berkas hasil Samsat berhasil dilaporkan.",
+      data: updated,
+      timestamp: new Date().toISOString(),
+    });
+  } catch (error) {
+    next(error);
+  }
+}
+
+export async function recoverSamsatPickupKendala(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
+  try {
+    const { orderNo } = req.params;
+    const updated = orderService.recoverSamsatPickupKendala(orderNo, req.user!);
+    res.json({
+      success: true,
+      message: "Kendala penjemputan berkas hasil Samsat berhasil dipulihkan.",
+      data: updated,
+      timestamp: new Date().toISOString(),
+    });
+  } catch (error) {
+    next(error);
+  }
+}
+
+export async function completeSamsatPickupTask(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
+  try {
+    const { orderNo } = req.params;
+    const role = (req.user?.role || "").toLowerCase();
+    const body = req.body || {};
+    if (
+      role === "messenger" &&
+      ((body.notes && typeof body.notes === "string" && body.notes.trim().length > 0) ||
+        (body.note && typeof body.note === "string" && body.note.trim().length > 0))
+    ) {
+      throw new ApiError(
+        400,
+        "MESSENGER_NOTES_NOT_ALLOWED",
+        "Catatan operasional bebas (free-text notes) tidak diizinkan pada penyerahan hasil Samsat."
+      );
+    }
+    const updated = orderService.completeSamsatPickupTask(orderNo, req.user!, body);
+    res.json({
+      success: true,
+      message: "Berkas hasil Samsat berhasil diserahkan ke kantor.",
+      data: updated,
+      timestamp: new Date().toISOString(),
+    });
+  } catch (error) {
+    next(error);
   }
 }

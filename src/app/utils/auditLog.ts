@@ -68,7 +68,7 @@ class AuditLogService {
         const raw = window.localStorage.getItem("auth_user");
         if (raw) {
           const u = JSON.parse(raw);
-          if (u.role === "administrator" || u.role === "svp") {
+          if (u.role === "administrator" || u.role === "svp" || u.role === "admin") {
             isAllowedRole = true;
           }
         }

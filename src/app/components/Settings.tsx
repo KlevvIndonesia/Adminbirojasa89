@@ -630,16 +630,16 @@ export function Settings() {
                   <p>Log akan tercatat otomatis saat pengujian email dilakukan atau sistem memicu alert.</p>
                 </div>
               ) : (
-                <div className="overflow-x-auto rounded-lg border border-border/60">
+                <div className="overflow-x-auto overflow-y-auto max-h-72 rounded-lg border border-border/60">
                   <table className="w-full text-xs text-left">
-                    <thead className="bg-secondary/30 text-muted-foreground border-b border-border/60 font-medium">
+                    <thead className="sticky top-0 z-10 bg-card border-b border-border/60 font-medium text-muted-foreground shadow-2xs">
                       <tr>
-                        <th className="py-2.5 px-3">Waktu</th>
-                        <th className="py-2.5 px-3">Jenis</th>
-                        <th className="py-2.5 px-3">Penerima</th>
-                        <th className="py-2.5 px-3">Judul / Referensi</th>
-                        <th className="py-2.5 px-3">Status</th>
-                        <th className="py-2.5 px-3">Keterangan / Diagnostik</th>
+                        <th className="py-2.5 px-3 bg-card">Waktu</th>
+                        <th className="py-2.5 px-3 bg-card">Jenis</th>
+                        <th className="py-2.5 px-3 bg-card">Penerima</th>
+                        <th className="py-2.5 px-3 bg-card">Judul / Referensi</th>
+                        <th className="py-2.5 px-3 bg-card">Status</th>
+                        <th className="py-2.5 px-3 bg-card">Keterangan / Diagnostik</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-border/40">

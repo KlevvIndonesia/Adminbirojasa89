@@ -3,7 +3,7 @@
  * Admin SUN89 — Biro Jasa Management System
  */
 
-import { db } from "./db";
+import { db, runInTransaction } from "./db";
 import { hashPassword } from "../utils/crypto";
 import { DEMO_CREDENTIALS } from "../../../src/data/repositories/userRepository";
 import { pricingStore } from "../../../src/app/data/pricingStore";
@@ -98,18 +98,23 @@ export function seedDatabase(): void {
     const samsatItems = pricingStore.getSamsatItems();
     if (Array.isArray(samsatItems) && samsatItems.length > 0) {
       const insertPricing = db.prepare(`
-        INSERT INTO samsat_pricing (id, nama_item, kategori, tipe_kendaraan, biaya_dasar, deskripsi, data_json)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO samsat_pricing (id, nama_item, kategori, tipe_kendaraan, biaya_dasar, deskripsi, is_active, is_configured, data_json)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
       `);
 
       for (const item of samsatItems) {
+        const basePrice = Math.max(0, Math.round(Number(item.basePrice ?? item.biayaDasar ?? 0)));
+        const isActive = item.active !== false ? 1 : 0;
+        const isConfigured = (item.basePrice !== undefined && item.basePrice !== null) || item.biayaDasar !== undefined ? 1 : 0;
         insertPricing.run(
           item.id,
-          item.name || "Item Samsat",
-          item.category || "Layanan Standar",
+          item.name || item.namaItem || "Item Samsat",
+          item.category || item.kategori || "Layanan Standar",
           "Mobil",
-          item.basePrice || 0,
-          item.description || "",
+          basePrice,
+          item.description || item.deskripsi || "",
+          isActive,
+          isConfigured,
           JSON.stringify(item)
         );
       }
@@ -238,7 +243,7 @@ export function seedDatabase(): void {
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
     `);
 
-    const seedTx = db.transaction(() => {
+    runInTransaction(() => {
       for (const item of WILAYAH_ADMINISTRATIF_LIST) {
         insertWilayah.run(
           item.kode_kabupaten_kota,
@@ -252,7 +257,6 @@ export function seedDatabase(): void {
         );
       }
     });
-    seedTx();
   }
 
   // 8. Seed Samsat Offices (514 Samsat linked to Kemendagri codes)
@@ -266,7 +270,7 @@ export function seedDatabase(): void {
       ) VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))
     `);
 
-    const samsatTx = db.transaction(() => {
+    runInTransaction(() => {
       for (const office of SAMSAT_OFFICES_514) {
         insertSamsatOffice.run(
           office.id,
@@ -279,7 +283,6 @@ export function seedDatabase(): void {
         );
       }
     });
-    samsatTx();
   }
 
   // Ensure fallback samsat office placeholder exists for non-mutasi orders
@@ -635,26 +638,8 @@ export function seedDatabase(): void {
     console.error("Error seeding messengers:", err);
   }
 
-  // 17. Seed Initial Kas Kantor Ledger Opening Balance if empty
-  try {
-    const kasCountStmt = db.prepare("SELECT COUNT(*) as count FROM kas_kantor");
-    const kasCount = (kasCountStmt.get() as { count: number }).count;
-    if (kasCount === 0) {
-      const insertKas = db.prepare(`
-        INSERT INTO kas_kantor (
-          tanggal, keterangan, status, debit, kredit, saldo, penanggung_jawab, kategori, penanggung_jawab_employee_id, created_at
-        ) VALUES (date('now'), ?, 'DEBIT', ?, 0, ?, ?, 'MODAL_AWAL', ?, datetime('now'))
-      `);
-      insertKas.run(
-        "Saldo Awal Modal Kas Kantor Operasional",
-        15000000,
-        15000000,
-        "Finance User",
-        "EMP-0003"
-      );
-    }
-  } catch (err) {
-    console.error("Error seeding initial kas_kantor ledger:", err);
-  }
+  // 17. Kas Kantor Opening Balance Policy (Pre-Reset Hardened):
+  // Opening balance is NEVER seeded automatically with implicit historical values (Rp 15.000.000).
+  // Any opening balance must be established via an explicit, authorized transaction (MODAL_AWAL)
+  // or official reset opening record as approved by the Owner.
 }
-

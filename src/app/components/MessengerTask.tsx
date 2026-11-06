@@ -54,11 +54,9 @@ import {
   deriveMessengerTasksFromOrders,
   deriveAssignedMessengerTasks,
   isTaskAssignedMessenger,
-  deriveAllMessengerHistory,
   calculateOrderTagihan,
   KNOWN_MESSENGERS,
   MessengerTaskItem,
-  MessengerHistoryItem,
   resolveMessengerEmployeeId,
   completeMessengerPickup,
   completeSamsatProcess,
@@ -78,6 +76,7 @@ import { APP_CONFIG } from "../config/appConfig";
 import { processDocumentUpload, formatFileSize } from "../utils/fileCompressor";
 import { documentRepository } from "../../data/repositories/documentRepository";
 import { formatRupiah } from "../utils/financeFormatters";
+import { useServiceStore, serviceStore } from "../data/serviceStore";
 
 const getStatusColor = (status: string) => getStatusBadgeClass(status);
 
@@ -120,17 +119,12 @@ export function MessengerTask() {
   // Authoritative Single Source of Truth: OrderStore
   const { activeOrders, archivedOrders } = useOrderStore();
   const { karyawan } = useKaryawanPengguna();
+  useServiceStore();
   
   // Real derived operational tasks from active orders (strictly field messenger tasks with assigned courier)
   // Real derived operational field tasks (Stage 2 Penjadwalan Jemput, Stage 4 Proses Samsat, Stage 7 Pengantaran)
   // Menampilkan seluruh tugas lapangan baik yang sudah ditugaskan maupun yang Belum Ditugaskan
   const taskData = useMemo(() => deriveMessengerTasksFromOrders(activeOrders), [activeOrders]);
-
-  // Real derived completed messenger task history (all field tasks finished by messengers)
-  const historyData = useMemo(() => deriveAllMessengerHistory(activeOrders, archivedOrders), [activeOrders, archivedOrders]);
-
-  // Main Tab: "active" (Tugas Aktif Lapangan) or "history" (Riwayat Tugas Messenger)
-  const [activeMainTab, setActiveMainTab] = useState<"active" | "history">("active");
 
   // Active Tasks Filters
   const [searchTerm, setSearchTerm] = useState("");
@@ -167,15 +161,6 @@ export function MessengerTask() {
     tanggalTerima: "",
   });
   const [editTaskData, setEditTaskData] = useState<MessengerTaskItem | null>(null);
-
-  // History Filters & State
-  const [historySearchTerm, setHistorySearchTerm] = useState("");
-  const [historyFilterMessenger, setHistoryFilterMessenger] = useState("all");
-  const [historyFilterTaskType, setHistoryFilterTaskType] = useState("all");
-  const [historyCurrentPage, setHistoryCurrentPage] = useState(1);
-  const [historyItemsPerPage, setHistoryItemsPerPage] = useState(25);
-  const [selectedHistoryItem, setSelectedHistoryItem] = useState<MessengerHistoryItem | null>(null);
-  const [isHistoryDetailOpen, setIsHistoryDetailOpen] = useState(false);
 
   // Ambil Alih (Takeover) Dialog State
   const [isAmbilAlihOpen, setIsAmbilAlihOpen] = useState(false);
@@ -320,67 +305,6 @@ export function MessengerTask() {
 
   const hasActiveFilters = Boolean(
     searchTerm || filterMessenger !== "all" || filterStatus !== "all" || filterTaskType !== "all" || filterAssignment !== "all"
-  );
-
-  // Available messengers in history
-  const filterHistoryMessengers = useMemo(() => {
-    const set = new Set<string>();
-    historyData.forEach(h => {
-      if (h.messenger && h.messenger !== "Belum Ditugaskan") {
-        set.add(h.messenger);
-      }
-    });
-    return Array.from(set);
-  }, [historyData]);
-
-  // History Stats directly calculated from completed tasks
-  const historyStats = useMemo(() => {
-    const totalCount = historyData.length;
-    const totalTagihanNominal = historyData.reduce((acc, curr) => acc + (curr.totalTagihan || 0), 0);
-    const pickupCount = historyData.filter(h => h.taskType === "Jemput Dokumen").length;
-    const samsatDeliveryCount = historyData.filter(h => h.taskType === "Proses Samsat" || h.taskType === "Pengantaran Dokumen").length;
-    return {
-      totalCount,
-      totalTagihanNominal,
-      pickupCount,
-      samsatDeliveryCount,
-    };
-  }, [historyData]);
-
-  // Filter History Data
-  const filteredHistoryData = useMemo(() => {
-    return historyData.filter(item => {
-      const matchSearch =
-        historySearchTerm === "" ||
-        item.orderNo.toLowerCase().includes(historySearchTerm.toLowerCase()) ||
-        item.customer.toLowerCase().includes(historySearchTerm.toLowerCase()) ||
-        item.messenger.toLowerCase().includes(historySearchTerm.toLowerCase()) ||
-        item.nopol.toLowerCase().includes(historySearchTerm.toLowerCase()) ||
-        item.layanan.toLowerCase().includes(historySearchTerm.toLowerCase());
-      const matchMessenger =
-        historyFilterMessenger === "all" || item.messenger === historyFilterMessenger;
-      const matchTaskType =
-        historyFilterTaskType === "all" || item.taskType === historyFilterTaskType;
-      return matchSearch && matchMessenger && matchTaskType;
-    });
-  }, [historyData, historySearchTerm, historyFilterMessenger, historyFilterTaskType]);
-
-  const totalHistoryPages = Math.max(1, Math.ceil(filteredHistoryData.length / historyItemsPerPage));
-  const startHistoryIndex = (historyCurrentPage - 1) * historyItemsPerPage;
-  const paginatedHistoryData = filteredHistoryData.slice(
-    startHistoryIndex,
-    startHistoryIndex + historyItemsPerPage
-  );
-
-  const handleResetHistoryFilters = () => {
-    setHistorySearchTerm("");
-    setHistoryFilterMessenger("all");
-    setHistoryFilterTaskType("all");
-    setHistoryCurrentPage(1);
-  };
-
-  const hasActiveHistoryFilters = Boolean(
-    historySearchTerm || historyFilterMessenger !== "all" || historyFilterTaskType !== "all"
   );
 
   // Stats calculation directly derived from real active assigned tasks
@@ -975,32 +899,12 @@ export function MessengerTask() {
           <p className="text-xs text-muted-foreground mt-0.5">Kelola tugas operasional messenger dan pantau riwayat penyelesaian tugas</p>
         </div>
 
-        {/* Tab Switcher */}
+        {/* Active Tasks & History Link Toolbar */}
         <div className="flex items-center gap-2">
-          <Button
-            variant={activeMainTab === "active" ? "default" : "outline"}
-            size="sm"
-            onClick={() => setActiveMainTab("active")}
-            className="h-9 px-3.5 text-xs font-semibold gap-2 rounded-lg"
-          >
-            <Truck className="w-4 h-4" />
-            <span>Tugas Aktif Lapangan</span>
-            <Badge variant="secondary" className="px-1.5 py-0 text-[10px] font-mono">
-              {taskData.length}
-            </Badge>
-          </Button>
-          <Button
-            variant={activeMainTab === "history" ? "default" : "outline"}
-            size="sm"
-            onClick={() => setActiveMainTab("history")}
-            className="h-9 px-3.5 text-xs font-semibold gap-2 rounded-lg"
-          >
-            <History className="w-4 h-4" />
-            <span>Riwayat Tugas Messenger</span>
-            <Badge variant="secondary" className="px-1.5 py-0 text-[10px] font-mono">
-              {historyData.length}
-            </Badge>
-          </Button>
+          <Badge variant="outline" className="text-xs font-semibold px-2.5 py-1 gap-1.5 border-primary/20 bg-primary/5 text-primary">
+            <Truck className="w-3.5 h-3.5" />
+            <span>Tugas Aktif Lapangan: {taskData.length}</span>
+          </Badge>
 
           <Button
             variant="outline"
@@ -1016,9 +920,8 @@ export function MessengerTask() {
         </div>
       </div>
 
-      {activeMainTab === "active" ? (
-        <>
-          {/* Quick Stats for Active Tasks */}
+      <>
+        {/* Quick Stats for Active Tasks */}
           <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 shrink-0">
             <motion.div
               initial={{ opacity: 0, y: 20 }}
@@ -1203,497 +1106,194 @@ export function MessengerTask() {
               </div>
 
               {/* Table of Active Tasks */}
-              <div className="rounded-lg border border-border bg-card overflow-x-auto shadow-2xs flex-1 flex flex-col min-h-[220px]">
-                <Table className={`w-full min-w-[850px] ${paginatedData.length === 0 ? "h-full" : ""}`}>
-                  <TableHeader className="bg-muted/40 border-b border-border/80">
-                    <TableRow className="hover:bg-transparent">
-                      <TableHead className="w-12 h-9 px-3 text-xs font-semibold text-muted-foreground uppercase tracking-wider text-center">No</TableHead>
-                      <TableHead className="h-9 px-3 text-xs font-semibold text-muted-foreground uppercase tracking-wider">Nomor Order</TableHead>
-                      <TableHead className="h-9 px-3 text-xs font-semibold text-muted-foreground uppercase tracking-wider">Messenger</TableHead>
-                      <TableHead className="h-9 px-3 text-xs font-semibold text-muted-foreground uppercase tracking-wider">Nama Customer</TableHead>
-                      <TableHead className="h-9 px-3 text-xs font-semibold text-muted-foreground uppercase tracking-wider">Jenis Pengurusan</TableHead>
-                      <TableHead className="h-9 px-3 text-xs font-semibold text-muted-foreground uppercase tracking-wider">Keterangan Tugas</TableHead>
-                      <TableHead className="h-9 px-3 text-xs font-semibold text-muted-foreground uppercase tracking-wider">Lokasi</TableHead>
-                      <TableHead className="h-9 px-3 text-xs font-semibold text-muted-foreground uppercase tracking-wider">Tgl Terima</TableHead>
-                      <TableHead className="h-9 px-3 text-xs font-semibold text-muted-foreground uppercase tracking-wider text-center">Status</TableHead>
-                      <TableHead className="h-9 px-3 text-xs font-semibold text-muted-foreground uppercase tracking-wider text-center w-[130px]">Aksi</TableHead>
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {paginatedData.length > 0 ? (
-                      paginatedData.map((task, index) => (
-                        <TableRow key={task.id} className="hover:bg-muted/30 transition-colors border-b border-border/60 last:border-0 h-10">
-                          <TableCell className="w-12 text-muted-foreground text-center font-mono text-xs">{startIndex + index + 1}</TableCell>
-                          <TableCell className="font-mono text-primary font-medium text-xs">
-                            {task.noBerkas}
-                          </TableCell>
-                          <TableCell className="text-xs">
-                            {!task.messenger || task.messenger === "Belum Ditugaskan" || task.messenger === "-" ? (
-                              <Badge variant="outline" className="text-amber-600 dark:text-amber-400 border-amber-500/40 bg-amber-500/10 font-medium text-[11px] px-1.5 py-0.5">
-                                Belum Ditugaskan
-                              </Badge>
-                            ) : (
-                              <div>
-                                <span className="text-foreground font-medium block">{task.messenger}</span>
-                                {task.acceptanceStatus === "PENDING" && task.status !== "Selesai" && (
-                                  <Badge variant="outline" className="text-[10px] font-semibold px-1.5 py-0 bg-amber-500/15 text-amber-700 dark:text-amber-400 border-amber-300 dark:border-amber-800 flex items-center gap-1 w-fit mt-0.5">
-                                    <Clock className="w-2.5 h-2.5" />
-                                    Menunggu Diterima
-                                  </Badge>
-                                )}
-                                {(task.isLocked || task.acceptanceStatus === "ACCEPTED") && task.status !== "Selesai" && (
-                                  <Badge variant="outline" className="text-[10px] font-semibold px-1.5 py-0 bg-blue-500/15 text-blue-700 dark:text-blue-300 border-blue-300 dark:border-blue-800 flex items-center gap-1 w-fit mt-0.5">
-                                    <Lock className="w-2.5 h-2.5" />
-                                    Diterima (Terkunci)
-                                  </Badge>
-                                )}
-                                {task.reassignedFrom && (
-                                  <span className="block text-[10px] text-muted-foreground truncate max-w-[140px] mt-0.5" title={`Dialihkan dari ${task.reassignedFrom} (${task.reassignReason || ""})`}>
-                                    ex: {task.reassignedFrom}
-                                  </span>
-                                )}
-                              </div>
-                            )}
-                          </TableCell>
-                          <TableCell className="font-medium text-foreground text-xs">{task.customer}</TableCell>
-                          <TableCell className="text-xs text-foreground/80">{task.jenisTugas}</TableCell>
-                          <TableCell className="text-xs">
-                            <span className="flex items-center gap-1.5 font-medium">
-                              <PackageOpen className="w-3.5 h-3.5 text-muted-foreground" />
-                              {task.keteranganTugas}
-                            </span>
-                          </TableCell>
-                          <TableCell className="max-w-[180px] truncate text-xs text-muted-foreground" title={task.lokasi}>
-                            {task.lokasi}
-                          </TableCell>
-                          <TableCell className="text-xs">
-                            <div className="font-mono text-foreground/80">{task.tanggalTerima}</div>
-                            {task.targetCompletionDate && (
-                              <div className="text-[10px] text-muted-foreground flex items-center gap-1 mt-0.5" title="Estimasi Selesai Order Customer">
-                                <Calendar className="w-2.5 h-2.5 text-primary shrink-0" />
-                                <span>Est: {new Date(task.targetCompletionDate).toLocaleDateString("id-ID", { day: "numeric", month: "short" })}</span>
-                              </div>
-                            )}
-                          </TableCell>
-                          <TableCell className="text-center text-xs">
-                            <Badge status={task.status}>
-                              <span className="flex items-center gap-1">
-                                {getStatusIcon(task.status)}
-                                {task.status}
-                              </span>
-                            </Badge>
-                          </TableCell>
-                          <TableCell className="text-center px-1.5 py-1.5">
-                            <div className="flex items-center gap-1 justify-center">
-                              <Button
-                                size="sm"
-                                variant="ghost"
-                                className="h-7 w-7 p-0 text-muted-foreground hover:text-primary hover:bg-primary/10 rounded transition-colors"
-                                onClick={() => handleViewDetail(task)}
-                                title="Lihat Detail"
-                              >
-                                <Eye className="w-3.5 h-3.5" />
-                              </Button>
-                              <Button
-                                size="sm"
-                                variant="ghost"
-                                className="h-7 w-7 p-0 text-muted-foreground hover:text-blue-600 dark:hover:text-blue-400 hover:bg-blue-500/10 rounded transition-colors"
-                                onClick={() => handleEditTask(task)}
-                                title="Edit Tugas"
-                              >
-                                <Edit className="w-3.5 h-3.5" />
-                              </Button>
-                              {(!task.messenger || task.messenger === "Belum Ditugaskan" || task.messenger === "-") ? (
-                                <Button
-                                  size="sm"
-                                  variant="default"
-                                  className="h-7 px-2 text-[11px] font-semibold gap-1 bg-primary hover:bg-primary/90 text-primary-foreground rounded transition-colors shadow-2xs"
-                                  onClick={() => handleOpenAssignDialog(task)}
-                                  title="Tugaskan Kurir untuk Tugas Lapangan Ini"
-                                >
-                                  <UserCheck className="w-3.5 h-3.5 shrink-0" />
-                                  <span>Tugaskan</span>
-                                </Button>
-                              ) : task.status !== "Selesai" ? (
-                                <>
-                                  {task.acceptanceStatus === "PENDING" ? (
-                                    <Button
-                                      size="sm"
-                                      variant="outline"
-                                      className="h-7 px-1.5 text-[11px] font-semibold gap-1 rounded text-muted-foreground hover:text-foreground"
-                                      onClick={() => handleOpenAssignDialog(task)}
-                                      title="Ganti Kurir (Sebelum Diterima Kurir)"
-                                    >
-                                      <UserCheck className="w-3.5 h-3.5" />
-                                      <span className="hidden xl:inline">Ganti</span>
-                                    </Button>
-                                  ) : (
-                                    <Button
-                                      size="sm"
-                                      variant="outline"
-                                      className="h-7 px-1.5 text-[11px] font-semibold gap-1 border-blue-500/40 text-blue-700 dark:text-blue-300 bg-blue-500/10 hover:bg-blue-500/20 rounded transition-colors"
-                                      onClick={() => handleOpenReassignDialog(task)}
-                                      title="Alihkan Tugas Resmi (Memerlukan Alasan Pengalihan)"
-                                    >
-                                      <ArrowRightLeft className="w-3.5 h-3.5 text-blue-600 dark:text-blue-400 shrink-0" />
-                                      <span className="hidden xl:inline">Alihkan</span>
-                                    </Button>
-                                  )}
-                                <Button
-                                  size="sm"
-                                  variant="outline"
-                                  className="h-7 px-1.5 text-[11px] font-semibold gap-1 border-amber-500/40 text-amber-700 dark:text-amber-300 bg-amber-500/10 hover:bg-amber-500/20 rounded transition-colors"
-                                  onClick={() => handleOpenAmbilAlih(task)}
-                                  title="Ambil Alih Fungsi Messenger (Admin Takeover)"
-                                >
-                                  <ShieldAlert className="w-3.5 h-3.5 text-amber-600 dark:text-amber-400 shrink-0" />
-                                  <span className="hidden xl:inline">Ambil Alih</span>
-                                </Button>
-                                </>
-                              ) : null}
-                            </div>
-                          </TableCell>
-                        </TableRow>
-                      ))
-                    ) : (
-                      <TableRow className="h-full hover:bg-transparent">
-                        <TableCell colSpan={10} className="text-center py-8 align-middle p-0">
-                          <EmptyState
-                            title="Tidak ada tugas messenger aktif ditemukan"
-                            description="Saat ini tidak ada order yang sedang berada dalam proses kurir aktif (Penjemputan, Samsat, atau Pengantaran)."
-                          />
-                        </TableCell>
-                      </TableRow>
-                    )}
-                  </TableBody>
-                </Table>
-              </div>
-
-              {/* Standardized Table Pagination */}
-              <div className="mt-auto pt-1 shrink-0">
-                <TablePagination
-                  currentPage={currentPage}
-                  totalItems={filteredData.length}
-                  itemsPerPage={itemsPerPage}
-                  onPageChange={setCurrentPage}
-                  onItemsPerPageChange={(newSize) => {
-                    setItemsPerPage(newSize);
-                    setCurrentPage(1);
-                  }}
-                  pageSizeOptions={[10, 25, 50, 100]}
-                />
-              </div>
-            </Card>
-          </motion.div>
-        </>
-      ) : (
-        <>
-          {/* Quick Stats for Messenger History */}
-          <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 shrink-0">
-            <motion.div
-              initial={{ opacity: 0, y: 20 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={{ delay: 0.1 }}
-            >
-              <Card className="p-3.5 border border-border/80 bg-card shadow-2xs">
-                <div className="flex items-center gap-3">
-                  <div className="p-2.5 rounded-xl bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 shrink-0">
-                    <CheckCircle2 className="w-5 h-5" />
-                  </div>
-                  <div>
-                    <p className="text-xs font-medium text-muted-foreground">Total Tugas Selesai</p>
-                    <h3 className="text-2xl font-bold font-mono tabular-nums text-foreground mt-0.5">{historyStats.totalCount}</h3>
-                    <p className="text-[10px] text-muted-foreground">Tugas kurir berhasil diselesaikan</p>
-                  </div>
-                </div>
-              </Card>
-            </motion.div>
-
-            <motion.div
-              initial={{ opacity: 0, y: 20 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={{ delay: 0.15 }}
-            >
-              <Card className="p-3.5 border border-border/80 bg-card shadow-2xs">
-                <div className="flex items-center gap-3">
-                  <div className="p-2.5 rounded-xl bg-primary/10 text-primary shrink-0">
-                    <Wallet className="w-5 h-5" />
-                  </div>
-                  <div>
-                    <p className="text-xs font-medium text-muted-foreground">Total Nilai Tagihan Order</p>
-                    <h3 className="text-lg sm:text-xl font-bold font-mono tabular-nums text-foreground mt-0.5 truncate max-w-[200px]" title={formatRupiah(historyStats.totalTagihanNominal)}>
-                      {formatRupiah(historyStats.totalTagihanNominal)}
-                    </h3>
-                    <p className="text-[10px] text-muted-foreground">Akumulasi transaksi tugas selesai</p>
-                  </div>
-                </div>
-              </Card>
-            </motion.div>
-
-            <motion.div
-              initial={{ opacity: 0, y: 20 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={{ delay: 0.2 }}
-            >
-              <Card className="p-3.5 border border-border/80 bg-card shadow-2xs">
-                <div className="flex items-center gap-3">
-                  <div className="p-2.5 rounded-xl bg-blue-500/10 text-blue-600 dark:text-blue-400 shrink-0">
-                    <PackageOpen className="w-5 h-5" />
-                  </div>
-                  <div>
-                    <p className="text-xs font-medium text-muted-foreground">Jemput Dokumen Selesai</p>
-                    <h3 className="text-2xl font-bold font-mono tabular-nums text-foreground mt-0.5">{historyStats.pickupCount}</h3>
-                    <p className="text-[10px] text-muted-foreground">Berkas tiba di loket kantor</p>
-                  </div>
-                </div>
-              </Card>
-            </motion.div>
-
-            <motion.div
-              initial={{ opacity: 0, y: 20 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={{ delay: 0.25 }}
-            >
-              <Card className="p-3.5 border border-border/80 bg-card shadow-2xs">
-                <div className="flex items-center gap-3">
-                  <div className="p-2.5 rounded-xl bg-purple-500/10 text-purple-600 dark:text-purple-400 shrink-0">
-                    <Building2 className="w-5 h-5" />
-                  </div>
-                  <div>
-                    <p className="text-xs font-medium text-muted-foreground">Samsat & Antar Selesai</p>
-                    <h3 className="text-2xl font-bold font-mono tabular-nums text-foreground mt-0.5">{historyStats.samsatDeliveryCount}</h3>
-                    <p className="text-[10px] text-muted-foreground">Proses Samsat & serah terima klien</p>
-                  </div>
-                </div>
-              </Card>
-            </motion.div>
-          </div>
-
-          <motion.div
-            initial={{ opacity: 0, y: 20 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ delay: 0.2 }}
-            className="flex-1 flex flex-col min-h-0"
-          >
-            <Card className="p-4 sm:p-5 border border-border/80 bg-card shadow-xs flex-1 flex flex-col min-h-0">
-              {/* History Filters */}
-              <div className="flex flex-col sm:flex-row gap-2 mb-4 shrink-0 items-stretch sm:items-center">
-                <div className="relative flex-1">
-                  <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 w-4 h-4 text-muted-foreground" />
-                  <Input 
-                    placeholder="Cari nomor order, nama customer, messenger, nopol, atau layanan..." 
-                    className="pl-10 bg-input-background border-border h-9 text-xs"
-                    value={historySearchTerm}
-                    onChange={(e) => {
-                      setHistorySearchTerm(e.target.value);
-                      setHistoryCurrentPage(1);
-                    }}
-                  />
-                </div>
-                <Select 
-                  value={historyFilterMessenger} 
-                  onValueChange={(value) => {
-                    setHistoryFilterMessenger(value);
-                    setHistoryCurrentPage(1);
-                  }}
-                >
-                  <SelectTrigger className="w-full sm:w-[170px] bg-input-background border-border h-9 text-xs">
-                    <SelectValue placeholder="Semua Messenger" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="all" className="text-xs">Semua Messenger</SelectItem>
-                    {filterHistoryMessengers.map((m) => (
-                      <SelectItem key={m} value={m} className="text-xs">
-                        {m}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-                <Select 
-                  value={historyFilterTaskType} 
-                  onValueChange={(value) => {
-                    setHistoryFilterTaskType(value);
-                    setHistoryCurrentPage(1);
-                  }}
-                >
-                  <SelectTrigger className="w-full sm:w-[170px] bg-input-background border-border h-9 text-xs">
-                    <SelectValue placeholder="Semua Jenis Tugas" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="all" className="text-xs">Semua Jenis Tugas</SelectItem>
-                    <SelectItem value="Jemput Dokumen" className="text-xs">Jemput Dokumen</SelectItem>
-                    <SelectItem value="Proses Samsat" className="text-xs">Proses Samsat</SelectItem>
-                    <SelectItem value="Pengantaran Dokumen" className="text-xs">Pengantaran Dokumen</SelectItem>
-                  </SelectContent>
-                </Select>
-                {hasActiveHistoryFilters && (
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={handleResetHistoryFilters}
-                    className="border-border text-xs h-9 gap-1 text-muted-foreground hover:text-foreground shrink-0"
+              <div className="rounded-lg border border-border bg-card overflow-hidden shadow-2xs flex-1 flex flex-col min-h-0">
+                <div className="w-full flex-1 flex flex-col min-h-0">
+                  <Table 
+                    containerClassName="overflow-y-auto overflow-x-auto max-h-[calc(100vh-320px)] sm:max-h-[calc(100vh-340px)] min-h-[160px]"
+                    className={`w-full min-w-[850px] ${paginatedData.length === 0 ? "h-full" : ""}`}
                   >
-                    <RotateCcw className="w-3.5 h-3.5" />
-                    Reset
-                  </Button>
-                )}
-              </div>
-
-              {/* Table of Messenger Task History */}
-              <div className="rounded-lg border border-border bg-card overflow-x-auto shadow-2xs flex-1 flex flex-col min-h-[220px]">
-                <Table className={`w-full min-w-[1100px] ${paginatedHistoryData.length === 0 ? "h-full" : ""}`}>
-                  <TableHeader className="bg-muted/40 border-b border-border/80">
-                    <TableRow className="hover:bg-transparent">
-                      <TableHead className="w-12 h-9 px-3 text-xs font-semibold text-muted-foreground uppercase tracking-wider text-center">No</TableHead>
-                      <TableHead className="h-9 px-3 text-xs font-semibold text-muted-foreground uppercase tracking-wider">Nomor Order</TableHead>
-                      <TableHead className="h-9 px-3 text-xs font-semibold text-muted-foreground uppercase tracking-wider">Messenger</TableHead>
-                      <TableHead className="h-9 px-3 text-xs font-semibold text-muted-foreground uppercase tracking-wider">Nama Klien</TableHead>
-                      <TableHead className="h-9 px-3 text-xs font-semibold text-muted-foreground uppercase tracking-wider">Kendaraan</TableHead>
-                      <TableHead className="h-9 px-3 text-xs font-semibold text-muted-foreground uppercase tracking-wider">Tugas Selesai</TableHead>
-                      <TableHead className="h-9 px-3 text-xs font-semibold text-muted-foreground uppercase tracking-wider">Waktu Selesai</TableHead>
-                      <TableHead className="h-9 px-3 text-xs font-semibold text-muted-foreground uppercase tracking-wider text-right">Tagihan Order</TableHead>
-                      <TableHead className="h-9 px-3 text-xs font-semibold text-muted-foreground uppercase tracking-wider">Bukti & Catatan</TableHead>
-                      <TableHead className="h-9 px-3 text-xs font-semibold text-muted-foreground uppercase tracking-wider text-center w-[90px]">Aksi</TableHead>
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {paginatedHistoryData.length > 0 ? (
-                      paginatedHistoryData.map((item, index) => (
-                        <TableRow key={item.id} className="hover:bg-muted/30 transition-colors border-b border-border/60 last:border-0 h-11">
-                          <TableCell className="w-12 text-muted-foreground text-center font-mono text-xs">{startHistoryIndex + index + 1}</TableCell>
-                          <TableCell className="font-mono text-primary font-semibold text-xs">
-                            {item.orderNo}
-                          </TableCell>
-                          <TableCell className="text-xs">
-                            <span className="font-semibold text-foreground block">{item.messenger}</span>
-                            <span className="text-[10px] text-muted-foreground font-mono">{item.messengerEmployeeId || "Kurir"}</span>
-                          </TableCell>
-                          <TableCell className="text-xs">
-                            <span className="font-medium text-foreground block">{item.customer}</span>
-                            <span className="text-[10px] text-muted-foreground font-mono">{item.phone}</span>
-                          </TableCell>
-                          <TableCell className="text-xs">
-                            <span className="inline-block px-1.5 py-0.5 rounded text-[11px] font-mono font-bold bg-neutral-900 text-white dark:bg-white dark:text-neutral-900 shadow-2xs">
-                              {item.nopol}
-                            </span>
-                            <span className="text-[10px] text-muted-foreground block mt-0.5">{item.jenisKendaraan}</span>
-                          </TableCell>
-                          <TableCell className="text-xs">
-                            <Badge
-                              variant="outline"
-                              className={`text-[10px] py-0 px-1.5 font-medium gap-1 ${
-                                item.taskType === "Jemput Dokumen"
-                                  ? "border-blue-500/40 bg-blue-500/10 text-blue-600 dark:text-blue-400"
-                                  : item.taskType === "Proses Samsat"
-                                  ? "border-purple-500/40 bg-purple-500/10 text-purple-600 dark:text-purple-400"
-                                  : "border-emerald-500/40 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400"
-                              }`}
-                            >
-                              {item.taskType === "Jemput Dokumen" && <PackageOpen className="w-3 h-3" />}
-                              {item.taskType === "Proses Samsat" && <Building2 className="w-3 h-3" />}
-                              {item.taskType === "Pengantaran Dokumen" && <Truck className="w-3 h-3" />}
-                              {item.taskType}
-                            </Badge>
-                            <span className="text-[11px] text-foreground/80 block mt-0.5 truncate max-w-[150px]" title={item.layanan}>
-                              {item.layanan}
-                            </span>
-                          </TableCell>
-                          <TableCell className="font-mono text-xs text-foreground/80">
-                            {formatDateTime(item.completedAt)}
-                          </TableCell>
-                          <TableCell className="text-right text-xs">
-                            <span className="font-mono font-bold text-foreground block">
-                              {formatRupiah(item.totalTagihan)}
-                            </span>
-                            <Badge
-                              variant={item.statusBayar === "Lunas" ? "outline" : "secondary"}
-                              className={`text-[9px] py-0 px-1 font-medium mt-0.5 ${
-                                item.statusBayar === "Lunas"
-                                  ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400"
-                                  : "text-amber-600 bg-amber-500/10"
-                              }`}
-                            >
-                              {item.statusBayar || "Lunas"}
-                            </Badge>
-                          </TableCell>
-                          <TableCell className="text-xs max-w-[170px]">
-                            <div className="flex items-center gap-1.5">
-                              {item.photoProofUrl ? (
-                                <img
-                                  src={item.photoProofUrl}
-                                  alt="Bukti"
-                                  className="w-7 h-7 rounded object-cover border border-border shrink-0 cursor-pointer hover:opacity-80"
-                                  onClick={() => {
-                                    setSelectedHistoryItem(item);
-                                    setIsHistoryDetailOpen(true);
-                                  }}
-                                  title="Klik untuk melihat bukti foto"
-                                />
+                    <TableHeader className="sticky top-0 z-10 bg-card border-b border-border/80 shadow-2xs">
+                      <TableRow className="hover:bg-transparent">
+                        <TableHead className="w-12 h-9 px-3 text-xs font-semibold text-muted-foreground uppercase tracking-wider text-center bg-card">No</TableHead>
+                        <TableHead className="h-9 px-3 text-xs font-semibold text-muted-foreground uppercase tracking-wider bg-card">Nomor Order</TableHead>
+                        <TableHead className="h-9 px-3 text-xs font-semibold text-muted-foreground uppercase tracking-wider bg-card">Messenger</TableHead>
+                        <TableHead className="h-9 px-3 text-xs font-semibold text-muted-foreground uppercase tracking-wider bg-card">Nama Customer</TableHead>
+                        <TableHead className="h-9 px-3 text-xs font-semibold text-muted-foreground uppercase tracking-wider bg-card">Jenis Pengurusan</TableHead>
+                        <TableHead className="h-9 px-3 text-xs font-semibold text-muted-foreground uppercase tracking-wider bg-card">Keterangan Tugas</TableHead>
+                        <TableHead className="h-9 px-3 text-xs font-semibold text-muted-foreground uppercase tracking-wider bg-card">Lokasi</TableHead>
+                        <TableHead className="h-9 px-3 text-xs font-semibold text-muted-foreground uppercase tracking-wider bg-card">Tgl Terima</TableHead>
+                        <TableHead className="h-9 px-3 text-xs font-semibold text-muted-foreground uppercase tracking-wider text-center bg-card">Status</TableHead>
+                        <TableHead className="h-9 px-3 text-xs font-semibold text-muted-foreground uppercase tracking-wider text-center w-[130px] bg-card">Aksi</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {paginatedData.length > 0 ? (
+                        paginatedData.map((task, index) => (
+                          <TableRow key={task.id} className="hover:bg-muted/30 transition-colors border-b border-border/60 last:border-0 h-10">
+                            <TableCell className="w-12 text-muted-foreground text-center font-mono text-xs">{startIndex + index + 1}</TableCell>
+                            <TableCell className="font-mono text-primary font-medium text-xs">
+                              {task.noBerkas}
+                            </TableCell>
+                            <TableCell className="text-xs">
+                              {!task.messenger || task.messenger === "Belum Ditugaskan" || task.messenger === "-" ? (
+                                <Badge variant="outline" className="text-amber-600 dark:text-amber-400 border-amber-500/40 bg-amber-500/10 font-medium text-[11px] px-1.5 py-0.5">
+                                  Belum Ditugaskan
+                                </Badge>
                               ) : (
-                                <div className="w-7 h-7 rounded bg-muted/60 border border-border/80 flex items-center justify-center shrink-0 text-muted-foreground">
-                                  <Camera className="w-3.5 h-3.5 opacity-40" />
+                                <div>
+                                  <span className="text-foreground font-medium block">{task.messenger}</span>
+                                  {task.acceptanceStatus === "PENDING" && task.status !== "Selesai" && (
+                                    <Badge variant="outline" className="text-[10px] font-semibold px-1.5 py-0 bg-amber-500/15 text-amber-700 dark:text-amber-400 border-amber-300 dark:border-amber-800 flex items-center gap-1 w-fit mt-0.5">
+                                      <Clock className="w-2.5 h-2.5" />
+                                      Menunggu Diterima
+                                    </Badge>
+                                  )}
+                                  {(task.isLocked || task.acceptanceStatus === "ACCEPTED") && task.status !== "Selesai" && (
+                                    <Badge variant="outline" className="text-[10px] font-semibold px-1.5 py-0 bg-blue-500/15 text-blue-700 dark:text-blue-300 border-blue-300 dark:border-blue-800 flex items-center gap-1 w-fit mt-0.5">
+                                      <Lock className="w-2.5 h-2.5" />
+                                      Diterima (Terkunci)
+                                    </Badge>
+                                  )}
+                                  {task.reassignedFrom && (
+                                    <span className="block text-[10px] text-muted-foreground truncate max-w-[140px] mt-0.5" title={`Dialihkan dari ${task.reassignedFrom} (${task.reassignReason || ""})`}>
+                                      ex: {task.reassignedFrom}
+                                    </span>
+                                  )}
                                 </div>
                               )}
-                              <div className="min-w-0 flex-1">
-                                {item.receiverName && (
-                                  <span className="text-[11px] font-semibold text-foreground truncate block">
-                                    Penerima: {item.receiverName}
-                                  </span>
-                                )}
-                                <span className="text-[10px] text-muted-foreground truncate block" title={item.keterangan}>
-                                  {item.keterangan || "-"}
+                            </TableCell>
+                            <TableCell className="font-medium text-foreground text-xs">{task.customer}</TableCell>
+                            <TableCell className="text-xs text-foreground/80">{task.jenisTugas}</TableCell>
+                            <TableCell className="text-xs">
+                              <span className="flex items-center gap-1.5 font-medium">
+                                <PackageOpen className="w-3.5 h-3.5 text-muted-foreground" />
+                                {task.keteranganTugas}
+                              </span>
+                            </TableCell>
+                            <TableCell className="max-w-[180px] truncate text-xs text-muted-foreground" title={task.lokasi}>
+                              {task.lokasi}
+                            </TableCell>
+                            <TableCell className="text-xs">
+                              <div className="font-mono text-foreground/80">{task.tanggalTerima}</div>
+                              {task.targetCompletionDate && (
+                                <div className="text-[10px] text-muted-foreground flex items-center gap-1 mt-0.5" title="Estimasi Selesai Order Customer">
+                                  <Calendar className="w-2.5 h-2.5 text-primary shrink-0" />
+                                  <span>Est: {new Date(task.targetCompletionDate).toLocaleDateString("id-ID", { day: "numeric", month: "short" })}</span>
+                                </div>
+                              )}
+                            </TableCell>
+                            <TableCell className="text-center text-xs">
+                              <Badge status={task.status}>
+                                <span className="flex items-center gap-1">
+                                  {getStatusIcon(task.status)}
+                                  {task.status}
                                 </span>
+                              </Badge>
+                            </TableCell>
+                            <TableCell className="text-center px-1.5 py-1.5">
+                              <div className="flex items-center gap-1 justify-center">
+                                <Button
+                                  size="sm"
+                                  variant="ghost"
+                                  className="h-7 w-7 p-0 text-muted-foreground hover:text-primary hover:bg-primary/10 rounded transition-colors"
+                                  onClick={() => handleViewDetail(task)}
+                                  title="Lihat Detail"
+                                >
+                                  <Eye className="w-3.5 h-3.5" />
+                                </Button>
+                                <Button
+                                  size="sm"
+                                  variant="ghost"
+                                  className="h-7 w-7 p-0 text-muted-foreground hover:text-blue-600 dark:hover:text-blue-400 hover:bg-blue-500/10 rounded transition-colors"
+                                  onClick={() => handleEditTask(task)}
+                                  title="Edit Tugas"
+                                >
+                                  <Edit className="w-3.5 h-3.5" />
+                                </Button>
+                                {(!task.messenger || task.messenger === "Belum Ditugaskan" || task.messenger === "-") ? (
+                                  <Button
+                                    size="sm"
+                                    variant="default"
+                                    className="h-7 px-2 text-[11px] font-semibold gap-1 bg-primary hover:bg-primary/90 text-primary-foreground rounded transition-colors shadow-2xs"
+                                    onClick={() => handleOpenAssignDialog(task)}
+                                    title="Tugaskan Kurir untuk Tugas Lapangan Ini"
+                                  >
+                                    <UserCheck className="w-3.5 h-3.5 shrink-0" />
+                                    <span>Tugaskan</span>
+                                  </Button>
+                                ) : task.status !== "Selesai" ? (
+                                  <>
+                                    {task.acceptanceStatus === "PENDING" ? (
+                                      <Button
+                                        size="sm"
+                                        variant="outline"
+                                        className="h-7 px-1.5 text-[11px] font-semibold gap-1 rounded text-muted-foreground hover:text-foreground"
+                                        onClick={() => handleOpenAssignDialog(task)}
+                                        title="Ganti Kurir (Sebelum Diterima Kurir)"
+                                      >
+                                        <UserCheck className="w-3.5 h-3.5" />
+                                        <span className="hidden xl:inline">Ganti</span>
+                                      </Button>
+                                    ) : (
+                                      <Button
+                                        size="sm"
+                                        variant="outline"
+                                        className="h-7 px-1.5 text-[11px] font-semibold gap-1 border-blue-500/40 text-blue-700 dark:text-blue-300 bg-blue-500/10 hover:bg-blue-500/20 rounded transition-colors"
+                                        onClick={() => handleOpenReassignDialog(task)}
+                                        title="Alihkan Tugas Resmi (Memerlukan Alasan Pengalihan)"
+                                      >
+                                        <ArrowRightLeft className="w-3.5 h-3.5 text-blue-600 dark:text-blue-400 shrink-0" />
+                                        <span className="hidden xl:inline">Alihkan</span>
+                                      </Button>
+                                    )}
+                                  <Button
+                                    size="sm"
+                                    variant="outline"
+                                    className="h-7 px-1.5 text-[11px] font-semibold gap-1 border-amber-500/40 text-amber-700 dark:text-amber-300 bg-amber-500/10 hover:bg-amber-500/20 rounded transition-colors"
+                                    onClick={() => handleOpenAmbilAlih(task)}
+                                    title="Ambil Alih Fungsi Messenger (Admin Takeover)"
+                                  >
+                                    <ShieldAlert className="w-3.5 h-3.5 text-amber-600 dark:text-amber-400 shrink-0" />
+                                    <span className="hidden xl:inline">Ambil Alih</span>
+                                  </Button>
+                                  </>
+                                ) : null}
                               </div>
-                            </div>
-                          </TableCell>
-                          <TableCell className="text-center px-1.5 py-1.5">
-                            <Button
-                              size="sm"
-                              variant="ghost"
-                              className="h-7 w-7 p-0 text-muted-foreground hover:text-primary hover:bg-primary/10 rounded transition-colors"
-                              onClick={() => {
-                                setSelectedHistoryItem(item);
-                                setIsHistoryDetailOpen(true);
-                              }}
-                              title="Lihat Bukti & Detail Lengkap"
-                            >
-                              <Eye className="w-3.5 h-3.5" />
-                            </Button>
+                            </TableCell>
+                          </TableRow>
+                        ))
+                      ) : (
+                        <TableRow className="h-full hover:bg-transparent">
+                          <TableCell colSpan={10} className="text-center py-8 align-middle p-0">
+                            <EmptyState
+                              title="Tidak ada tugas messenger aktif ditemukan"
+                              description="Saat ini tidak ada order yang sedang berada dalam proses kurir aktif (Penjemputan, Samsat, atau Pengantaran)."
+                            />
                           </TableCell>
                         </TableRow>
-                      ))
-                    ) : (
-                      <TableRow className="h-full hover:bg-transparent">
-                        <TableCell colSpan={10} className="text-center py-8 align-middle p-0">
-                          <EmptyState
-                            title="Tidak ada riwayat tugas messenger"
-                            description="Belum ada riwayat penyelesaian tugas kurir yang cocok dengan pencarian atau filter yang dipilih."
-                          />
-                        </TableCell>
-                      </TableRow>
-                    )}
-                  </TableBody>
-                </Table>
-              </div>
+                      )}
+                    </TableBody>
+                  </Table>
+                </div>
 
-              {/* Standardized Table Pagination for History */}
-              <div className="mt-auto pt-1 shrink-0">
-                <TablePagination
-                  currentPage={historyCurrentPage}
-                  totalItems={filteredHistoryData.length}
-                  itemsPerPage={historyItemsPerPage}
-                  onPageChange={setHistoryCurrentPage}
-                  onItemsPerPageChange={(newSize) => {
-                    setHistoryItemsPerPage(newSize);
-                    setHistoryCurrentPage(1);
-                  }}
-                  pageSizeOptions={[10, 25, 50, 100]}
-                />
+                {/* Standardized Table Pagination */}
+                <div className="border-t border-border/80 p-3 bg-card shrink-0 mt-auto">
+                  <TablePagination
+                    currentPage={currentPage}
+                    totalItems={filteredData.length}
+                    itemsPerPage={itemsPerPage}
+                    onPageChange={setCurrentPage}
+                    onItemsPerPageChange={(newSize) => {
+                      setItemsPerPage(newSize);
+                      setCurrentPage(1);
+                    }}
+                    pageSizeOptions={[10, 25, 50, 100]}
+                  />
+                </div>
               </div>
             </Card>
           </motion.div>
         </>
-      )}
 
       {/* View Detail Dialog */}
       <Dialog open={isViewDialogOpen} onOpenChange={setIsViewDialogOpen}>
@@ -1791,200 +1391,6 @@ export function MessengerTask() {
         </DialogContent>
       </Dialog>
 
-      {/* History Detail & Proof Dialog */}
-      <Dialog open={isHistoryDetailOpen} onOpenChange={setIsHistoryDetailOpen}>
-        <DialogContent className="w-full sm:max-w-2xl max-h-[90dvh] flex flex-col p-4 sm:p-6 overflow-hidden">
-          <DialogHeader className="shrink-0 pb-2 border-b border-border/80">
-            <div className="flex items-center justify-between pr-6">
-              <DialogTitle className="text-base font-semibold text-foreground flex items-center gap-2">
-                <History className="w-4 h-4 text-primary" />
-                <span>Detail Riwayat Tugas — {selectedHistoryItem?.orderNo}</span>
-              </DialogTitle>
-              {selectedHistoryItem && (
-                <Badge variant="outline" className="border-emerald-500/40 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 gap-1 text-xs">
-                  <CheckCircle2 className="w-3.5 h-3.5" /> Selesai
-                </Badge>
-              )}
-            </div>
-            <DialogDescription className="text-xs text-muted-foreground">
-              Audit rincian tugas yang telah diselesaikan kurir, verifikasi tagihan, dan bukti serah terima
-            </DialogDescription>
-          </DialogHeader>
-
-          {selectedHistoryItem && (
-            <div className="flex-1 overflow-y-auto py-4 space-y-4 text-xs">
-              {/* Key Badges */}
-              <div className="flex flex-wrap items-center gap-2 p-2.5 rounded-lg bg-muted/40 border border-border/80">
-                <Badge
-                  variant="outline"
-                  className={`text-xs px-2.5 py-0.5 font-semibold ${
-                    selectedHistoryItem.taskType === "Jemput Dokumen"
-                      ? "border-blue-500/40 bg-blue-500/10 text-blue-600 dark:text-blue-400"
-                      : selectedHistoryItem.taskType === "Proses Samsat"
-                      ? "border-purple-500/40 bg-purple-500/10 text-purple-600 dark:text-purple-400"
-                      : "border-emerald-500/40 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400"
-                  }`}
-                >
-                  {selectedHistoryItem.taskType}
-                </Badge>
-                <span className="text-muted-foreground">•</span>
-                <span className="font-mono font-medium text-foreground">{selectedHistoryItem.layanan}</span>
-                <span className="text-muted-foreground">•</span>
-                <span className="text-muted-foreground">Selesai pada: <strong className="text-foreground font-mono">{formatDateTime(selectedHistoryItem.completedAt)}</strong></span>
-              </div>
-
-              {/* 4 Cards Grid */}
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                {/* 1. Messenger Info */}
-                <div className="p-3 rounded-lg border border-border bg-card space-y-2">
-                  <h4 className="font-semibold text-foreground flex items-center gap-1.5 text-xs">
-                    <Truck className="w-3.5 h-3.5 text-primary" />
-                    Petugas Messenger
-                  </h4>
-                  <div className="space-y-1 text-xs">
-                    <div className="flex justify-between">
-                      <span className="text-muted-foreground">Nama Kurir:</span>
-                      <span className="font-medium text-foreground">{selectedHistoryItem.messenger}</span>
-                    </div>
-                    <div className="flex justify-between">
-                      <span className="text-muted-foreground">ID Karyawan:</span>
-                      <span className="font-mono text-foreground">{selectedHistoryItem.messengerEmployeeId || "-"}</span>
-                    </div>
-                    <div className="flex justify-between">
-                      <span className="text-muted-foreground">Tugas Selesai:</span>
-                      <span className="font-medium text-foreground">{selectedHistoryItem.taskType}</span>
-                    </div>
-                  </div>
-                </div>
-
-                {/* 2. Klien & Kendaraan */}
-                <div className="p-3 rounded-lg border border-border bg-card space-y-2">
-                  <h4 className="font-semibold text-foreground flex items-center gap-1.5 text-xs">
-                    <UserCheck className="w-3.5 h-3.5 text-blue-600" />
-                    Klien & Kendaraan
-                  </h4>
-                  <div className="space-y-1 text-xs">
-                    <div className="flex justify-between">
-                      <span className="text-muted-foreground">Nama Klien:</span>
-                      <span className="font-medium text-foreground">{selectedHistoryItem.customer}</span>
-                    </div>
-                    <div className="flex justify-between">
-                      <span className="text-muted-foreground">No HP:</span>
-                      <span className="font-mono text-foreground">{selectedHistoryItem.phone || "-"}</span>
-                    </div>
-                    <div className="flex justify-between">
-                      <span className="text-muted-foreground">Nomor Polisi:</span>
-                      <span className="font-mono font-bold text-foreground">{selectedHistoryItem.nopol}</span>
-                    </div>
-                    <div className="flex justify-between">
-                      <span className="text-muted-foreground">Jenis Kendaraan:</span>
-                      <span className="text-foreground">{selectedHistoryItem.jenisKendaraan || "-"}</span>
-                    </div>
-                  </div>
-                </div>
-
-                {/* 3. Keuangan & Tagihan */}
-                <div className="p-3 rounded-lg border border-border bg-card space-y-2">
-                  <h4 className="font-semibold text-foreground flex items-center gap-1.5 text-xs">
-                    <Wallet className="w-3.5 h-3.5 text-emerald-600" />
-                    Total Tagihan & Biaya
-                  </h4>
-                  <div className="space-y-1.5 text-xs">
-                    <div className="flex justify-between items-baseline">
-                      <span className="text-muted-foreground">Total Tagihan:</span>
-                      <span className="text-base font-bold font-mono text-primary">
-                        {formatRupiah(selectedHistoryItem.totalTagihan)}
-                      </span>
-                    </div>
-                    <div className="flex justify-between">
-                      <span className="text-muted-foreground">Status Pembayaran:</span>
-                      <Badge
-                        variant={selectedHistoryItem.statusBayar === "Lunas" ? "outline" : "secondary"}
-                        className={`text-[10px] px-1.5 py-0 ${
-                          selectedHistoryItem.statusBayar === "Lunas"
-                            ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400"
-                            : "text-amber-600 bg-amber-500/10"
-                        }`}
-                      >
-                        {selectedHistoryItem.statusBayar || "Lunas"}
-                      </Badge>
-                    </div>
-                    <div className="flex justify-between">
-                      <span className="text-muted-foreground">Jumlah Terbayar:</span>
-                      <span className="font-mono text-foreground">
-                        {formatRupiah(selectedHistoryItem.terbayar || selectedHistoryItem.totalTagihan)}
-                      </span>
-                    </div>
-                  </div>
-                </div>
-
-                {/* 4. Penyelesaian & Penerima */}
-                <div className="p-3 rounded-lg border border-border bg-card space-y-2">
-                  <h4 className="font-semibold text-foreground flex items-center gap-1.5 text-xs">
-                    <CheckCheck className="w-3.5 h-3.5 text-indigo-600" />
-                    Keterangan Penyelesaian
-                  </h4>
-                  <div className="space-y-1 text-xs">
-                    {selectedHistoryItem.receiverName && (
-                      <div className="flex justify-between">
-                        <span className="text-muted-foreground">Penerima Berkas:</span>
-                        <span className="font-medium text-foreground">
-                          {selectedHistoryItem.receiverName} ({selectedHistoryItem.relationship || "Pemilik Langsung"})
-                        </span>
-                      </div>
-                    )}
-                    <div className="space-y-0.5">
-                      <span className="text-muted-foreground block">Catatan Petugas:</span>
-                      <p className="p-2 rounded bg-muted/40 text-foreground text-[11px] leading-relaxed border border-border/60">
-                        {selectedHistoryItem.keterangan || "Tugas diselesaikan dengan baik tanpa kendala."}
-                      </p>
-                    </div>
-                  </div>
-                </div>
-              </div>
-
-              {/* 5. Foto Bukti */}
-              <div className="p-3 rounded-lg border border-border bg-card space-y-2">
-                <h4 className="font-semibold text-foreground flex items-center gap-1.5 text-xs">
-                  <Camera className="w-3.5 h-3.5 text-muted-foreground" />
-                  Foto Bukti Penyelesaian Tugas
-                </h4>
-                {selectedHistoryItem.photoProofUrl ? (
-                  <div className="space-y-2">
-                    <div className="rounded-lg border border-border overflow-hidden bg-black/5 dark:bg-black/30 max-h-[300px] flex items-center justify-center p-2">
-                      <img
-                        src={selectedHistoryItem.photoProofUrl}
-                        alt="Bukti Tugas Messenger"
-                        className="max-h-[280px] w-auto object-contain rounded"
-                      />
-                    </div>
-                    <a
-                      href={selectedHistoryItem.photoProofUrl}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="text-[11px] text-primary hover:underline inline-flex items-center gap-1 font-medium"
-                    >
-                      <ExternalLink className="w-3 h-3" /> Buka Foto Ukuran Penuh
-                    </a>
-                  </div>
-                ) : (
-                  <div className="py-6 text-center text-muted-foreground text-xs bg-muted/20 rounded-lg border border-dashed border-border/80">
-                    <Camera className="w-6 h-6 mx-auto mb-1 opacity-40" />
-                    <span>Tidak ada lampiran foto untuk tugas ini (diselesaikan via loket/sistem)</span>
-                  </div>
-                )}
-              </div>
-            </div>
-          )}
-
-          <DialogFooter className="pt-2 border-t border-border/80">
-            <Button size="sm" variant="outline" onClick={() => setIsHistoryDetailOpen(false)} className="h-8 text-xs">
-              Tutup
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-
       {/* Edit Task Dialog */}
       <Dialog open={isEditDialogOpen} onOpenChange={setIsEditDialogOpen}>
         <DialogContent className="w-full sm:max-w-2xl max-h-[90dvh] flex flex-col p-4 sm:p-6 overflow-hidden">
@@ -2031,15 +1437,16 @@ export function MessengerTask() {
                       <SelectValue placeholder="Pilih jenis pengurusan" />
                     </SelectTrigger>
                     <SelectContent>
-                      <SelectItem value="Perpanjangan 1 Tahun" className="text-xs">Perpanjangan 1 Tahun</SelectItem>
-                      <SelectItem value="Perpanjangan 5 Tahun" className="text-xs">Perpanjangan 5 Tahun</SelectItem>
-                      <SelectItem value="Balik Nama" className="text-xs">Balik Nama</SelectItem>
-                      <SelectItem value="Mutasi Keluar" className="text-xs">Mutasi Keluar</SelectItem>
-                      <SelectItem value="Mutasi Masuk" className="text-xs">Mutasi Masuk</SelectItem>
-                      <SelectItem value="Mutasi Luar Daerah" className="text-xs">Mutasi Luar Daerah</SelectItem>
-                      <SelectItem value="Mutasi Antar Samsat" className="text-xs">Mutasi Antar Samsat</SelectItem>
-                      <SelectItem value="Tarik Berkas" className="text-xs">Tarik Berkas</SelectItem>
-                      <SelectItem value="Duplikat STNK" className="text-xs">Duplikat STNK</SelectItem>
+                      {serviceStore.getActive().map((svc) => (
+                        <SelectItem key={svc.id} value={svc.nama_layanan} className="text-xs">
+                          {svc.nama_layanan}
+                        </SelectItem>
+                      ))}
+                      {editTaskData.jenisTugas && !serviceStore.getActive().some((s) => s.nama_layanan === editTaskData.jenisTugas) && (
+                        <SelectItem value={editTaskData.jenisTugas} className="text-xs">
+                          {editTaskData.jenisTugas}
+                        </SelectItem>
+                      )}
                     </SelectContent>
                   </Select>
                 </div>
@@ -2185,15 +1592,11 @@ export function MessengerTask() {
                     <SelectValue placeholder="Pilih jenis pengurusan" />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="Perpanjangan 1 Tahun" className="text-xs">Perpanjangan 1 Tahun</SelectItem>
-                    <SelectItem value="Perpanjangan 5 Tahun" className="text-xs">Perpanjangan 5 Tahun</SelectItem>
-                    <SelectItem value="Balik Nama" className="text-xs">Balik Nama</SelectItem>
-                    <SelectItem value="Mutasi Keluar" className="text-xs">Mutasi Keluar</SelectItem>
-                    <SelectItem value="Mutasi Masuk" className="text-xs">Mutasi Masuk</SelectItem>
-                    <SelectItem value="Mutasi Luar Daerah" className="text-xs">Mutasi Luar Daerah</SelectItem>
-                    <SelectItem value="Mutasi Antar Samsat" className="text-xs">Mutasi Antar Samsat</SelectItem>
-                    <SelectItem value="Tarik Berkas" className="text-xs">Tarik Berkas</SelectItem>
-                    <SelectItem value="Duplikat STNK" className="text-xs">Duplikat STNK</SelectItem>
+                    {serviceStore.getActive().map((svc) => (
+                      <SelectItem key={svc.id} value={svc.nama_layanan} className="text-xs">
+                        {svc.nama_layanan}
+                      </SelectItem>
+                    ))}
                   </SelectContent>
                 </Select>
               </div>

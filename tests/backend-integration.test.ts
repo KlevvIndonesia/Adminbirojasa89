@@ -161,7 +161,23 @@ test("Backend API - Order Lifecycle: Create, advance, verify-payment, archive", 
     assert.strictEqual(createdBody.data.customer, "PT Test Integrasi Express");
     assert.strictEqual(createdBody.data.currentStageName, "Verifikasi");
 
-    // 3. Advance to Stage 2: Penjadwalan
+    // 3. Verify Payment at Stage 1 (Penerimaan Berkas / Verifikasi Dokumen & Pembayaran)
+    const verifyRes = await fetch(`${baseUrl}/api/orders/${newOrderNo}/verify-payment`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({
+        verifierName: "Kasir Test",
+        buktiPembayaran: { fileUrl: "https://proof.example.com/transfer.jpg" },
+      }),
+    });
+    assert.strictEqual(verifyRes.status, 200);
+    const verBody = await verifyRes.json() as any;
+    assert.strictEqual(verBody.data.payment.statusPembayaran, "Lunas");
+
+    // 4. Advance to Stage 2: Penjadwalan
     const advanceRes = await fetch(`${baseUrl}/api/orders/${newOrderNo}/advance`, {
       method: "POST",
       headers: {
@@ -177,19 +193,6 @@ test("Backend API - Order Lifecycle: Create, advance, verify-payment, archive", 
     const advBody = await advanceRes.json() as any;
     assert.strictEqual(advBody.data.currentStageName, "Penjadwalan");
     assert.strictEqual(advBody.data.currentStep, 2);
-
-    // 4. Verify Payment
-    const verifyRes = await fetch(`${baseUrl}/api/orders/${newOrderNo}/verify-payment`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${token}`,
-      },
-      body: JSON.stringify({ verifierName: "Kasir Test" }),
-    });
-    assert.strictEqual(verifyRes.status, 200);
-    const verBody = await verifyRes.json() as any;
-    assert.strictEqual(verBody.data.payment.statusPembayaran, "Lunas");
 
     // 5. Archive Order
     const archRes = await fetch(`${baseUrl}/api/orders/${newOrderNo}/archive`, {
@@ -217,11 +220,11 @@ test("Backend API - Pricing & Finance & Audit Logs endpoints operate properly", 
     const unauthFin = await fetch(`${baseUrl}/api/finance/invoices`);
     assert.strictEqual(unauthFin.status, 401);
 
-    // 2. Login as Admin
+    // 2. Login as Administrator (SVP)
     const loginRes = await fetch(`${baseUrl}/api/auth/login`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ email: "admin@birojasa.com", password: "admin123" }),
+      body: JSON.stringify({ email: "svp@birojasa.com", password: "admin123" }),
     });
     const { data: { token } } = await loginRes.json() as any;
 

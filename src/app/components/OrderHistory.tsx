@@ -6,6 +6,7 @@ import { Input } from "./ui/input";
 import { Badge, getStatusBadgeClass } from "./ui/badge";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "./ui/select";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "./ui/table";
+import { TablePagination } from "./ui/TablePagination";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "./ui/dialog";
 import {
   AlertDialog,
@@ -52,6 +53,8 @@ export function OrderHistory() {
   const [searchTerm, setSearchTerm] = useState("");
   const [filterPeriode, setFilterPeriode] = useState("bulan");
   const [filterTanggal, setFilterTanggal] = useState("");
+  const [currentPage, setCurrentPage] = useState(1);
+  const [itemsPerPage, setItemsPerPage] = useState(10);
   const [selectedOrder, setSelectedOrder] = useState<any>(null);
   const [orderToDelete, setOrderToDelete] = useState<any>(null);
   const [isDeleting, setIsDeleting] = useState(false);
@@ -199,6 +202,11 @@ export function OrderHistory() {
     return filtered;
   }, [orders, searchTerm, filterTanggal, filterPeriode]);
 
+  const paginatedOrders = useMemo(() => {
+    const startIndex = (currentPage - 1) * itemsPerPage;
+    return filteredOrders.slice(startIndex, startIndex + itemsPerPage);
+  }, [filteredOrders, currentPage, itemsPerPage]);
+
   const getStatusColor = (status: string) => getStatusBadgeClass(status);
 
   const handleExportCSV = () => {
@@ -231,11 +239,20 @@ export function OrderHistory() {
               placeholder="Cari order, nama customer, atau nomor polisi..."
               className="pl-9 bg-input-background border-border h-9 text-xs"
               value={searchTerm}
-              onChange={(e) => setSearchTerm(e.target.value)}
+              onChange={(e) => {
+                setSearchTerm(e.target.value);
+                setCurrentPage(1);
+              }}
             />
           </div>
 
-          <Select value={filterPeriode} onValueChange={setFilterPeriode}>
+          <Select 
+            value={filterPeriode} 
+            onValueChange={(val) => {
+              setFilterPeriode(val);
+              setCurrentPage(1);
+            }}
+          >
             <SelectTrigger className="w-[140px] bg-input-background border-border h-9 text-xs">
               <SelectValue />
             </SelectTrigger>
@@ -253,7 +270,10 @@ export function OrderHistory() {
               type="date"
               className="w-[160px] bg-input-background border-border h-9 text-xs"
               value={filterTanggal}
-              onChange={(e) => setFilterTanggal(e.target.value)}
+              onChange={(e) => {
+                setFilterTanggal(e.target.value);
+                setCurrentPage(1);
+              }}
             />
           </div>
 
@@ -354,134 +374,150 @@ export function OrderHistory() {
         </div>
 
         {/* Table */}
-        <div className="rounded-xl border border-border/80 overflow-hidden shadow-2xs bg-card flex-1 flex flex-col min-h-[220px]">
-          <Table className={`w-full min-w-[850px] ${filteredOrders.length === 0 ? "h-full" : ""}`}>
-            <TableHeader className="bg-muted/40 border-b border-border/80">
-              <TableRow>
-                <TableHead className="h-9 px-3 text-xs font-semibold text-muted-foreground uppercase tracking-wider">Nomor Order</TableHead>
-                <TableHead className="h-9 px-3 text-xs font-semibold text-muted-foreground uppercase tracking-wider">Nama Customer</TableHead>
-                <TableHead className="h-9 px-3 text-xs font-semibold text-muted-foreground uppercase tracking-wider">Nomor Polisi</TableHead>
-                <TableHead className="h-9 px-3 text-xs font-semibold text-muted-foreground uppercase tracking-wider">Jenis Pengurusan</TableHead>
-                <TableHead className="h-9 px-3 text-xs font-semibold text-muted-foreground uppercase tracking-wider">Samsat</TableHead>
-                <TableHead className="h-9 px-3 text-xs font-semibold text-muted-foreground uppercase tracking-wider">Tanggal Selesai</TableHead>
-                <TableHead className="h-9 px-3 text-xs font-semibold text-muted-foreground uppercase tracking-wider text-right">Total Biaya Final</TableHead>
-                <TableHead className="h-9 px-3 text-xs font-semibold text-muted-foreground uppercase tracking-wider text-center">Status Pengerjaan</TableHead>
-                <TableHead className="h-9 px-3 text-xs font-semibold text-muted-foreground uppercase tracking-wider text-right w-[95px]">Aksi</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {filteredOrders.length > 0 ? (
-                filteredOrders.map((order) => (
-                  <TableRow key={order.orderNo} className="hover:bg-muted/30 transition-colors border-b border-border/60 last:border-0 h-10">
-                    <TableCell className="px-3 py-2 text-xs font-mono font-semibold text-primary">{order.orderNo}</TableCell>
-                    <TableCell className="px-3 py-2 text-xs font-medium text-foreground">
-                      <div className="flex flex-col">
-                        <span>{order.customer}</span>
-                        {order.nomorHP && order.nomorHP !== "-" && (
-                          <span className="text-[10px] text-muted-foreground font-mono">{order.nomorHP}</span>
+        <div className="rounded-xl border border-border/80 overflow-hidden shadow-2xs bg-card flex-1 flex flex-col min-h-0">
+          <div className="w-full flex-1 flex flex-col min-h-0">
+            <Table 
+              containerClassName="overflow-y-auto overflow-x-auto max-h-[calc(100vh-270px)] sm:max-h-[calc(100vh-280px)] min-h-[160px]"
+              className={`w-full min-w-[850px] ${paginatedOrders.length === 0 ? "h-full" : ""}`}
+            >
+              <TableHeader className="sticky top-0 z-10 bg-card border-b border-border/80 shadow-2xs">
+                <TableRow className="hover:bg-transparent">
+                  <TableHead className="h-9 px-3 text-xs font-semibold text-muted-foreground uppercase tracking-wider bg-card">Nomor Order</TableHead>
+                  <TableHead className="h-9 px-3 text-xs font-semibold text-muted-foreground uppercase tracking-wider bg-card">Nama Customer</TableHead>
+                  <TableHead className="h-9 px-3 text-xs font-semibold text-muted-foreground uppercase tracking-wider bg-card">Nomor Polisi</TableHead>
+                  <TableHead className="h-9 px-3 text-xs font-semibold text-muted-foreground uppercase tracking-wider bg-card">Jenis Pengurusan</TableHead>
+                  <TableHead className="h-9 px-3 text-xs font-semibold text-muted-foreground uppercase tracking-wider bg-card">Samsat</TableHead>
+                  <TableHead className="h-9 px-3 text-xs font-semibold text-muted-foreground uppercase tracking-wider bg-card">Tanggal Selesai</TableHead>
+                  <TableHead className="h-9 px-3 text-xs font-semibold text-muted-foreground uppercase tracking-wider text-right bg-card">Total Biaya Final</TableHead>
+                  <TableHead className="h-9 px-3 text-xs font-semibold text-muted-foreground uppercase tracking-wider text-center bg-card">Status Pengerjaan</TableHead>
+                  <TableHead className="h-9 px-3 text-xs font-semibold text-muted-foreground uppercase tracking-wider text-right w-[95px] bg-card">Aksi</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {paginatedOrders.length > 0 ? (
+                  paginatedOrders.map((order) => (
+                    <TableRow key={order.orderNo} className="hover:bg-muted/30 transition-colors border-b border-border/60 last:border-0 h-10">
+                      <TableCell className="px-3 py-2 text-xs font-mono font-semibold text-primary">{order.orderNo}</TableCell>
+                      <TableCell className="px-3 py-2 text-xs font-medium text-foreground">
+                        <div className="flex flex-col">
+                          <span>{order.customer}</span>
+                          {order.nomorHP && order.nomorHP !== "-" && (
+                            <span className="text-[10px] text-muted-foreground font-mono">{order.nomorHP}</span>
+                          )}
+                        </div>
+                      </TableCell>
+                      <TableCell className="px-3 py-2 text-xs font-mono">
+                        <span className="inline-block px-1.5 py-0.5 rounded bg-muted/60 border border-border text-[11px] font-mono text-foreground font-medium">
+                          {order.nopol}
+                        </span>
+                      </TableCell>
+                      <TableCell className="px-3 py-2 text-xs text-foreground/80">{order.layanan}</TableCell>
+                      <TableCell className="px-3 py-2 text-xs text-foreground/80">{order.samsat}</TableCell>
+                      <TableCell className="px-3 py-2 text-xs font-mono text-foreground/80">
+                        {order.completedAt?.toLocaleDateString('id-ID') || order.tanggal.toLocaleDateString('id-ID')}
+                      </TableCell>
+                      <TableCell className="px-3 py-2 text-xs font-mono tabular-nums text-right font-medium text-emerald-600 dark:text-emerald-400">
+                        Rp {order.totalBiayaFinal.toLocaleString('id-ID')}
+                      </TableCell>
+                      <TableCell className="px-3 py-2 text-xs text-center">
+                        {order.isCancelled || order.statusPembayaran === "Dibatalkan" ? (
+                          <Badge status="error" className="text-[10px] font-medium">
+                            Dibatalkan
+                          </Badge>
+                        ) : order.statusPembayaran === "Kurang Bayar" ? (
+                          <Badge status="warning" className="text-[10px] font-medium">
+                            Kurang Bayar
+                          </Badge>
+                        ) : order.statusPembayaran === "Belum Bayar" ? (
+                          <Badge status="neutral" className="text-[10px] font-medium">
+                            Belum Bayar
+                          </Badge>
+                        ) : order.statusPembayaran === "Lebih Bayar" ? (
+                          <Badge status="info" className="text-[10px] font-medium">
+                            Lebih Bayar
+                          </Badge>
+                        ) : (
+                          <Badge status="success" className="text-[10px] font-medium">
+                            Selesai & Lunas
+                          </Badge>
                         )}
-                      </div>
-                    </TableCell>
-                    <TableCell className="px-3 py-2 text-xs font-mono">
-                      <span className="inline-block px-1.5 py-0.5 rounded bg-muted/60 border border-border text-[11px] font-mono text-foreground font-medium">
-                        {order.nopol}
-                      </span>
-                    </TableCell>
-                    <TableCell className="px-3 py-2 text-xs text-foreground/80">{order.layanan}</TableCell>
-                    <TableCell className="px-3 py-2 text-xs text-foreground/80">{order.samsat}</TableCell>
-                    <TableCell className="px-3 py-2 text-xs font-mono text-foreground/80">
-                      {order.completedAt?.toLocaleDateString('id-ID') || order.tanggal.toLocaleDateString('id-ID')}
-                    </TableCell>
-                    <TableCell className="px-3 py-2 text-xs font-mono tabular-nums text-right font-medium text-emerald-600 dark:text-emerald-400">
-                      Rp {order.totalBiayaFinal.toLocaleString('id-ID')}
-                    </TableCell>
-                    <TableCell className="px-3 py-2 text-xs text-center">
-                      {order.isCancelled || order.statusPembayaran === "Dibatalkan" ? (
-                        <Badge status="error" className="text-[10px] font-medium">
-                          Dibatalkan
-                        </Badge>
-                      ) : order.statusPembayaran === "Kurang Bayar" ? (
-                        <Badge status="warning" className="text-[10px] font-medium">
-                          Kurang Bayar
-                        </Badge>
-                      ) : order.statusPembayaran === "Belum Bayar" ? (
-                        <Badge status="neutral" className="text-[10px] font-medium">
-                          Belum Bayar
-                        </Badge>
-                      ) : order.statusPembayaran === "Lebih Bayar" ? (
-                        <Badge status="info" className="text-[10px] font-medium">
-                          Lebih Bayar
-                        </Badge>
-                      ) : (
-                        <Badge status="success" className="text-[10px] font-medium">
-                          Selesai & Lunas
-                        </Badge>
-                      )}
-                    </TableCell>
-                    <TableCell className="text-right px-2 py-1.5">
-                      <div className="flex justify-end gap-1">
-                        <Button
-                          size="sm"
-                          variant="ghost"
-                          className="h-7 w-7 p-0 text-muted-foreground hover:text-primary hover:bg-primary/10 rounded transition-colors"
-                          onClick={() => {
-                            setSelectedOrder(order);
-                            setIsViewDialogOpen(true);
-                          }}
-                          title="Lihat Rekap Detail"
-                        >
-                          <Eye className="w-3.5 h-3.5" />
-                        </Button>
-                        <Button
-                          size="sm"
-                          variant="ghost"
-                          className="h-7 w-7 p-0 text-muted-foreground hover:text-blue-600 dark:hover:text-blue-400 hover:bg-blue-500/10 rounded transition-colors"
-                          onClick={() => {
-                            setSelectedOrder(order);
-                            setIsPDFDialogOpen(true);
-                          }}
-                          title="Lihat Dokumen PDF"
-                        >
-                          <FileText className="w-3.5 h-3.5" />
-                        </Button>
-                        <Button
-                          size="sm"
-                          variant="ghost"
-                          className="h-7 w-7 p-0 text-muted-foreground hover:text-emerald-600 dark:hover:text-emerald-400 hover:bg-emerald-500/10 rounded transition-colors"
-                          onClick={() => {
-                            setSelectedOrder(order);
-                            setIsInvoiceDialogOpen(true);
-                          }}
-                          title="Cetak Invoice"
-                        >
-                          <Printer className="w-3.5 h-3.5" />
-                        </Button>
-                        <Button
-                          size="sm"
-                          variant="ghost"
-                          className="h-7 w-7 p-0 text-muted-foreground hover:text-rose-600 dark:hover:text-rose-400 hover:bg-rose-500/10 rounded transition-colors"
-                          onClick={() => setOrderToDelete(order)}
-                          title="Hapus Rekap Order Sementara"
-                        >
-                          <Trash2 className="w-3.5 h-3.5" />
-                        </Button>
-                      </div>
+                      </TableCell>
+                      <TableCell className="text-right px-2 py-1.5">
+                        <div className="flex justify-end gap-1">
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            className="h-7 w-7 p-0 text-muted-foreground hover:text-primary hover:bg-primary/10 rounded transition-colors"
+                            onClick={() => {
+                              setSelectedOrder(order);
+                              setIsViewDialogOpen(true);
+                            }}
+                            title="Lihat Rekap Detail"
+                          >
+                            <Eye className="w-3.5 h-3.5" />
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            className="h-7 w-7 p-0 text-muted-foreground hover:text-blue-600 dark:hover:text-blue-400 hover:bg-blue-500/10 rounded transition-colors"
+                            onClick={() => {
+                              setSelectedOrder(order);
+                              setIsPDFDialogOpen(true);
+                            }}
+                            title="Lihat Dokumen PDF"
+                          >
+                            <FileText className="w-3.5 h-3.5" />
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            className="h-7 w-7 p-0 text-muted-foreground hover:text-emerald-600 dark:hover:text-emerald-400 hover:bg-emerald-500/10 rounded transition-colors"
+                            onClick={() => {
+                              setSelectedOrder(order);
+                              setIsInvoiceDialogOpen(true);
+                            }}
+                            title="Cetak Invoice"
+                          >
+                            <Printer className="w-3.5 h-3.5" />
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            className="h-7 w-7 p-0 text-muted-foreground hover:text-rose-600 dark:hover:text-rose-400 hover:bg-rose-500/10 rounded transition-colors"
+                            onClick={() => setOrderToDelete(order)}
+                            title="Hapus Rekap Order Sementara"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </Button>
+                        </div>
+                      </TableCell>
+                    </TableRow>
+                  ))
+                ) : (
+                  <TableRow className="h-full hover:bg-transparent">
+                    <TableCell colSpan={9} className="text-center text-muted-foreground min-h-[200px] py-12 align-middle text-sm">
+                      Tidak ada data order
                     </TableCell>
                   </TableRow>
-                ))
-              ) : (
-                <TableRow className="h-full hover:bg-transparent">
-                  <TableCell colSpan={9} className="text-center text-muted-foreground min-h-[200px] py-12 align-middle text-sm">
-                    Tidak ada data order
-                  </TableCell>
-                </TableRow>
-              )}
-            </TableBody>
-          </Table>
-        </div>
+                )}
+              </TableBody>
+            </Table>
+          </div>
 
-        <div className="mt-auto pt-3 text-sm text-muted-foreground shrink-0">
-          Menampilkan {filteredOrders.length} dari {orders.length} order
+          {/* Standardized Table Pagination */}
+          <div className="border-t border-border/80 p-3 bg-card shrink-0 mt-auto">
+            <TablePagination
+              currentPage={currentPage}
+              totalItems={filteredOrders.length}
+              itemsPerPage={itemsPerPage}
+              onPageChange={setCurrentPage}
+              onItemsPerPageChange={(newSize) => {
+                setItemsPerPage(newSize);
+                setCurrentPage(1);
+              }}
+              pageSizeOptions={[10, 25, 50, 100]}
+            />
+          </div>
         </div>
       </Card>
 

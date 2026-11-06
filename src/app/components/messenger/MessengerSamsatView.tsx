@@ -18,6 +18,7 @@ import {
   Clock,
   CheckCircle2,
   AlertTriangle,
+  AlertCircle,
   Plus,
   Play,
   Check,
@@ -60,6 +61,8 @@ import {
   SAMSAT_WAITING_REASONS,
   getMasterSamsatComponents,
   acceptMessengerTaskAction,
+  startSamsatProcessAction,
+  validateSamsatComponents,
 } from "../../data/messengerTaskAdapter";
 import { useOrderStore } from "../../data/orderStore";
 import { MessengerWaitingReasonDialog } from "./MessengerWaitingReasonDialog";
@@ -115,7 +118,6 @@ export function MessengerSamsatView({
   const [targetOrderWilayah, setTargetOrderWilayah] = useState<string | undefined>(undefined);
   const [selectedMasterCompId, setSelectedMasterCompId] = useState<string>("");
   const [customCompName, setCustomCompName] = useState("");
-  const [customCompNote, setCustomCompNote] = useState("");
   const [addComponentTab, setAddComponentTab] = useState<"mutasi_masuk" | "mutasi_keluar" | "custom">("mutasi_masuk");
 
   // Edit Price Dialog State
@@ -148,14 +150,12 @@ export function MessengerSamsatView({
   // Simpan Progres Samsat & Multi-Messenger Handoff State (Requirement #5.C & #7)
   const [isSaveProgressOpen, setIsSaveProgressOpen] = useState(false);
   const [saveProgressReleaseToPool, setSaveProgressReleaseToPool] = useState(false);
-  const [saveProgressNote, setSaveProgressNote] = useState("");
   const [isSavingProgress, setIsSavingProgress] = useState(false);
 
   // Selesai Samsat Dialog State (Right of First Refusal: Bawa ke kantor vs Lempar ke kolam)
   const [isFinishSamsatOpen, setIsFinishSamsatOpen] = useState(false);
   const [finishSamsatOrderNo, setFinishSamsatOrderNo] = useState<string | null>(null);
   const [finishSamsatCustomerName, setFinishSamsatCustomerName] = useState("");
-  const [finishSamsatNote, setFinishSamsatNote] = useState("");
   const [isCompletingSamsat, setIsCompletingSamsat] = useState(false);
 
   // Filter tasks to Samsat tasks assigned to current messenger
@@ -363,7 +363,6 @@ export function MessengerSamsatView({
     setTargetOrderWilayah(wilayah);
     setSelectedMasterCompId("");
     setCustomCompName("");
-    setCustomCompNote("");
     setAddComponentTab("mutasi_masuk");
     setIsAddComponentOpen(true);
   };
@@ -385,7 +384,6 @@ export function MessengerSamsatView({
           nominal: 0,
           isCustom: true,
           addedManually: true,
-          note: customCompNote.trim() || undefined,
         },
         currentUser
       );
@@ -450,6 +448,16 @@ export function MessengerSamsatView({
     }
   };
 
+  // Start Samsat Process (Scope 1)
+  const handleStartSamsatProcess = async (orderNo: string) => {
+    const res = await startSamsatProcessAction(orderNo, currentUser);
+    if (res.success) {
+      toast.success("Proses Samsat dimulai! Seluruh komponen loket kini siap dikelola.");
+    } else {
+      toast.error(res.error || "Gagal memulai proses Samsat");
+    }
+  };
+
   const handleArriveAtSamsat = (orderNo: string) => {
     const res = arriveAtSamsat(orderNo, currentUser);
     if (res.success) {
@@ -461,7 +469,6 @@ export function MessengerSamsatView({
 
   // Simpan Progres Samsat handlers (Requirement #5.C & #7)
   const handleOpenSaveProgress = () => {
-    setSaveProgressNote("");
     setSaveProgressReleaseToPool(false);
     setIsSaveProgressOpen(true);
   };
@@ -473,8 +480,7 @@ export function MessengerSamsatView({
       if (saveProgressReleaseToPool) {
         const res = releaseSamsatTaskAction(
           currentSelectedTask.orderNo,
-          currentUser,
-          saveProgressNote.trim() || undefined
+          currentUser
         );
         if (res.success) {
           toast.success(
@@ -489,13 +495,13 @@ export function MessengerSamsatView({
           toast.error(res.error || "Gagal menyerahkan tugas");
         }
       } else {
-        // Persist checkpoint to backend
+        // Persist checkpoint without operational note input
         const nowIso = new Date().toISOString();
         const timelineEvent = {
           id: `tl-save-${Date.now()}`,
           timestamp: nowIso,
           title: "Progres Samsat Disimpan",
-          note: saveProgressNote.trim() || `Kurir ${currentUser.userName} menyimpan checkpoint progres Samsat.`,
+          note: `Kurir ${currentUser.userName} menyimpan checkpoint progres Samsat.`,
           author: currentUser.userName,
           type: "PROGRESS_UPDATE" as const,
         };
@@ -503,7 +509,6 @@ export function MessengerSamsatView({
         const existingTimeline = currentSelectedTask.rawOrder?.messengerTimeline || [];
         await updateOrderAsync(currentSelectedTask.orderNo, {
           messengerTimeline: [timelineEvent, ...existingTimeline],
-          catatanKendala: saveProgressNote.trim() || currentSelectedTask.rawOrder?.catatanKendala,
         });
 
         toast.success(
@@ -522,7 +527,6 @@ export function MessengerSamsatView({
   const handleOpenFinishSamsat = (t: MessengerTaskItem) => {
     setFinishSamsatOrderNo(t.orderNo);
     setFinishSamsatCustomerName(t.customer);
-    setFinishSamsatNote("");
     setIsFinishSamsatOpen(true);
   };
 
@@ -532,7 +536,7 @@ export function MessengerSamsatView({
 
     try {
       // 1. Mark Samsat completed
-      const completeRes = completeSamsatProcess(finishSamsatOrderNo, currentUser, finishSamsatNote);
+      const completeRes = completeSamsatProcess(finishSamsatOrderNo, currentUser);
       if (!completeRes.success) {
         toast.error(completeRes.error || "Gagal menyelesaikan proses Samsat");
         return;
@@ -687,8 +691,7 @@ export function MessengerSamsatView({
               return (
                 <Card
                   key={t.orderNo}
-                  onClick={() => setSelectedOrderNo(t.orderNo)}
-                  className="p-4 rounded-2xl border border-border/80 bg-card hover:border-purple-400/60 transition-all cursor-pointer hover:shadow-md active:scale-[0.99] space-y-3"
+                  className="p-4 rounded-2xl border border-border/80 bg-card hover:border-purple-400/60 transition-all space-y-3"
                 >
                   <div className="flex items-start justify-between gap-2">
                     <div className="min-w-0">
@@ -740,16 +743,19 @@ export function MessengerSamsatView({
                     </div>
                   </div>
 
-                  {/* Action Link Footer */}
-                  <div className="pt-2 border-t border-border/50 flex items-center justify-between text-xs sm:text-sm">
-                    <span className="text-muted-foreground flex items-center gap-1">
-                      <MapPin className="w-3.5 h-3.5 text-primary" />
-                      {t.lokasi}
+                  {/* Action Button Footer: Touch target >= 48px, Card non-clickable, explicit Kelola button */}
+                  <div className="pt-2 border-t border-border/50 flex items-center justify-between gap-2">
+                    <span className="text-muted-foreground flex items-center gap-1 text-xs sm:text-sm truncate">
+                      <MapPin className="w-3.5 h-3.5 text-primary shrink-0" />
+                      <span className="truncate">{t.lokasi}</span>
                     </span>
-                    <span className="font-bold text-purple-600 dark:text-purple-400 flex items-center gap-1 group-hover:underline">
-                      Kelola Proses Samsat
+                    <Button
+                      onClick={() => setSelectedOrderNo(t.orderNo)}
+                      className="min-h-[48px] px-4 font-bold bg-purple-600 hover:bg-purple-700 text-white rounded-xl flex items-center gap-1.5 shadow-xs shrink-0 text-xs sm:text-sm"
+                    >
+                      <span>Kelola Proses Samsat</span>
                       <ChevronRight className="w-4 h-4" />
-                    </span>
+                    </Button>
                   </div>
                 </Card>
               );
@@ -782,26 +788,68 @@ export function MessengerSamsatView({
     );
   }
 
-  // Component progress computation for this customer
-  const comps: MessengerComponentProgress[] =
-    task.componentProgress && task.componentProgress.length > 0
-      ? task.componentProgress
-      : (task.rawOrder?.samsatProcesses || []).map((p) => ({
-          componentId: p.id,
+  // Authoritative component progress computation (Scope 2: No fragile fallback by array length)
+  const isProcessStarted = Boolean(
+    task.rawOrder?.samsatStatus === "Sedang Proses Samsat" ||
+    task.rawOrder?.samsatStatus === "Menuju Samsat" ||
+    task.rawOrder?.samsatStatus === "Di Lokasi Samsat" ||
+    task.rawOrder?.samsatJourneyStartedAt ||
+    task.rawOrder?.samsatStartedAt ||
+    (task.rawOrder?.samsatStatus &&
+      task.rawOrder?.samsatStatus !== "Terjadwal Samsat" &&
+      task.rawOrder?.samsatStatus !== "Belum Dimulai")
+  );
+
+  const samsatValidation = useMemo(() => {
+    if (!task.rawOrder) return { allowed: false, error: "Data order tidak tersedia", totalComponents: 0, completedComponents: 0, incompleteComponents: [] };
+    return validateSamsatComponents(task.rawOrder);
+  }, [task.rawOrder]);
+
+  const canCompleteSamsat = samsatValidation.allowed;
+  const completionValidationMessage = samsatValidation.error;
+
+  const comps: MessengerComponentProgress[] = useMemo(() => {
+    const map = new Map<string, MessengerComponentProgress>();
+
+    // 1. From samsatProcesses
+    if (task.rawOrder?.samsatProcesses) {
+      for (const p of task.rawOrder.samsatProcesses) {
+        if (!p || !p.name) continue;
+        const id = String(p.id || p.name).trim();
+        map.set(id, {
+          componentId: id,
           name: p.name,
           category: p.category,
           nominal: p.basePrice || 0,
           masterPrice: p.basePrice || 0,
           actualOrderPrice: p.actualCost || p.basePrice || 0,
           status:
-            p.status === "Selesai"
+            p.status === "Selesai" || (p.status as string) === "COMPLETED"
               ? "COMPLETED"
-              : p.status === "Sedang Diproses"
+              : p.status === "Sedang Diproses" || (p.status as string) === "IN_PROGRESS" || (p.status as string) === "Dalam Proses"
               ? "IN_PROGRESS"
-              : ((p.status as string) === "Menunggu"
+              : (p.status as string) === "Menunggu" || (p.status as string) === "WAITING"
               ? "WAITING"
-              : "NOT_STARTED"),
-        }));
+              : "NOT_STARTED",
+        });
+      }
+    }
+
+    // 2. Overlay live progress from messengerComponentProgress
+    if (task.componentProgress && task.componentProgress.length > 0) {
+      for (const cp of task.componentProgress) {
+        if (!cp || !cp.name) continue;
+        const compKey = String(cp.componentId).trim();
+        const existing = map.get(compKey) || {};
+        map.set(compKey, {
+          ...existing,
+          ...cp,
+        });
+      }
+    }
+
+    return Array.from(map.values());
+  }, [task.componentProgress, task.rawOrder?.samsatProcesses]);
 
   const validComps = comps.filter((c) => {
     if (
@@ -995,33 +1043,41 @@ export function MessengerSamsatView({
           </div>
 
           <div className="flex items-center gap-1.5">
-            {comp.status !== "IN_PROGRESS" && !isDone && (
-              <Button
-                size="sm"
-                onClick={() => handleOpenStartProcess(task.orderNo, comp)}
-                className="min-h-[40px] text-xs font-semibold px-4 bg-primary text-primary-foreground rounded-xl shadow-xs"
-              >
-                <Play className="w-3.5 h-3.5 mr-1.5 fill-current" />
-                Mulai Proses
-              </Button>
-            )}
+            {isProcessStarted ? (
+              <>
+                {comp.status !== "IN_PROGRESS" && !isDone && (
+                  <Button
+                    size="sm"
+                    onClick={() => handleOpenStartProcess(task.orderNo, comp)}
+                    className="min-h-[44px] text-xs font-semibold px-4 bg-primary text-primary-foreground rounded-xl shadow-xs"
+                  >
+                    <Play className="w-3.5 h-3.5 mr-1.5 fill-current" />
+                    Mulai Proses
+                  </Button>
+                )}
 
-            {isInProg && !isDone && (
-              <Button
-                size="sm"
-                onClick={() => handleOpenFinishConfirm(task.orderNo, comp)}
-                className="min-h-[40px] text-xs font-semibold px-4 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl shadow-xs"
-              >
-                <Check className="w-4 h-4 mr-1.5" />
-                Selesai
-              </Button>
-            )}
+                {isInProg && !isDone && (
+                  <Button
+                    size="sm"
+                    onClick={() => handleOpenFinishConfirm(task.orderNo, comp)}
+                    className="min-h-[44px] text-xs font-semibold px-4 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl shadow-xs"
+                  >
+                    <Check className="w-4 h-4 mr-1.5" />
+                    Selesai
+                  </Button>
+                )}
 
-            {isDone && (
-              <span className="text-xs text-emerald-600 dark:text-emerald-400 font-bold flex items-center gap-1 py-1">
-                <CheckCircle2 className="w-4 h-4" />
-                Selesai di Loket
-              </span>
+                {isDone && (
+                  <span className="text-xs text-emerald-600 dark:text-emerald-400 font-bold flex items-center gap-1 py-1">
+                    <CheckCircle2 className="w-4 h-4" />
+                    Selesai di Loket
+                  </span>
+                )}
+              </>
+            ) : (
+              <Badge variant="outline" className="text-xs text-muted-foreground border-dashed py-1 px-2.5">
+                Menunggu Mulai Samsat
+              </Badge>
             )}
           </div>
         </div>
@@ -1030,7 +1086,7 @@ export function MessengerSamsatView({
   };
 
   return (
-    <div className="w-full space-y-4 max-w-xl mx-auto pb-6 text-left">
+    <div className="w-full space-y-4 max-w-xl mx-auto pb-36 sm:pb-40 text-left">
       {/* Top Back Button to Customer List */}
       <Button
         variant="ghost"
@@ -1099,36 +1155,25 @@ export function MessengerSamsatView({
           </div>
         </div>
 
-        {/* Samsat Journey Step Button */}
-        <div className="pt-2 border-t border-border/60 flex items-center justify-between gap-2">
-          <span className="text-xs text-muted-foreground">Status Perjalanan ke Loket:</span>
-          {(!task.rawOrder?.samsatStatus || task.rawOrder.samsatStatus === "Terjadwal Samsat") && (
+        {/* Samsat Process Status & Start Button (Scope 1) */}
+        <div className="pt-3 border-t border-border/60">
+          {!isProcessStarted ? (
             <Button
-              size="sm"
-              onClick={() => handleStartJourney(task.orderNo)}
-              className="min-h-[40px] text-xs font-semibold rounded-xl bg-purple-600 hover:bg-purple-700 text-white"
+              size="default"
+              onClick={() => handleStartSamsatProcess(task.orderNo)}
+              className="w-full h-12 min-h-[48px] rounded-xl bg-purple-600 hover:bg-purple-700 text-white font-bold text-sm sm:text-base flex items-center justify-center gap-2 shadow-sm transition-all"
             >
-              <Play className="w-3.5 h-3.5 mr-1.5 fill-current" />
-              Mulai Perjalanan ke Samsat
+              <Play className="w-5 h-5 fill-current" />
+              <span>Mulai Proses Samsat</span>
             </Button>
-          )}
-
-          {task.rawOrder?.samsatStatus === "Menuju Samsat" && (
-            <Button
-              size="sm"
-              onClick={() => handleArriveAtSamsat(task.orderNo)}
-              className="min-h-[40px] text-xs font-semibold rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white"
-            >
-              <Check className="w-3.5 h-3.5 mr-1.5" />
-              Tiba di Lokasi Samsat
-            </Button>
-          )}
-
-          {(task.rawOrder?.samsatStatus === "Sedang Proses Samsat" ||
-            task.rawOrder?.samsatStatus === "Di Lokasi Samsat") && (
-            <Badge variant="outline" className="bg-emerald-500/10 text-emerald-600 border-emerald-500/20 text-xs">
-              ✓ Petugas Tiba di Loket
-            </Badge>
+          ) : (
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-xs text-muted-foreground">Status Pengerjaan:</span>
+              <Badge variant="outline" className="bg-emerald-500/10 text-emerald-600 border-emerald-500/20 text-xs font-semibold py-1 px-2.5 flex items-center gap-1.5">
+                <Check className="w-3.5 h-3.5" />
+                <span>{task.rawOrder?.samsatStatus || "Sedang Proses Samsat"}</span>
+              </Badge>
+            </div>
           )}
         </div>
       </Card>
@@ -1198,41 +1243,62 @@ export function MessengerSamsatView({
           </div>
         )}
 
-        {/* Button Tambah Komponen */}
-        <div className="pt-2">
-          <Button
-            size="sm"
-            variant="outline"
-            onClick={() => handleOpenAddComponent(task.orderNo, task.rawOrder?.wilayahSamsatAsal)}
-            className="w-full h-10 rounded-xl text-xs sm:text-sm font-semibold border-dashed border-purple-300 dark:border-purple-800 text-purple-700 dark:text-purple-400 hover:bg-purple-50 dark:hover:bg-purple-950/20"
-          >
-            <Plus className="w-4 h-4 mr-1.5" />
-            Tambah Komponen Baru
-          </Button>
-        </div>
+        {/* Scope 1: Button Tambah Komponen (Hanya tampil setelah proses dimulai) */}
+        {isProcessStarted && (
+          <div className="pt-2">
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => handleOpenAddComponent(task.orderNo, task.rawOrder?.wilayahSamsatAsal)}
+              className="w-full h-11 min-h-[44px] rounded-xl text-xs sm:text-sm font-semibold border-dashed border-purple-300 dark:border-purple-800 text-purple-700 dark:text-purple-400 hover:bg-purple-50 dark:hover:bg-purple-950/20"
+            >
+              <Plus className="w-4 h-4 mr-1.5" />
+              Tambah Komponen Baru
+            </Button>
+          </div>
+        )}
 
-        {/* Primary Action Buttons: Sediakan 2 tombol utama (Requirement #5.C) */}
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-3 border-t border-border">
-          <Button
-            size="lg"
-            variant="outline"
-            onClick={handleOpenSaveProgress}
-            className="h-12 rounded-xl text-sm font-semibold border-purple-300 dark:border-purple-800 text-purple-700 dark:text-purple-300 hover:bg-purple-50 dark:hover:bg-purple-950/20 shadow-2xs min-h-[48px]"
-          >
-            <Save className="w-4 h-4 mr-2" />
-            Simpan Progres Samsat
-          </Button>
-
-          <Button
-            size="lg"
-            onClick={() => handleOpenFinishSamsat(task)}
-            className="h-12 rounded-xl text-sm font-bold bg-emerald-600 hover:bg-emerald-700 text-white shadow-md min-h-[48px]"
-          >
-            <CheckCircle2 className="w-5 h-5 mr-2" />
-            Proses Selesai
-          </Button>
-        </div>
+        {/* Incomplete Components Notice if process started but not finished */}
+        {isProcessStarted && !canCompleteSamsat && (
+          <div className="p-3 rounded-xl bg-amber-50 dark:bg-amber-950/20 border border-amber-300 dark:border-amber-800 text-amber-800 dark:text-amber-300 text-xs flex items-start gap-2">
+            <AlertCircle className="w-4 h-4 shrink-0 mt-0.5 text-amber-600" />
+            <span>{completionValidationMessage || "Seluruh komponen loket wajib diselesaikan (COMPLETED) sebelum menyelesaikan proses Samsat."}</span>
+          </div>
+        )}
       </div>
+
+      {/* Scope 5: Fixed Bottom Action Bar (Hanya tampil setelah proses dimulai) */}
+      {isProcessStarted && (
+        <div className="fixed bottom-0 left-0 right-0 z-40 bg-background/95 backdrop-blur-md border-t border-border shadow-2xl px-4 py-3 pb-[max(0.75rem,env(safe-area-inset-bottom))]">
+          <div className="max-w-xl mx-auto flex items-center justify-between gap-3">
+            <Button
+              size="default"
+              variant="outline"
+              onClick={handleOpenSaveProgress}
+              className="h-12 min-h-[48px] flex-1 rounded-xl text-sm font-semibold border-purple-300 dark:border-purple-800 text-purple-700 dark:text-purple-300 hover:bg-purple-50 dark:hover:bg-purple-950/20 shadow-2xs"
+            >
+              <Save className="w-4 h-4 mr-2" />
+              Simpan Progres
+            </Button>
+
+            <Button
+              size="default"
+              disabled={!canCompleteSamsat || isCompletingSamsat}
+              onClick={() => handleOpenFinishSamsat(task)}
+              className={cn(
+                "h-12 min-h-[48px] flex-1 rounded-xl text-sm font-bold shadow-md transition-all",
+                canCompleteSamsat
+                  ? "bg-emerald-600 hover:bg-emerald-700 text-white"
+                  : "bg-muted text-muted-foreground cursor-not-allowed opacity-60"
+              )}
+              title={!canCompleteSamsat ? completionValidationMessage : undefined}
+            >
+              <CheckCircle2 className="w-5 h-5 mr-2" />
+              Proses Selesai
+            </Button>
+          </div>
+        </div>
+      )}
 
       {/* ------------------------------------------------------------------ */}
       {/* DIALOG 1: SINGLE DURATION POPUP (Requirement #4: Opsi Segera + Presets) */}
@@ -1350,19 +1416,6 @@ export function MessengerSamsatView({
           </DialogHeader>
 
           <div className="space-y-3.5 py-1">
-            <div className="space-y-1.5">
-              <label className="text-xs font-bold uppercase tracking-wider text-muted-foreground">
-                Catatan Penyelesaian (Opsional)
-              </label>
-              <textarea
-                rows={2}
-                placeholder="Contoh: Berkas STNK baru & notice pajak sudah dicap dan lengkap."
-                value={finishSamsatNote}
-                onChange={(e) => setFinishSamsatNote(e.target.value)}
-                className="w-full text-xs sm:text-sm rounded-xl p-2.5 border border-border bg-background focus:outline-hidden focus:ring-2 focus:ring-primary"
-              />
-            </div>
-
             <div className="p-3 rounded-xl bg-muted/60 border border-border space-y-2">
               <p className="text-xs font-bold text-foreground">
                 Bagaimana penjemputan berkas dari Samsat ke kantor?
@@ -1575,15 +1628,6 @@ export function MessengerSamsatView({
                       className="mt-1 rounded-xl text-xs sm:text-sm h-11"
                     />
                   </div>
-                  <div>
-                    <Label className="text-xs font-semibold">Catatan Tambahan (Opsional)</Label>
-                    <Input
-                      value={customCompNote}
-                      onChange={(e) => setCustomCompNote(e.target.value)}
-                      placeholder="Catatan keperluan komponen"
-                      className="mt-1 rounded-xl text-xs sm:text-sm h-11"
-                    />
-                  </div>
                 </div>
               )}
             </div>
@@ -1679,16 +1723,7 @@ export function MessengerSamsatView({
               </div>
             </div>
 
-            <div>
-              <Label className="text-xs font-semibold">Catatan Tambahan (Opsional)</Label>
-              <Textarea
-                rows={2}
-                value={saveProgressNote}
-                onChange={(e) => setSaveProgressNote(e.target.value)}
-                placeholder="Catatan progres untuk admin atau rekan kurir"
-                className="mt-1 rounded-xl text-xs sm:text-sm"
-              />
-            </div>
+
 
             <DialogFooter className="flex gap-2 justify-end pt-2">
               <Button

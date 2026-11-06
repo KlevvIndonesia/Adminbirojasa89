@@ -22,6 +22,18 @@ export interface ProfitItem {
   tanggalBayar?: string;
   tanggalUangMasuk?: string;
   status?: string;
+  totalTagihan?: number;
+  eligiblePayment?: number;
+  overpayment?: number;
+  grossProfit?: number;
+  pendapatanJasa?: number;
+  labaKotor?: number;
+  matchedCOGS?: number;
+  isExplicitZero?: boolean;
+  costClassification?: string;
+  isFinancialAnomaly?: boolean;
+  anomalyReason?: string;
+  holdStatus?: string;
 }
 
 export interface KasMessengerItem {

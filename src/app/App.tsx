@@ -31,6 +31,11 @@ import {
   DropdownMenuItem,
 } from "./components/ui/dropdown-menu";
 import {
+  CANONICAL_BIAYA_LAYANAN_SERVICES,
+  BIAYA_LAYANAN_ALIAS_MAP,
+} from "./components/BiayaLayanan";
+import { BIAYA_LAYANAN_SERVICES_MAP } from "./config/routeConfig";
+import {
   CANONICAL_SALES_CATEGORIES,
   CANONICAL_SERVICES_METADATA,
 } from "./components/DataPenjualan";
@@ -83,6 +88,7 @@ import { usePermissionStore, permissionStore } from "./data/permissionStore";
 import { orderStore } from "./data/orderStore";
 import { financeStore } from "./data/financeStore";
 import { pricingStore } from "./data/pricingStore";
+import { serviceStore, useServiceStore } from "./data/serviceStore";
 import { auditLog } from "./utils/auditLog";
 import { APP_CONFIG } from "./config/appConfig";
 import { menuItems, MenuItem } from "./config/navigationConfig";
@@ -91,6 +97,7 @@ import { getRouteMeta } from "./config/routeConfig";
 function AppContent() {
   const location = useLocation();
   const navigate = useNavigate();
+  useServiceStore();
 
   // Synchronous initialization from localStorage prevents flash-of-unauth redirect on refresh/deep-link
   const [isAuthenticated, setIsAuthenticated] = useState(() => {
@@ -272,6 +279,7 @@ function AppContent() {
             orderStore.initFromApi(),
             financeStore.initFromApi(),
             pricingStore.initFromApi(),
+            serviceStore.initFromApi(),
             auditLog.initFromApi(),
             permissionStore.initFromApi(),
           ]).catch(() => {});
@@ -384,6 +392,11 @@ function AppContent() {
     );
   }
 
+  // 3.5 Immediate Redirect for removed /finance/pengeluaran to /finance/kas-kantor
+  if (location.pathname === "/finance/pengeluaran") {
+    return <Navigate to="/finance/kas-kantor" replace />;
+  }
+
   // 4. Standard Desktop / Admin Shell
   const filteredMenuItems = getFilteredMenuItems(userRole, menuItems);
   const routeMeta = getRouteMeta(location.pathname);
@@ -395,6 +408,14 @@ function AppContent() {
     ? (rawPathCat as CanonicalSalesCategory)
     : "perpanjangan-1-tahun";
   const currentCategoryLabel = CANONICAL_SERVICES_METADATA[activeSalesCategory]?.title || "Perpanjangan 1 Tahun";
+
+  const isBiayaLayananRoute = location.pathname.startsWith("/master-data/biaya-layanan");
+  const rawBiayaPathService = location.pathname.replace(/^\/master-data\/biaya-layanan\/?/, "").split("/")[0];
+  const activeBiayaServiceKey = (rawBiayaPathService && BIAYA_LAYANAN_ALIAS_MAP[rawBiayaPathService])
+    ? BIAYA_LAYANAN_ALIAS_MAP[rawBiayaPathService]
+    : (rawBiayaPathService || "perpanjangan-1-tahun");
+  const currentBiayaServiceLabel = BIAYA_LAYANAN_SERVICES_MAP[activeBiayaServiceKey] || "Perpanjangan 1 Tahun";
+
 
   const handleNavigate = (path: string) => {
     if (navigationGuard?.isDirty && path !== location.pathname) {
@@ -578,12 +599,47 @@ function AppContent() {
                       </DropdownMenuContent>
                     </DropdownMenu>
                   </div>
+                ) : isBiayaLayananRoute ? (
+                  <div className="flex items-center gap-1.5 flex-wrap">
+                    <span>Biaya Layanan -</span>
+                    <DropdownMenu>
+                      <DropdownMenuTrigger asChild>
+                        <button
+                          type="button"
+                          className="inline-flex items-center gap-1 font-semibold text-foreground hover:text-primary transition-colors cursor-pointer focus:outline-none focus-visible:ring-1 focus-visible:ring-primary rounded px-1 py-0.5"
+                          title="Pilih layanan Biaya Layanan"
+                        >
+                          <span>{currentBiayaServiceLabel}</span>
+                          <ChevronDown className="w-3.5 h-3.5 text-muted-foreground" />
+                        </button>
+                      </DropdownMenuTrigger>
+                      <DropdownMenuContent align="start" className="w-56 bg-card border-border shadow-md">
+                        {CANONICAL_BIAYA_LAYANAN_SERVICES.map((svc) => {
+                          const isSelected = activeBiayaServiceKey === svc.key;
+                          return (
+                            <DropdownMenuItem
+                              key={svc.key}
+                              onSelect={() => handleNavigate(`/master-data/biaya-layanan/${svc.key}`)}
+                              onClick={() => handleNavigate(`/master-data/biaya-layanan/${svc.key}`)}
+                              className={cn(
+                                "cursor-pointer text-xs font-medium py-2 px-2.5 flex items-center justify-between",
+                                isSelected && "bg-primary/10 text-primary font-bold"
+                              )}
+                            >
+                              <span>{svc.label}</span>
+                              {isSelected && <Check className="w-3.5 h-3.5 text-primary" />}
+                            </DropdownMenuItem>
+                          );
+                        })}
+                      </DropdownMenuContent>
+                    </DropdownMenu>
+                  </div>
                 ) : (
                   routeMeta.title
                 )}
               </div>
               <p className="text-[11px] text-muted-foreground hidden sm:block truncate">
-                {customHeader?.subtitle || (isDataPenjualanRoute ? `Rekapitulasi transaksi ${currentCategoryLabel} dan kalkulasi Samsat` : routeMeta.description)}
+                {customHeader?.subtitle || (isDataPenjualanRoute ? `Rekapitulasi transaksi ${currentCategoryLabel} dan kalkulasi Samsat` : isBiayaLayananRoute ? `Katalog tarif resmi dan biaya jasa untuk ${currentBiayaServiceLabel}` : routeMeta.description)}
               </p>
             </div>
           </div>
@@ -706,7 +762,7 @@ function AppContent() {
                     <Route path="/finance/profit" element={<Finance defaultTab="profit" />} />
                     <Route path="/finance/kas-messenger" element={<Finance defaultTab="kas-messenger" />} />
                     <Route path="/finance/kas-kantor" element={<Finance defaultTab="kas-kantor" />} />
-                    <Route path="/finance/pengeluaran" element={<Finance defaultTab="pengeluaran" />} />
+                    <Route path="/finance/pengeluaran" element={<Navigate to="/finance/kas-kantor" replace />} />
                     <Route path="/finance/data-penjualan" element={<Navigate to="/finance/data-penjualan/perpanjangan-1-tahun" replace />} />
                     <Route path="/finance/data-penjualan/:category" element={<Finance defaultTab="penjualan" />} />
                     <Route path="/finance/belum-bayar" element={<Finance defaultTab="belum-bayar" />} />
@@ -716,9 +772,11 @@ function AppContent() {
                     <Route path="/finance/laba-rugi" element={<Finance defaultTab="laba-rugi" />} />
 
                     {/* Master Data Routes */}
+                    <Route path="/master-data/layanan" element={<MasterData defaultTab="layanan" />} />
                     <Route path="/master-data/samsat" element={<MasterData defaultTab="samsat" />} />
                     <Route path="/master-data/metode-pembayaran" element={<MasterData defaultTab="metode-pembayaran" />} />
                     <Route path="/master-data/biaya-layanan" element={<MasterData defaultTab="biaya-layanan" />} />
+                    <Route path="/master-data/biaya-layanan/:service" element={<MasterData defaultTab="biaya-layanan" />} />
                     <Route path="/master-data/harga-dasar" element={<MasterData defaultTab="harga-dasar-samsat" />} />
 
                     {/* Management Routes */}

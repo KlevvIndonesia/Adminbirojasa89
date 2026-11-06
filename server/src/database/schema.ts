@@ -33,6 +33,18 @@ export interface OrderCorrectionRecord {
   updated_at?: string;
 }
 
+export interface SamsatOperationalTariffRecord {
+  id: string;
+  samsat_id: string;
+  pricing_item_id: string;
+  nominal: number;
+  is_active: number;
+  created_by_employee_id?: string | null;
+  updated_by_employee_id?: string | null;
+  created_at?: string;
+  updated_at?: string;
+}
+
 export const CANONICAL_SERVICES: CanonicalServiceConfig[] = [
   {
     id: "svc-perp-1th",
@@ -152,7 +164,9 @@ export function initializeSchema(targetDb: DatabaseSync): void {
       status_aktif INTEGER NOT NULL DEFAULT 1,
       urutan INTEGER NOT NULL DEFAULT 1,
       created_at TEXT NOT NULL DEFAULT (datetime('now')),
-      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+      updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+      requirements TEXT NOT NULL DEFAULT '[]',
+      requirements_version INTEGER NOT NULL DEFAULT 1
     );
 
     CREATE INDEX IF NOT EXISTS idx_services_kode ON services(kode_layanan);
@@ -338,11 +352,16 @@ export function initializeSchema(targetDb: DatabaseSync): void {
       nama_item TEXT NOT NULL,
       kategori TEXT NOT NULL,
       tipe_kendaraan TEXT NOT NULL,
-      biaya_dasar REAL NOT NULL DEFAULT 0,
+      biaya_dasar INTEGER NOT NULL DEFAULT 0 CHECK(biaya_dasar >= 0),
       deskripsi TEXT,
+      is_active INTEGER NOT NULL DEFAULT 1 CHECK(is_active IN (0, 1)),
+      is_configured INTEGER NOT NULL DEFAULT 0 CHECK(is_configured IN (0, 1)),
       data_json TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
       updated_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
+
+    CREATE INDEX IF NOT EXISTS idx_samsat_pricing_lookup ON samsat_pricing(kategori, tipe_kendaraan);
 
     CREATE TABLE IF NOT EXISTS wilayah_administratif (
       kode_kabupaten_kota TEXT PRIMARY KEY,
@@ -374,6 +393,27 @@ export function initializeSchema(targetDb: DatabaseSync): void {
     );
 
     CREATE INDEX IF NOT EXISTS idx_samsat_wilayah ON samsat_offices(kode_kabupaten_kota);
+
+    CREATE TABLE IF NOT EXISTS samsat_operational_tariffs (
+      id TEXT PRIMARY KEY,
+      samsat_id TEXT NOT NULL,
+      pricing_item_id TEXT NOT NULL,
+      nominal INTEGER NOT NULL CHECK(nominal >= 0),
+      is_active INTEGER NOT NULL DEFAULT 1 CHECK(is_active IN (0, 1)),
+      created_by_employee_id TEXT,
+      updated_by_employee_id TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+      FOREIGN KEY (samsat_id) REFERENCES samsat_offices(id) ON DELETE RESTRICT,
+      FOREIGN KEY (pricing_item_id) REFERENCES samsat_pricing(id) ON DELETE RESTRICT,
+      FOREIGN KEY (created_by_employee_id) REFERENCES employees(id) ON DELETE SET NULL,
+      FOREIGN KEY (updated_by_employee_id) REFERENCES employees(id) ON DELETE SET NULL,
+      UNIQUE(samsat_id, pricing_item_id)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_samsat_tariffs_office ON samsat_operational_tariffs(samsat_id);
+    CREATE INDEX IF NOT EXISTS idx_samsat_tariffs_item ON samsat_operational_tariffs(pricing_item_id);
+    CREATE INDEX IF NOT EXISTS idx_samsat_tariffs_active ON samsat_operational_tariffs(is_active);
 
     CREATE TABLE IF NOT EXISTS biaya_layanan (
       id TEXT PRIMARY KEY,
@@ -462,6 +502,7 @@ export function initializeSchema(targetDb: DatabaseSync): void {
       created_at TEXT NOT NULL DEFAULT (datetime('now')),
       updated_at TEXT NOT NULL DEFAULT (datetime('now')),
       service_id TEXT,
+      is_explicit_zero INTEGER NOT NULL DEFAULT 0 CHECK(is_explicit_zero IN (0, 1)),
       FOREIGN KEY (service_id) REFERENCES services(id)
     );
 
@@ -493,14 +534,22 @@ export function initializeSchema(targetDb: DatabaseSync): void {
 
     CREATE TABLE IF NOT EXISTS payment_methods (
       id TEXT PRIMARY KEY,
-      nama_metode TEXT NOT NULL UNIQUE,
-      bank TEXT NOT NULL,
-      nama_rekening TEXT,
-      nomor_rekening TEXT,
+      nama_metode TEXT NOT NULL,
+      bank TEXT NOT NULL DEFAULT '',
+      nama_rekening TEXT DEFAULT '',
+      nomor_rekening TEXT DEFAULT '',
       status TEXT NOT NULL DEFAULT 'Aktif',
       created_at TEXT NOT NULL DEFAULT (datetime('now')),
       updated_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
+
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_payment_methods_account 
+      ON payment_methods(nama_metode, LOWER(bank), nomor_rekening) 
+      WHERE nama_metode = 'Transfer Bank' AND nomor_rekening != '';
+
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_payment_methods_tunai_active 
+      ON payment_methods(nama_metode) 
+      WHERE nama_metode = 'Tunai' AND status = 'Aktif';
 
     CREATE TABLE IF NOT EXISTS audit_logs (
       id TEXT PRIMARY KEY,
@@ -768,6 +817,29 @@ export function initializeSchema(targetDb: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS idx_pnl_service ON laba_rugi_snapshots(service_id);
     CREATE INDEX IF NOT EXISTS idx_pnl_locked_by ON laba_rugi_snapshots(locked_by_employee_id);
 
+        CREATE TABLE IF NOT EXISTS internal_transfers (
+      id TEXT PRIMARY KEY,
+      transfer_date TEXT NOT NULL,
+      transfer_type TEXT NOT NULL,
+      from_account TEXT NOT NULL,
+      to_account TEXT NOT NULL,
+      amount INTEGER NOT NULL CHECK(amount > 0 AND amount <= 9007199254740991),
+      messenger_id TEXT NOT NULL REFERENCES messengers(id),
+      messenger_name TEXT NOT NULL,
+      kas_messenger_id INTEGER NOT NULL REFERENCES kas_messenger(id),
+      kas_kantor_id INTEGER NOT NULL REFERENCES kas_kantor(id),
+      status TEXT NOT NULL DEFAULT 'COMPLETED' CHECK(status IN ('COMPLETED', 'REVERSED')),
+      idempotency_key TEXT UNIQUE NOT NULL,
+      reversal_ref_id TEXT,
+      notes TEXT,
+      created_by TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_transfers_type_date ON internal_transfers(transfer_type, transfer_date);
+    CREATE INDEX IF NOT EXISTS idx_transfers_messenger ON internal_transfers(messenger_id);
+    CREATE INDEX IF NOT EXISTS idx_transfers_idemp ON internal_transfers(idempotency_key);
+
     CREATE TABLE IF NOT EXISTS order_corrections (
       id TEXT PRIMARY KEY,
       order_no TEXT NOT NULL REFERENCES orders(order_no) ON DELETE CASCADE,
@@ -791,6 +863,7 @@ export function initializeSchema(targetDb: DatabaseSync): void {
 
   migrateDocumentsTable(targetDb);
   migrateOrdersTable(targetDb);
+  migratePaymentMethodsTable(targetDb);
   applySchemaMigrations(targetDb);
   migrateFinanceInvoicesTable(targetDb);
   migrateKasKantorTable(targetDb);
@@ -800,6 +873,9 @@ export function initializeSchema(targetDb: DatabaseSync): void {
   migrateMessengerReimbursementsTable(targetDb);
   migrateIdempotencyKeysTable(targetDb);
   migrateSamsatOfficesTable(targetDb);
+  migratePricingTables(targetDb);
+  cleanupLegacyStandardPricingItems(targetDb);
+  migrateInternalTransfersTable(targetDb);
   seedCanonicalServices(targetDb);
   reconcileLegacyDocuments(targetDb);
   backfillHistoricalFinanceData(targetDb);
@@ -951,6 +1027,10 @@ export function addColumnIfNotExists(
 }
 
 export function applySchemaMigrations(targetDb: DatabaseSync): void {
+  // Patch D: Master service requirements and versioning
+  addColumnIfNotExists(targetDb, "services", "requirements", "TEXT NOT NULL DEFAULT '[]'");
+  addColumnIfNotExists(targetDb, "services", "requirements_version", "INTEGER NOT NULL DEFAULT 1");
+
   // Phase 2 Columns for orders table
   addColumnIfNotExists(targetDb, "orders", "customer_id", "TEXT REFERENCES customers(id)");
   addColumnIfNotExists(targetDb, "orders", "vehicle_id", "TEXT REFERENCES vehicles(id)");
@@ -991,6 +1071,7 @@ export function applySchemaMigrations(targetDb: DatabaseSync): void {
       CREATE INDEX IF NOT EXISTS idx_inv_payments_verified_by ON invoice_payments(verified_by_employee_id);
       CREATE INDEX IF NOT EXISTS idx_inv_payments_void ON invoice_payments(is_void);
     `);
+    migratePaymentMethodsTable(targetDb);
   } catch (err) {
     console.warn("[SUN89 Migration] Warning creating orders indexes:", err);
   }
@@ -1031,6 +1112,18 @@ function migrateOrdersTable(targetDb: DatabaseSync): void {
     }
     if (!columnNames.has("samsat_tujuan")) {
       targetDb.exec("ALTER TABLE orders ADD COLUMN samsat_tujuan TEXT DEFAULT '-';");
+    }
+    if (!columnNames.has("is_cost_verified")) {
+      targetDb.exec("ALTER TABLE orders ADD COLUMN is_cost_verified INTEGER NOT NULL DEFAULT 1;");
+    }
+    if (!columnNames.has("cost_completeness_status")) {
+      targetDb.exec("ALTER TABLE orders ADD COLUMN cost_completeness_status TEXT NOT NULL DEFAULT 'COMPLETE';");
+    }
+    if (!columnNames.has("cost_verified_at")) {
+      targetDb.exec("ALTER TABLE orders ADD COLUMN cost_verified_at TEXT;");
+    }
+    if (!columnNames.has("cost_verified_by")) {
+      targetDb.exec("ALTER TABLE orders ADD COLUMN cost_verified_by TEXT;");
     }
     targetDb.exec("CREATE INDEX IF NOT EXISTS idx_orders_service_id ON orders(service_id);");
 
@@ -1091,6 +1184,25 @@ function migrateFinanceInvoicesTable(targetDb: DatabaseSync): void {
     if (!columnNames.has("alasan_pending")) {
       targetDb.exec("ALTER TABLE finance_invoices ADD COLUMN alasan_pending TEXT;");
     }
+    if (!columnNames.has("cost_verification_status")) {
+      targetDb.exec("ALTER TABLE finance_invoices ADD COLUMN cost_verification_status TEXT NOT NULL DEFAULT 'VERIFIED';");
+    }
+    if (!columnNames.has("is_draft_estimate")) {
+      targetDb.exec("ALTER TABLE finance_invoices ADD COLUMN is_draft_estimate INTEGER NOT NULL DEFAULT 0;");
+    }
+    if (!columnNames.has("is_explicit_zero")) {
+      targetDb.exec("ALTER TABLE finance_invoices ADD COLUMN is_explicit_zero INTEGER NOT NULL DEFAULT 0;");
+    }
+    targetDb.exec(`
+      UPDATE finance_invoices SET is_explicit_zero = 1 
+      WHERE (
+        json_extract(data_json, '$.isExplicitZero') = 1 OR
+        json_extract(data_json, '$.isExplicitZero') = 'true' OR
+        json_extract(data_json, '$.is_explicit_zero') = 1 OR
+        json_extract(data_json, '$.isZeroCostPromotion') = 1
+      ) AND is_explicit_zero = 0;
+    `);
+
 
     targetDb.exec(`
       CREATE INDEX IF NOT EXISTS idx_invoices_service_id ON finance_invoices(service_id);
@@ -1251,6 +1363,128 @@ function migrateIdempotencyKeysTable(targetDb: DatabaseSync): void {
   }
 }
 
+
+function migrateInternalTransfersTable(targetDb: DatabaseSync): void {
+  try {
+    targetDb.exec(`
+      CREATE TABLE IF NOT EXISTS internal_transfers (
+        id TEXT PRIMARY KEY,
+        transfer_date TEXT NOT NULL,
+        transfer_type TEXT NOT NULL,
+        from_account TEXT NOT NULL,
+        to_account TEXT NOT NULL,
+        amount INTEGER NOT NULL CHECK(amount > 0 AND amount <= 9007199254740991),
+        messenger_id TEXT NOT NULL REFERENCES messengers(id),
+        messenger_name TEXT NOT NULL,
+        kas_messenger_id INTEGER NOT NULL REFERENCES kas_messenger(id),
+        kas_kantor_id INTEGER NOT NULL REFERENCES kas_kantor(id),
+        status TEXT NOT NULL DEFAULT 'COMPLETED' CHECK(status IN ('COMPLETED', 'REVERSED')),
+        idempotency_key TEXT UNIQUE NOT NULL,
+        reversal_ref_id TEXT,
+        notes TEXT,
+        created_by TEXT NOT NULL,
+        created_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_transfers_type_date ON internal_transfers(transfer_type, transfer_date);
+      CREATE INDEX IF NOT EXISTS idx_transfers_messenger ON internal_transfers(messenger_id);
+      CREATE INDEX IF NOT EXISTS idx_transfers_idemp ON internal_transfers(idempotency_key);
+    `);
+  } catch (err) {
+    console.warn("[SUN89 Migration] Warning during internal_transfers table migration:", err);
+  }
+}
+
+export function migratePaymentMethodsTable(targetDb: DatabaseSync): boolean {
+  try {
+    const tableExists = targetDb.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='payment_methods'").get();
+    if (!tableExists) return false;
+
+    // Check if single-column UNIQUE index on nama_metode exists (from legacy schema)
+    const indexList = targetDb.prepare("PRAGMA index_list(payment_methods)").all() as Array<{ name: string; unique: number; origin: string }>;
+    let hasOldUniqueNamaMetode = false;
+    for (const idx of indexList) {
+      if (idx.origin === "u") {
+        const info = targetDb.prepare(`PRAGMA index_info('${idx.name}')`).all() as Array<{ name: string }>;
+        if (info.length === 1 && info[0].name === "nama_metode") {
+          hasOldUniqueNamaMetode = true;
+          break;
+        }
+      }
+    }
+
+    if (!hasOldUniqueNamaMetode) {
+      // Ensure the new partial unique indexes exist
+      targetDb.exec(`
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_payment_methods_account 
+          ON payment_methods(nama_metode, LOWER(bank), nomor_rekening) 
+          WHERE nama_metode = 'Transfer Bank' AND nomor_rekening != '';
+
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_payment_methods_tunai_active 
+          ON payment_methods(nama_metode) 
+          WHERE nama_metode = 'Tunai' AND status = 'Aktif';
+      `);
+      return false;
+    }
+
+    targetDb.exec(`
+      PRAGMA foreign_keys = OFF;
+
+      CREATE TABLE payment_methods_migrated (
+        id TEXT PRIMARY KEY,
+        nama_metode TEXT NOT NULL,
+        bank TEXT NOT NULL DEFAULT '',
+        nama_rekening TEXT DEFAULT '',
+        nomor_rekening TEXT DEFAULT '',
+        status TEXT NOT NULL DEFAULT 'Aktif',
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+
+      INSERT INTO payment_methods_migrated (
+        id, nama_metode, bank, nama_rekening, nomor_rekening, status, created_at, updated_at
+      )
+      SELECT
+        id,
+        CASE 
+          WHEN LOWER(nama_metode) = 'cash' THEN 'Tunai'
+          ELSE nama_metode
+        END,
+        COALESCE(bank, ''),
+        COALESCE(nama_rekening, ''),
+        COALESCE(nomor_rekening, ''),
+        COALESCE(status, 'Aktif'),
+        created_at,
+        updated_at
+      FROM payment_methods;
+
+      DROP TABLE payment_methods;
+      ALTER TABLE payment_methods_migrated RENAME TO payment_methods;
+
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_payment_methods_account 
+        ON payment_methods(nama_metode, LOWER(bank), nomor_rekening) 
+        WHERE nama_metode = 'Transfer Bank' AND nomor_rekening != '';
+
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_payment_methods_tunai_active 
+        ON payment_methods(nama_metode) 
+        WHERE nama_metode = 'Tunai' AND status = 'Aktif';
+
+      PRAGMA foreign_keys = ON;
+    `);
+
+    const fkCheck = targetDb.prepare("PRAGMA foreign_key_check").all();
+    if (fkCheck.length > 0) {
+      console.warn("[SUN89 Migration] Warning: FK check found issues after payment_methods migration:", fkCheck);
+    }
+
+    console.log("[SUN89 Migration] Successfully migrated payment_methods constraint to multi-account schema.");
+    return true;
+  } catch (err) {
+    console.error("[SUN89 Migration] Error migrating payment_methods constraint:", err);
+    return false;
+  }
+}
+
 function migrateSamsatOfficesTable(targetDb: DatabaseSync): void {
   try {
     const tableInfo = targetDb.prepare("PRAGMA table_info(samsat_offices)").all() as { name: string }[];
@@ -1274,6 +1508,215 @@ function migrateSamsatOfficesTable(targetDb: DatabaseSync): void {
     targetDb.exec("CREATE INDEX IF NOT EXISTS idx_samsat_biaya ON samsat_offices(id_biaya_layanan);");
   } catch (err) {
     console.warn("[SUN89 Migration] Warning during samsat_offices table migration:", err);
+  }
+}
+
+export function migratePricingTables(targetDb: DatabaseSync): boolean {
+  try {
+    const pricingInfo = targetDb.prepare("PRAGMA table_info(samsat_pricing)").all() as { name: string; type: string }[];
+    if (!pricingInfo || pricingInfo.length === 0) return false;
+
+    const pricingCols = new Map(pricingInfo.map((c) => [c.name, c.type.toUpperCase()]));
+    const needsPricingRebuild =
+      !pricingCols.has("is_configured") ||
+      !pricingCols.has("is_active") ||
+      pricingCols.get("biaya_dasar") !== "INTEGER";
+
+    const tariffInfo = targetDb.prepare("PRAGMA table_info(samsat_operational_tariffs)").all() as { name: string; type: string }[];
+    const tariffCols = new Set(tariffInfo.map((c) => c.name));
+    const tariffFks = targetDb.prepare("PRAGMA foreign_key_list(samsat_operational_tariffs)").all() as { table: string }[];
+    const hasPricingFk = tariffFks.some((fk) => fk.table === "samsat_pricing");
+    const hasEmployeeFk = tariffCols.has("created_by_employee_id") && tariffCols.has("updated_by_employee_id");
+
+    const needsTariffRebuild = !hasPricingFk || !hasEmployeeFk;
+
+    if (!needsPricingRebuild && !needsTariffRebuild) {
+      targetDb.exec(`
+        CREATE INDEX IF NOT EXISTS idx_samsat_pricing_lookup ON samsat_pricing(kategori, tipe_kendaraan);
+        CREATE INDEX IF NOT EXISTS idx_samsat_pricing_active ON samsat_pricing(is_active);
+        CREATE INDEX IF NOT EXISTS idx_samsat_tariffs_office ON samsat_operational_tariffs(samsat_id);
+        CREATE INDEX IF NOT EXISTS idx_samsat_tariffs_item ON samsat_operational_tariffs(pricing_item_id);
+        CREATE INDEX IF NOT EXISTS idx_samsat_tariffs_active ON samsat_operational_tariffs(is_active);
+      `);
+      return false;
+    }
+
+    targetDb.exec("PRAGMA foreign_keys = OFF;");
+    targetDb.exec("BEGIN IMMEDIATE TRANSACTION;");
+
+    try {
+      if (needsPricingRebuild) {
+        targetDb.exec(`
+          CREATE TABLE samsat_pricing_migrated (
+            id TEXT PRIMARY KEY,
+            nama_item TEXT NOT NULL,
+            kategori TEXT NOT NULL,
+            tipe_kendaraan TEXT NOT NULL,
+            biaya_dasar INTEGER NOT NULL DEFAULT 0 CHECK(biaya_dasar >= 0),
+            deskripsi TEXT,
+            is_active INTEGER NOT NULL DEFAULT 1 CHECK(is_active IN (0, 1)),
+            is_configured INTEGER NOT NULL DEFAULT 0 CHECK(is_configured IN (0, 1)),
+            data_json TEXT NOT NULL,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+          );
+
+          INSERT INTO samsat_pricing_migrated (
+            id, nama_item, kategori, tipe_kendaraan, biaya_dasar, deskripsi, is_active, is_configured, data_json, created_at, updated_at
+          )
+          SELECT
+            id,
+            nama_item,
+            kategori,
+            tipe_kendaraan,
+            CAST(ROUND(biaya_dasar) AS INTEGER),
+            deskripsi,
+            CASE
+              WHEN json_extract(data_json, '$.active') = 0 OR json_extract(data_json, '$.active') = false THEN 0
+              ELSE 1
+            END,
+            CASE
+              WHEN biaya_dasar > 0 THEN 1
+              WHEN json_extract(data_json, '$.isConfigured') = 1 OR json_extract(data_json, '$.isConfigured') = true THEN 1
+              ELSE 0
+            END,
+            data_json,
+            datetime('now'),
+            COALESCE(updated_at, datetime('now'))
+          FROM samsat_pricing;
+
+          DROP TABLE samsat_pricing;
+          ALTER TABLE samsat_pricing_migrated RENAME TO samsat_pricing;
+
+          CREATE INDEX IF NOT EXISTS idx_samsat_pricing_lookup ON samsat_pricing(kategori, tipe_kendaraan);
+          CREATE INDEX IF NOT EXISTS idx_samsat_pricing_active ON samsat_pricing(is_active);
+        `);
+      }
+
+      if (needsTariffRebuild) {
+        targetDb.exec(`
+          CREATE TABLE samsat_operational_tariffs_migrated (
+            id TEXT PRIMARY KEY,
+            samsat_id TEXT NOT NULL,
+            pricing_item_id TEXT NOT NULL,
+            nominal INTEGER NOT NULL CHECK(nominal >= 0),
+            is_active INTEGER NOT NULL DEFAULT 1 CHECK(is_active IN (0, 1)),
+            created_by_employee_id TEXT,
+            updated_by_employee_id TEXT,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+            FOREIGN KEY (samsat_id) REFERENCES samsat_offices(id) ON DELETE RESTRICT,
+            FOREIGN KEY (pricing_item_id) REFERENCES samsat_pricing(id) ON DELETE RESTRICT,
+            FOREIGN KEY (created_by_employee_id) REFERENCES employees(id) ON DELETE SET NULL,
+            FOREIGN KEY (updated_by_employee_id) REFERENCES employees(id) ON DELETE SET NULL,
+            UNIQUE(samsat_id, pricing_item_id)
+          );
+
+          DELETE FROM samsat_operational_tariffs
+          WHERE samsat_id NOT IN (SELECT id FROM samsat_offices)
+             OR pricing_item_id NOT IN (SELECT id FROM samsat_pricing);
+
+          INSERT INTO samsat_operational_tariffs_migrated (
+            id, samsat_id, pricing_item_id, nominal, is_active, created_by_employee_id, updated_by_employee_id, created_at, updated_at
+          )
+          SELECT
+            id,
+            samsat_id,
+            pricing_item_id,
+            CAST(ROUND(nominal) AS INTEGER),
+            COALESCE(is_active, 1),
+            NULL,
+            NULL,
+            created_at,
+            updated_at
+          FROM samsat_operational_tariffs;
+
+          DROP TABLE samsat_operational_tariffs;
+          ALTER TABLE samsat_operational_tariffs_migrated RENAME TO samsat_operational_tariffs;
+
+          CREATE INDEX IF NOT EXISTS idx_samsat_tariffs_office ON samsat_operational_tariffs(samsat_id);
+          CREATE INDEX IF NOT EXISTS idx_samsat_tariffs_item ON samsat_operational_tariffs(pricing_item_id);
+          CREATE INDEX IF NOT EXISTS idx_samsat_tariffs_active ON samsat_operational_tariffs(is_active);
+        `);
+      }
+
+      const fkIssues = targetDb.prepare("PRAGMA foreign_key_check").all();
+      if (fkIssues.length > 0) {
+        throw new Error(`Foreign key check failed after pricing migration: ${JSON.stringify(fkIssues)}`);
+      }
+
+      targetDb.exec("COMMIT;");
+      console.log("[SUN89 Migration] Pricing tables successfully migrated to National Default + Per-Samsat Override schema.");
+      return true;
+    } catch (txErr) {
+      targetDb.exec("ROLLBACK;");
+      throw txErr;
+    } finally {
+      targetDb.exec("PRAGMA foreign_keys = ON;");
+    }
+  } catch (err) {
+    console.error("[SUN89 Migration] Error during pricing tables migration:", err);
+    return false;
+  }
+}
+
+export function cleanupLegacyStandardPricingItems(targetDb: DatabaseSync): boolean {
+  try {
+    const stdIds = ["std-cek-fisik", "std-pendaftaran", "std-cetak-stnk", "std-cetak-plat", "std-validasi-bpkb"];
+    const placeholders = stdIds.map(() => "?").join(",");
+
+    const tableExists = targetDb.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='samsat_pricing'").get();
+    if (!tableExists) return false;
+
+    const existing = targetDb.prepare(`
+      SELECT * FROM samsat_pricing WHERE id IN (${placeholders})
+    `).all(...stdIds) as any[];
+
+    if (!existing || existing.length === 0) {
+      return false;
+    }
+
+    const tariffTableExists = targetDb.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='samsat_operational_tariffs'").get();
+    if (tariffTableExists) {
+      const tariffCount = (targetDb.prepare(`
+        SELECT COUNT(*) as n FROM samsat_operational_tariffs WHERE pricing_item_id IN (${placeholders})
+      `).get(...stdIds) as { n: number }).n;
+      if (tariffCount > 0) {
+        console.warn(`[SUN89 Cleanup] Aborted: ${tariffCount} operational tariff overrides reference legacy std items.`);
+        return false;
+      }
+    }
+
+    const auditTableExists = targetDb.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='audit_logs'").get();
+    if (auditTableExists) {
+      try {
+        targetDb.prepare(`
+          INSERT INTO audit_logs (id, user_id, user_name, user_role, action, module, details, metadata_json, created_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+        `).run(
+          `audit-cleanup-std-${Date.now()}`,
+          "SYSTEM_MIGRATION",
+          "System Migration",
+          "system",
+          "DELETE",
+          "Master Data",
+          `Pembersihan 5 item legacy Layanan Standar dari samsat_pricing (${existing.map((r: any) => r.id).join(", ")})`,
+          JSON.stringify({ deletedRows: existing })
+        );
+      } catch (auditErr) {
+        console.warn("[SUN89 Cleanup] Could not log audit entry, continuing deletion:", auditErr);
+      }
+    }
+
+    targetDb.prepare(`
+      DELETE FROM samsat_pricing WHERE id IN (${placeholders})
+    `).run(...stdIds);
+
+    console.log(`[SUN89 Cleanup] Successfully cleaned up ${existing.length} legacy standard pricing items from samsat_pricing.`);
+    return true;
+  } catch (err) {
+    console.error("[SUN89 Cleanup] Error cleaning up legacy standard pricing items:", err);
+    return false;
   }
 }
 
@@ -1359,19 +1802,41 @@ export function backfillHistoricalFinanceData(targetDb: DatabaseSync): BackfillH
       const profitFinal = Number(parsedJson.profit || 0);
       const profitStatus = parsedJson.profitStatus || (inv.status === "Lunas" ? "REALIZED" : "PENDING");
 
-      updateInvStmt.run(
-        biayaSamsat,
-        pendapatanJasa,
-        overpayment,
-        settlementCondition,
-        refundStatus,
-        cashbackNominal,
-        cashbackStatus,
-        profitFinal,
-        profitStatus,
-        inv.id
-      );
-      result.backfilledInvoices++;
+      // Only execute UPDATE if calculated values differ from current values
+      const needsUpdate =
+        inv.biaya_samsat !== biayaSamsat ||
+        inv.pendapatan_jasa !== pendapatanJasa ||
+        inv.overpayment !== overpayment ||
+        inv.settlement_condition !== settlementCondition ||
+        inv.refund_status !== refundStatus ||
+        inv.cashback_nominal !== cashbackNominal ||
+        inv.cashback_status !== cashbackStatus ||
+        inv.profit_final !== profitFinal ||
+        inv.profit_status !== profitStatus;
+
+      if (needsUpdate) {
+        updateInvStmt.run(
+          biayaSamsat,
+          pendapatanJasa,
+          overpayment,
+          settlementCondition,
+          refundStatus,
+          cashbackNominal,
+          cashbackStatus,
+          profitFinal,
+          profitStatus,
+          inv.id
+        );
+        result.backfilledInvoices++;
+      }
+
+      // Check ALL existing payment records in invoice_payments for this invoice.
+      // Covers: TERVERIFIKASI, MENUNGGU_VERIFIKASI, MENUNGGU_BUKTI, TERCATAT, DITOLAK, VALID, and VOID (is_void = 1)
+      const existingPayments = targetDb.prepare(`
+        SELECT id, nominal, status_verifikasi, idempotency_key, kas_kantor_id, tanggal_bayar, is_void
+        FROM invoice_payments
+        WHERE invoice_no = ?
+      `).all(inv.invoice_no) as any[];
 
       // Check if order has paymentRecords
       let orderJson: any = {};
@@ -1388,6 +1853,15 @@ export function backfillHistoricalFinanceData(targetDb: DatabaseSync): BackfillH
           const nominal = Number(pr.nominal || 0);
           if (nominal <= 0) continue;
           const key = `BACKFILL-${inv.invoice_no}-${pr.id || nominal}-${pr.tanggal || "init"}`;
+
+          // Check if already recorded either by key or identical characteristics
+          const alreadyRecorded = existingPayments.some(
+            (ep) =>
+              ep.idempotency_key === key ||
+              (Number(ep.nominal) === nominal && ep.tanggal_bayar === (pr.tanggal || inv.created_at))
+          );
+          if (alreadyRecorded) continue;
+
           insertPaymentStmt.run(
             inv.invoice_no,
             inv.order_no,
@@ -1406,25 +1880,32 @@ export function backfillHistoricalFinanceData(targetDb: DatabaseSync): BackfillH
           result.backfilledPayments++;
         }
       } else if (Number(inv.dibayar || 0) > 0) {
-        // Synthesize single historical payment for existing balance
-        const nominal = Number(inv.dibayar);
-        const key = `BACKFILL-${inv.invoice_no}-INIT`;
-        insertPaymentStmt.run(
-          inv.invoice_no,
-          inv.order_no,
-          nominal,
-          parsedJson.metodePembayaran || "Transfer Bank",
-          parsedJson.bank || null,
-          null,
-          parsedJson.tanggalBayar || inv.created_at || new Date().toISOString(),
-          null,
-          "TERVERIFIKASI",
-          key,
-          "System Migration",
-          new Date().toISOString(),
-          "Saldo terbayar historis awal"
-        );
-        result.backfilledPayments++;
+        // Synthesize single historical payment for existing balance ONLY IF:
+        // Invoice genuinely has NO payment records whatsoever in invoice_payments.
+        // If an invoice already has any payment record (verified, pending, rejected, legacy, or void),
+        // we must NEVER synthesize a duplicate historical payment or resurrect voided payments!
+        const hasExistingPaymentRecords = existingPayments.length > 0;
+
+        if (!hasExistingPaymentRecords) {
+          const nominal = Number(inv.dibayar);
+          const key = `BACKFILL-${inv.invoice_no}-INIT`;
+          insertPaymentStmt.run(
+            inv.invoice_no,
+            inv.order_no,
+            nominal,
+            parsedJson.metodePembayaran || "Transfer Bank",
+            parsedJson.bank || null,
+            null,
+            parsedJson.tanggalBayar || inv.created_at || new Date().toISOString(),
+            null,
+            "TERVERIFIKASI",
+            key,
+            "System Migration",
+            new Date().toISOString(),
+            "Saldo terbayar historis awal"
+          );
+          result.backfilledPayments++;
+        }
       }
     }
 
@@ -1433,7 +1914,7 @@ export function backfillHistoricalFinanceData(targetDb: DatabaseSync): BackfillH
       UPDATE kas_kantor SET
         order_no = COALESCE(order_no, ?),
         invoice_no = COALESCE(invoice_no, ?)
-      WHERE id = ?
+      WHERE id = ? AND (order_no IS NULL OR invoice_no IS NULL)
     `);
 
     const kasRows = targetDb.prepare("SELECT id, keterangan, order_no, invoice_no FROM kas_kantor").all() as any[];
@@ -1443,9 +1924,9 @@ export function backfillHistoricalFinanceData(targetDb: DatabaseSync): BackfillH
       }
 
       const text = row.keterangan || "";
-      const invMatches = Array.from(new Set(text.match(/\bINV-[A-Za-z0-9_-]+\b/g) || []));
-      const rawOrdMatches = Array.from(new Set(text.match(/\bORD-[0-9]+\b/g) || []));
-      const ordMatches = rawOrdMatches.filter((ord) => !invMatches.some((inv) => inv.includes(ord)));
+      const invMatches: string[] = Array.from(new Set(text.match(/\bINV-[A-Za-z0-9_-]+\b/g) || []));
+      const rawOrdMatches: string[] = Array.from(new Set(text.match(/\bORD-[0-9]+\b/g) || []));
+      const ordMatches: string[] = rawOrdMatches.filter((ord: string) => !invMatches.some((inv: string) => inv.includes(ord)));
 
       if (invMatches.length > 1 || ordMatches.length > 1) {
         result.kasKantorStats.ambiguous++;
@@ -1486,9 +1967,9 @@ export function backfillHistoricalFinanceData(targetDb: DatabaseSync): BackfillH
       }
 
       const text = row.keterangan || "";
-      const invMatches = Array.from(new Set(text.match(/\bINV-[A-Za-z0-9_-]+\b/g) || []));
-      const rawOrdMatches = Array.from(new Set(text.match(/\bORD-[0-9]+\b/g) || []));
-      const ordMatches = rawOrdMatches.filter((ord) => !invMatches.some((inv) => inv.includes(ord)));
+      const invMatches: string[] = Array.from(new Set(text.match(/\bINV-[A-Za-z0-9_-]+\b/g) || []));
+      const rawOrdMatches: string[] = Array.from(new Set(text.match(/\bORD-[0-9]+\b/g) || []));
+      const ordMatches: string[] = rawOrdMatches.filter((ord: string) => !invMatches.some((inv: string) => inv.includes(ord)));
 
       if (invMatches.length > 1 || ordMatches.length > 1) {
         result.pengeluaranStats.ambiguous++;

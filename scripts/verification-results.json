@@ -1,0 +1,135 @@
+{
+  "total": 21,
+  "passed": 21,
+  "failed": 0,
+  "results": [
+    {
+      "section": "1. Startup",
+      "testName": "Production Server Initialization",
+      "status": "PASS",
+      "details": "Server up and listening on port 3189"
+    },
+    {
+      "section": "1. Startup",
+      "testName": "Health, Liveness & Readiness Endpoints",
+      "status": "PASS",
+      "details": "Health: 200, Live: 200, Ready: 200"
+    },
+    {
+      "section": "1. Startup",
+      "testName": "Environment Mode Verification (production)",
+      "status": "PASS",
+      "details": "Runtime active mode verified as production"
+    },
+    {
+      "section": "1. Startup",
+      "testName": "JWT_SECRET Log Redaction",
+      "status": "PASS",
+      "details": "Secret string not found in server stdout/stderr"
+    },
+    {
+      "section": "1. Startup",
+      "testName": "Isolated Database File Opened",
+      "status": "PASS",
+      "details": "Database path: C:\\Users\\mahes\\AppData\\Local\\Temp\\sunbiro-prod-verify-UTYYzn\\isolated-test.sqlite (exists: true)"
+    },
+    {
+      "section": "4. JWT",
+      "testName": "Valid Test Token Acceptance",
+      "status": "PASS",
+      "details": "HTTP 200, user: owner@sunbirojasa.com"
+    },
+    {
+      "section": "4. JWT",
+      "testName": "Old Developer Secret Rejection",
+      "status": "PASS",
+      "details": "HTTP 401, code: UNAUTHENTICATED"
+    },
+    {
+      "section": "4. JWT",
+      "testName": "Algorithm 'none' Rejection",
+      "status": "PASS",
+      "details": "HTTP 401, code: UNAUTHENTICATED"
+    },
+    {
+      "section": "4. JWT",
+      "testName": "Expired Token Rejection",
+      "status": "PASS",
+      "details": "HTTP 401, code: UNAUTHENTICATED"
+    },
+    {
+      "section": "5. Proxy",
+      "testName": "TRUST_PROXY=false ignores spoofed X-Forwarded-For header",
+      "status": "PASS",
+      "details": "Request received with status HTTP 401"
+    },
+    {
+      "section": "6. CORS",
+      "testName": "Authorized CORS Origin Accepted",
+      "status": "PASS",
+      "details": "Allowed header: https://test-admin.sunbirojasa.com"
+    },
+    {
+      "section": "6. CORS",
+      "testName": "Unauthorized CORS Origin Rejected",
+      "status": "PASS",
+      "details": "Header returned: None (Omitted)"
+    },
+    {
+      "section": "6. Sanitization",
+      "testName": "Production Error Leak Prevention",
+      "status": "PASS",
+      "details": "No SQL, path, or stack trace leaked in response: {\"success\":false,\"error\":{\"code\":\"ORDER_NOT_FOUND\",\"message\":\"Order dengan nomor 'non-existent-order"
+    },
+    {
+      "section": "5. Proxy",
+      "testName": "TRUST_PROXY=1 handles reverse proxy forwarding correctly",
+      "status": "PASS",
+      "details": "Server responded with HTTP 200"
+    },
+    {
+      "section": "2. Independence",
+      "testName": "Execution from foreign working directory via ENV_FILE",
+      "status": "PASS",
+      "details": "Successfully loaded custom.env and connected to C:\\Users\\mahes\\AppData\\Local\\Temp\\sunbiro-prod-verify-UTYYzn\\foreign-test.sqlite"
+    },
+    {
+      "section": "3. Fail-Fast",
+      "testName": "Missing JWT_SECRET",
+      "status": "PASS",
+      "details": "Exit code: 1, matched error: true, DB unopened: true"
+    },
+    {
+      "section": "3. Fail-Fast",
+      "testName": "Old Developer Secret",
+      "status": "PASS",
+      "details": "Exit code: 1, matched error: true, DB unopened: true"
+    },
+    {
+      "section": "3. Fail-Fast",
+      "testName": "JWT_SECRET too short (< 32 chars)",
+      "status": "PASS",
+      "details": "Exit code: 1, matched error: true, DB unopened: true"
+    },
+    {
+      "section": "3. Fail-Fast",
+      "testName": "Missing CORS_ORIGIN in production",
+      "status": "PASS",
+      "details": "Exit code: 1, matched error: true, DB unopened: true"
+    },
+    {
+      "section": "3. Fail-Fast",
+      "testName": "start-production.cjs enforces production guard on invalid NODE_ENV",
+      "status": "PASS",
+      "details": "Exit code: 1, enforced production guard and failed before DB init: true"
+    },
+    {
+      "section": "7. DB Safety",
+      "testName": "Operational Database Immutability Check",
+      "status": "PASS",
+      "details": "SHA-256 strictly identical (0 bytes modified)"
+    }
+  ],
+  "shaBefore": "4364c21352c419594fa0dba614ef767299e882b13ed0a821764245a5ca21f925",
+  "shaAfter": "4364c21352c419594fa0dba614ef767299e882b13ed0a821764245a5ca21f925"
+}

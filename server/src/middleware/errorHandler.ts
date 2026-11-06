@@ -50,6 +50,27 @@ export function errorHandler(
     message = "Terjadi kesalahan internal pada server.";
   }
 
+  // In production, sanitize any error message that contains internal database, SQL, or filesystem paths
+  if (isProduction && typeof message === "string") {
+    const sensitivePatterns = [
+      /sqlite/i,
+      /sql logic error/i,
+      /syntax error/i,
+      /unique constraint failed/i,
+      /check constraint failed/i,
+      /no such column/i,
+      /no such table/i,
+      /table .* has no column/i,
+      /[a-zA-Z]:\\[^\s]+/i, // Windows absolute paths
+      /\/(?:home|var|usr|etc|opt)\/[^\s]+/i, // Unix paths
+      /at\s+[a-zA-Z0-9_.]+\s+\(/i, // Stack trace frames
+    ];
+    if (sensitivePatterns.some((pattern) => pattern.test(message))) {
+      code = statusCode >= 500 ? "INTERNAL_SERVER_ERROR" : "VALIDATION_ERROR";
+      message = statusCode >= 500 ? "Terjadi kesalahan internal pada server." : "Permintaan tidak dapat diproses karena data tidak valid.";
+    }
+  }
+
   const responsePayload = {
     success: false,
     error: {

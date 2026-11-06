@@ -19,7 +19,20 @@ test("Provider Switching - OrderRepository switches dynamically between Mock and
   const initialProvider = repo.getProvider?.();
   assert.ok(initialProvider instanceof MockOrderProvider);
 
-  // 2. Perform operations in Mock Mode
+  // 2. Perform operations in Mock Mode with explicit test fixture
+  repo.saveOrder({
+    orderNo: "ORD-MOCK-TEST-1",
+    customer: "Test Customer Mock",
+    nomorHP: "081200001111",
+    layanan: "Perpanjangan STNK",
+    currentStep: 1,
+    currentStageName: "Verifikasi",
+    createdAt: new Date().toISOString(),
+    namaPemilik: "Pemilik Test",
+    nopol: "B 1234 TST",
+    totalEstimasi: 500000,
+  });
+
   const activeOrders = repo.getActiveOrders();
   assert.ok(activeOrders["Verifikasi"]);
   assert.ok(activeOrders["Verifikasi"].length > 0);

@@ -3,10 +3,84 @@
  * Admin SUN89 — Biro Jasa Management System
  */
 
-import { dbUserRepository } from "../repositories/dbUserRepository";
+import { dbUserRepository, UserEntity } from "../repositories/dbUserRepository";
 import { verifyPassword, hashPassword, needsRehash, generateToken, TokenPayload } from "../utils/crypto";
 import { ApiError } from "../middleware/errorHandler";
 import { dbAuditRepository } from "../repositories/dbAuditRepository";
+import { db } from "../database/db";
+
+/**
+ * Validates and resolves the canonical employee identity for a messenger account.
+ * Rejects unmapped accounts, inactive employees, or accounts missing valid employee links.
+ */
+function resolveAndVerifyMessengerEmployee(userEntity: UserEntity): {
+  ok: true;
+  employeeId: string;
+} | {
+  ok: false;
+  status: number;
+  code: string;
+  message: string;
+} {
+  const cleanEmail = (userEntity.email || "").trim().toLowerCase();
+  const empId = userEntity.employee_id ? String(userEntity.employee_id).trim() : null;
+
+  // 1. Check employee_accounts and employees table by email
+  let eaRecord: { id: string; employee_id: string; status_aktif: number; status_karyawan: string; nama_lengkap: string } | undefined;
+  try {
+    const eaStmt = db.prepare(`
+      SELECT ea.id, ea.employee_id, ea.status_aktif, e.status_karyawan, e.nama_lengkap
+      FROM employee_accounts ea
+      JOIN employees e ON ea.employee_id = e.id
+      WHERE LOWER(ea.email) = ?
+    `);
+    eaRecord = eaStmt.get(cleanEmail) as any;
+  } catch (err) {
+    // If table doesn't exist in some isolated test mocks
+  }
+
+  if (eaRecord) {
+    if (eaRecord.status_aktif !== 1) {
+      return { ok: false, status: 403, code: "EMPLOYEE_INACTIVE", message: "Akun karyawan messenger berstatus nonaktif." };
+    }
+    if (eaRecord.status_karyawan === "NONAKTIF") {
+      return { ok: false, status: 403, code: "EMPLOYEE_INACTIVE", message: "Status karyawan messenger nonaktif." };
+    }
+  }
+
+  // 2. Reject if userEntity has no employee_id
+  if (!empId) {
+    return {
+      ok: false,
+      status: 403,
+      code: "MESSENGER_NO_EMPLOYEE_ID",
+      message: "Akun messenger tidak memiliki identitas karyawan yang terdaftar.",
+    };
+  }
+
+  // 3. Verify empId against employees table if employees table exists
+  let empRecord: { id: string; status_karyawan: string } | undefined;
+  try {
+    const empStmt = db.prepare("SELECT id, status_karyawan FROM employees WHERE id = ?");
+    empRecord = empStmt.get(empId) as any;
+  } catch (err) {}
+
+  if (empRecord) {
+    if (empRecord.status_karyawan === "NONAKTIF") {
+      return { ok: false, status: 403, code: "EMPLOYEE_INACTIVE", message: "Status karyawan messenger nonaktif." };
+    }
+  } else if (!eaRecord) {
+    // empId not in employees table AND email not in employee_accounts
+    return {
+      ok: false,
+      status: 403,
+      code: "EMPLOYEE_NOT_FOUND",
+      message: "Identitas karyawan messenger tidak ditemukan dalam sistem.",
+    };
+  }
+
+  return { ok: true, employeeId: empId };
+}
 
 export class AuthService {
   public async login(email?: string, password?: string): Promise<{ token: string; user: any }> {
@@ -54,7 +128,28 @@ export class AuthService {
     };
     const role = roleMap[userEntity.jabatan] || "admin";
 
-    const resolvedEmployeeId = userEntity.employee_id || (role === 'messenger' ? (userEntity.nama.toLowerCase().includes('andi') ? 'EMP-MSG-002' : 'EMP-MSG-001') : undefined);
+    let resolvedEmployeeId: string | undefined = userEntity.employee_id || undefined;
+    if (role === "messenger") {
+      const empRes = resolveAndVerifyMessengerEmployee(userEntity);
+      if (empRes.ok === true) {
+        resolvedEmployeeId = empRes.employeeId;
+      } else {
+        throw new ApiError(empRes.status, empRes.code, empRes.message);
+      }
+    } else if (!resolvedEmployeeId) {
+      try {
+        const eaStmt = db.prepare(`
+          SELECT ea.employee_id 
+          FROM employee_accounts ea 
+          JOIN employees e ON ea.employee_id = e.id 
+          WHERE LOWER(ea.email) = ? AND ea.status_aktif = 1
+        `);
+        const eaRecord = eaStmt.get(cleanEmail) as { employee_id: string } | undefined;
+        if (eaRecord && eaRecord.employee_id) {
+          resolvedEmployeeId = eaRecord.employee_id;
+        }
+      } catch (err) {}
+    }
 
     const token = generateToken({
       userId: `usr-${userEntity.id}`,
@@ -169,12 +264,36 @@ export class AuthService {
     };
     const role = roleMap[user.jabatan] || "admin";
 
+    let resolvedEmployeeId: string | undefined = user.employee_id || undefined;
+    if (role === "messenger") {
+      const empRes = resolveAndVerifyMessengerEmployee(user);
+      if (empRes.ok === true) {
+        resolvedEmployeeId = empRes.employeeId;
+      } else {
+        throw new ApiError(empRes.status, empRes.code, empRes.message);
+      }
+    } else if (!resolvedEmployeeId) {
+      try {
+        const eaStmt = db.prepare(`
+          SELECT ea.employee_id 
+          FROM employee_accounts ea 
+          JOIN employees e ON ea.employee_id = e.id 
+          WHERE LOWER(ea.email) = ? AND ea.status_aktif = 1
+        `);
+        const eaRecord = eaStmt.get((user.email || "").trim().toLowerCase()) as { employee_id: string } | undefined;
+        if (eaRecord && eaRecord.employee_id) {
+          resolvedEmployeeId = eaRecord.employee_id;
+        }
+      } catch (err) {}
+    }
+
     const freshToken = generateToken({
       userId: `usr-${user.id}`,
       email: user.email,
       nama: user.nama,
       jabatan: user.jabatan,
       role,
+      employeeId: resolvedEmployeeId,
     });
 
     // 6. Record security audit log (WITHOUT revealing any password)

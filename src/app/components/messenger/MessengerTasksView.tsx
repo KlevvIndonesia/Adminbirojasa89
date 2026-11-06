@@ -165,8 +165,21 @@ export function MessengerTasksView({
     const res = await acceptMessengerTaskAction(task.orderNo, task.keteranganTugas, currentUser);
     if (res.success) {
       toast.success(`Tugas ${task.orderNo} (${task.keteranganTugas}) berhasil diterima dan masuk ke Tugas Aktif!`);
+      setIsDetailOpen(false);
+      setSelectedTask(null);
     } else {
-      toast.error(res.error || "Gagal menerima tugas");
+      const errorMsg = res.error || "Gagal menerima tugas";
+      const isConflict =
+        errorMsg.toLowerCase().includes("conflict") ||
+        errorMsg.toLowerCase().includes("sudah diambil") ||
+        errorMsg.toLowerCase().includes("tidak tersedia");
+      if (isConflict) {
+        toast.error(errorMsg || "Tugas ini sudah diambil kurir lain.");
+        setIsDetailOpen(false);
+        setSelectedTask(null);
+      } else {
+        toast.error(errorMsg);
+      }
     }
   };
 
@@ -456,6 +469,7 @@ export function MessengerTasksView({
         onOpenChange={setIsDetailOpen}
         currentUser={currentUser}
         onTaskUpdated={() => {
+          if (refresh) refresh();
           if (selectedTask) {
             const updated = currentTabTasks.find((t) => t.orderNo === selectedTask.orderNo);
             if (updated) setSelectedTask(updated);
@@ -464,6 +478,8 @@ export function MessengerTasksView({
         onNavigateToSamsat={(orderNo) => {
           if (onNavigateToTab) onNavigateToTab("samsat", orderNo);
         }}
+        onAcceptTask={handleAcceptTask}
+        onDeclineTask={handleOpenDeclineDialog}
       />
 
       {/* Decline Task Dialog (Tolak Tugas dengan Alasan) */}

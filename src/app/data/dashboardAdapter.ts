@@ -211,6 +211,18 @@ export function getFinancialKPIs(
   let outstandingTotal = 0;
 
   invoices.forEach((inv) => {
+    // Exclude cancelled invoices/orders from revenue and outstanding totals
+    const rawInv = inv as unknown as Record<string, unknown>;
+    if (
+      inv.status === "CANCELLED" ||
+      rawInv.status === "Dibatalkan" ||
+      inv.billingStatus === "CANCELLED" ||
+      rawInv.billingStatus === "Dibatalkan" ||
+      Boolean(rawInv.isCancelled)
+    ) {
+      return;
+    }
+
     revenueTotal += inv.terbayar || 0;
     if (!isFullyPaid(inv.status)) {
       outstandingTotal += inv.sisa || 0;

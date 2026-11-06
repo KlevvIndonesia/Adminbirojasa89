@@ -12,6 +12,7 @@ import { requestLogger } from "./middleware/logger";
 import { errorHandler } from "./middleware/errorHandler";
 import { securityHeaders } from "./middleware/securityHeaders";
 import { apiRateLimiter } from "./middleware/rateLimiter";
+import { initializeSchema } from "./database/schema";
 import { seedDatabase } from "./database/seed";
 
 import { authRouter } from "./routes/authRoutes";
@@ -27,9 +28,12 @@ import { notificationRouter } from "./routes/notificationRoutes";
 import { permissionRouter } from "./routes/permissionRoutes";
 import { paymentMethodRouter } from "./routes/paymentMethodRoutes";
 import { messengerRouter } from "./routes/messengerRoutes";
+import { serviceRouter } from "./routes/serviceRoutes";
 import { orderCorrectionRouter } from "./routes/orderCorrectionRoutes";
 
 export function createApp(): Express {
+  // Ensure schema and migrations are initialized
+  initializeSchema(db);
   // Initialize Database Seeds if needed
   seedDatabase();
 
@@ -143,6 +147,7 @@ export function createApp(): Express {
   app.use("/api/permissions", permissionRouter);
   app.use("/api/payment-methods", paymentMethodRouter);
   app.use("/api/messenger", messengerRouter);
+  app.use("/api/services", serviceRouter);
   app.use("/api/order-corrections", orderCorrectionRouter);
 
   // 404 handler for unknown routes

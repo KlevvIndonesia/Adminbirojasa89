@@ -59,7 +59,7 @@ export class WilayahController {
 
   public getWilayahByKode(req: Request, res: Response): void {
     try {
-      const { kode } = req.params;
+      const kode = String(req.params.kode);
       const data = dbWilayahRepository.getWilayahByKode(kode);
       if (!data) {
         res.status(404).json({ success: false, message: `Wilayah dengan kode '${kode}' tidak ditemukan` });
@@ -119,7 +119,7 @@ export class WilayahController {
 
   public updateSamsatOffice(req: Request, res: Response): void {
     try {
-      const { id } = req.params;
+      const id = String(req.params.id);
       const updates = req.body;
 
       if (updates.kode_kabupaten_kota) {
@@ -146,14 +146,37 @@ export class WilayahController {
 
   public deleteSamsatOffice(req: Request, res: Response): void {
     try {
-      const { id } = req.params;
+      const id = String(req.params.id);
 
-      // Referential integrity check: cannot delete if referenced in service_pricing_configs
+      // Referential integrity check 1: cannot delete if referenced in service_pricing_configs
       const pricingUsage = db.prepare("SELECT COUNT(*) as count FROM service_pricing_configs WHERE samsat_id = ?").get(id) as any;
       if (pricingUsage && pricingUsage.count > 0) {
         res.status(409).json({
           success: false,
           message: `Kantor Samsat '${id}' tidak dapat dihapus karena masih digunakan dalam ${pricingUsage.count} konfigurasi biaya layanan. Silakan nonaktifkan status kantor jika tidak lagi beroperasi.`
+        });
+        return;
+      }
+
+      // Referential integrity check 2: cannot delete if referenced in samsat_operational_tariffs
+      const tariffUsage = db.prepare("SELECT COUNT(*) as count FROM samsat_operational_tariffs WHERE samsat_id = ?").get(id) as any;
+      if (tariffUsage && tariffUsage.count > 0) {
+        res.status(409).json({
+          success: false,
+          message: `Kantor Samsat '${id}' tidak dapat dihapus karena masih memiliki ${tariffUsage.count} data tarif operasional aktif. Hapus tarif terlebih dahulu atau nonaktifkan status kantor.`
+        });
+        return;
+      }
+
+      // Referential integrity check 3: cannot delete if referenced in historical orders
+      const orderUsage = db.prepare(`
+        SELECT COUNT(*) as count FROM orders
+        WHERE samsat_asal_id = ? OR samsat_tujuan_id = ? OR samsat_asal = ?
+      `).get(id, id, id) as any;
+      if (orderUsage && orderUsage.count > 0) {
+        res.status(409).json({
+          success: false,
+          message: `Kantor Samsat '${id}' tidak dapat dihapus karena masih direferensikan dalam ${orderUsage.count} riwayat transaksi order. Kantor tidak boleh dihapus untuk menjaga integritas data historis.`
         });
         return;
       }

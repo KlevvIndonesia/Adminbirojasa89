@@ -4,6 +4,7 @@
  */
 
 import { dbPaymentMethodRepository, PaymentMethodEntity } from "../repositories/dbPaymentMethodRepository";
+import { ApiError } from "../middleware/errorHandler";
 
 export class PaymentMethodService {
   public getAll(activeOnly = false): PaymentMethodEntity[] {
@@ -16,69 +17,160 @@ export class PaymentMethodService {
 
   public create(data: {
     nama_metode: string;
-    bank: string;
+    bank?: string;
     nama_rekening?: string;
     nomor_rekening?: string;
     status?: "Aktif" | "Nonaktif";
   }): PaymentMethodEntity {
-    const nama = (data.nama_metode || "").trim();
-    if (!nama) {
-      throw new Error("Nama metode pembayaran wajib diisi.");
+    const rawNama = (data.nama_metode || "").trim();
+    if (!rawNama) {
+      throw new ApiError(400, "VALIDATION_ERROR", "Metode pembayaran wajib dipilih.");
     }
 
+    let namaMetode = rawNama;
+    if (rawNama.toLowerCase() === "cash" || rawNama.toLowerCase() === "tunai") {
+      namaMetode = "Tunai";
+    } else if (rawNama.toLowerCase() === "transfer bank" || rawNama.toLowerCase().includes("transfer")) {
+      namaMetode = "Transfer Bank";
+    } else {
+      throw new ApiError(400, "VALIDATION_ERROR", "Metode pembayaran hanya boleh 'Transfer Bank' atau 'Tunai'.");
+    }
+
+    const status = data.status || "Aktif";
+
+    // ─── CASE 1: TUNAI ──────────────────────────────────────────────────────────
+    if (namaMetode === "Tunai") {
+      // Enforcement: Hanya boleh ada 1 record Tunai aktif
+      if (status === "Aktif") {
+        const activeTunai = dbPaymentMethodRepository.getActiveTunai();
+        if (activeTunai) {
+          throw new ApiError(409, "DUPLICATE_TUNAI", "Metode pembayaran Tunai yang aktif sudah terdaftar. Hanya diperbolehkan satu metode Tunai aktif.");
+        }
+      }
+
+      // Bersihkan nilai bank dan rekening lama
+      return dbPaymentMethodRepository.create({
+        nama_metode: "Tunai",
+        bank: "Tunai",
+        nama_rekening: "",
+        nomor_rekening: "",
+        status,
+      });
+    }
+
+    // ─── CASE 2: TRANSFER BANK ─────────────────────────────────────────────────
     const bank = (data.bank || "").trim();
     if (!bank) {
-      throw new Error("Bank / penyedia pembayaran wajib diisi.");
+      throw new ApiError(400, "VALIDATION_ERROR", "Bank / penyedia pembayaran wajib diisi untuk transfer bank.");
     }
 
-    const existing = dbPaymentMethodRepository.getByNama(nama);
-    if (existing) {
-      throw new Error(`Metode pembayaran '${nama}' sudah terdaftar. Gunakan nama lain.`);
+    const namaRekening = (data.nama_rekening || "").trim();
+    if (!namaRekening) {
+      throw new ApiError(400, "VALIDATION_ERROR", "Nama pemilik rekening wajib diisi untuk transfer bank.");
     }
 
-    const isCash = bank.toLowerCase().includes("tunai") || bank.toLowerCase() === "cash" || nama.toLowerCase() === "cash";
-    if (!isCash && (!data.nomor_rekening || !data.nomor_rekening.trim())) {
-      // For bank transfer, account number should be provided
-      if (bank.toLowerCase() !== "qris") {
-        throw new Error("Nomor rekening wajib diisi untuk transfer bank.");
-      }
+    const nomorRekening = (data.nomor_rekening || "").trim();
+    if (!nomorRekening) {
+      throw new ApiError(400, "VALIDATION_ERROR", "Nomor rekening wajib diisi untuk transfer bank.");
+    }
+
+    // Rejection: Duplikasi rekening yang sama ditolak
+    const duplicate = dbPaymentMethodRepository.getByAccount(bank, nomorRekening);
+    if (duplicate) {
+      throw new ApiError(409, "DUPLICATE_ACCOUNT", `Rekening ${bank} dengan nomor '${nomorRekening}' sudah terdaftar.`);
     }
 
     return dbPaymentMethodRepository.create({
-      nama_metode: nama,
+      nama_metode: "Transfer Bank",
       bank,
-      nama_rekening: data.nama_rekening || "",
-      nomor_rekening: data.nomor_rekening || "",
-      status: data.status || "Aktif",
+      nama_rekening: namaRekening,
+      nomor_rekening: nomorRekening,
+      status,
     });
   }
 
   public update(id: string, updates: Partial<PaymentMethodEntity>): PaymentMethodEntity {
     const existing = dbPaymentMethodRepository.getById(id);
     if (!existing) {
-      throw new Error("Metode pembayaran tidak ditemukan.");
+      throw new ApiError(404, "NOT_FOUND", "Metode pembayaran tidak ditemukan.");
     }
 
+    let namaMetode = existing.nama_metode;
     if (updates.nama_metode !== undefined) {
-      const nama = updates.nama_metode.trim();
-      if (!nama) throw new Error("Nama metode pembayaran tidak boleh kosong.");
-      const duplicate = dbPaymentMethodRepository.getByNama(nama);
-      if (duplicate && duplicate.id !== id) {
-        throw new Error(`Nama metode '${nama}' sudah digunakan oleh metode lain.`);
+      const rawNama = updates.nama_metode.trim();
+      if (!rawNama) throw new ApiError(400, "VALIDATION_ERROR", "Metode pembayaran tidak boleh kosong.");
+      if (rawNama.toLowerCase() === "cash" || rawNama.toLowerCase() === "tunai") {
+        namaMetode = "Tunai";
+      } else if (rawNama.toLowerCase() === "transfer bank" || rawNama.toLowerCase().includes("transfer")) {
+        namaMetode = "Transfer Bank";
+      } else {
+        throw new ApiError(400, "VALIDATION_ERROR", "Metode pembayaran hanya boleh 'Transfer Bank' atau 'Tunai'.");
       }
     }
 
-    const updated = dbPaymentMethodRepository.update(id, updates);
-    if (!updated) {
-      throw new Error("Gagal memperbarui metode pembayaran.");
+    const status = updates.status !== undefined ? updates.status : existing.status;
+
+    // ─── CASE 1: TUNAI ──────────────────────────────────────────────────────────
+    if (namaMetode === "Tunai") {
+      // Enforcement: Hanya boleh ada 1 record Tunai aktif
+      if (status === "Aktif") {
+        const activeTunai = dbPaymentMethodRepository.getActiveTunai();
+        if (activeTunai && activeTunai.id !== id) {
+          throw new ApiError(409, "DUPLICATE_TUNAI", "Metode pembayaran Tunai yang aktif sudah terdaftar. Hanya diperbolehkan satu metode Tunai aktif.");
+        }
+      }
+
+      // Bersihkan nilai bank & rekening lama
+      const updated = dbPaymentMethodRepository.update(id, {
+        nama_metode: "Tunai",
+        bank: "Tunai",
+        nama_rekening: "",
+        nomor_rekening: "",
+        status,
+      });
+
+      if (!updated) throw new ApiError(500, "UPDATE_FAILED", "Gagal memperbarui metode pembayaran.");
+      return updated;
     }
+
+    // ─── CASE 2: TRANSFER BANK ─────────────────────────────────────────────────
+    const bank = updates.bank !== undefined ? updates.bank.trim() : (existing.bank === "Tunai" ? "" : existing.bank);
+    if (!bank) {
+      throw new ApiError(400, "VALIDATION_ERROR", "Bank / penyedia pembayaran wajib diisi untuk transfer bank.");
+    }
+
+    const namaRekening = updates.nama_rekening !== undefined ? updates.nama_rekening.trim() : existing.nama_rekening;
+    if (!namaRekening) {
+      throw new ApiError(400, "VALIDATION_ERROR", "Nama pemilik rekening wajib diisi untuk transfer bank.");
+    }
+
+    const nomorRekening = updates.nomor_rekening !== undefined ? updates.nomor_rekening.trim() : existing.nomor_rekening;
+    if (!nomorRekening) {
+      throw new ApiError(400, "VALIDATION_ERROR", "Nomor rekening wajib diisi untuk transfer bank.");
+    }
+
+    // Rejection: Duplikasi rekening yang sama ditolak (kecuali record yang sedang diedit)
+    const duplicate = dbPaymentMethodRepository.getByAccount(bank, nomorRekening);
+    if (duplicate && duplicate.id !== id) {
+      throw new ApiError(409, "DUPLICATE_ACCOUNT", `Rekening ${bank} dengan nomor '${nomorRekening}' sudah digunakan oleh data metode pembayaran lain.`);
+    }
+
+    const updated = dbPaymentMethodRepository.update(id, {
+      nama_metode: "Transfer Bank",
+      bank,
+      nama_rekening: namaRekening,
+      nomor_rekening: nomorRekening,
+      status,
+    });
+
+    if (!updated) throw new ApiError(500, "UPDATE_FAILED", "Gagal memperbarui metode pembayaran.");
     return updated;
   }
 
   public delete(id: string): { success: boolean; deactivated?: boolean; message: string } {
     const res = dbPaymentMethodRepository.delete(id, true);
     if (!res.success && !res.deactivated) {
-      throw new Error(res.message || "Gagal menghapus metode pembayaran.");
+      throw new ApiError(400, "DELETE_FAILED", res.message || "Gagal menghapus metode pembayaran.");
     }
     return {
       success: res.success,

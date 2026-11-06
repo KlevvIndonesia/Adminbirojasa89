@@ -39,6 +39,7 @@ import {
   UserContext,
 } from "../../data/messengerTaskAdapter";
 import { useOrderStore } from "../../data/orderStore";
+import { serviceStore } from "../../data/serviceStore";
 import { toast } from "sonner";
 import { cn } from "../ui/utils";
 
@@ -128,7 +129,18 @@ export function MessengerPoolTasksView({
           }
         }
       } else {
-        toast.error(res.error || "Gagal mengambil tugas");
+        const errorMsg = res.error || "Gagal mengambil tugas";
+        const isConflict =
+          errorMsg.toLowerCase().includes("conflict") ||
+          errorMsg.toLowerCase().includes("sudah diambil") ||
+          errorMsg.toLowerCase().includes("tidak tersedia");
+        if (isConflict) {
+          toast.error(errorMsg || "Tugas ini sudah diambil kurir lain atau tidak lagi tersedia.");
+          setIsDetailOpen(false);
+          setSelectedTask(null);
+        } else {
+          toast.error(errorMsg);
+        }
         if (refresh) refresh();
       }
     } finally {
@@ -298,12 +310,11 @@ export function MessengerPoolTasksView({
             return (
               <Card
                 key={`${task.orderNo}-${task.keteranganTugas}`}
-                onClick={() => handleOpenDetail(task)}
                 className={cn(
-                  "p-4 rounded-2xl transition-all border cursor-pointer hover:shadow-md active:scale-[0.99]",
+                  "p-4 rounded-2xl transition-all border",
                   isDirectAssignment
                     ? "border-amber-400/60 dark:border-amber-500/40 bg-amber-50/40 dark:bg-amber-950/15"
-                    : "border-border/80 bg-card hover:border-primary/40"
+                    : "border-border/80 bg-card"
                 )}
               >
                 {/* Direct Assignment Banner if assigned specially to this courier */}
@@ -351,55 +362,16 @@ export function MessengerPoolTasksView({
                   <span className="truncate">{task.lokasi}</span>
                 </div>
 
-                {/* Actions row */}
-                <div className="mt-3 pt-3 border-t border-border/60 flex items-center justify-between gap-2">
+                {/* Actions row: Explicit Lihat Tugas with min-h-[48px], no inline acceptance */}
+                <div className="mt-3 pt-3 border-t border-border/60">
                   <Button
-                    size="sm"
                     variant="outline"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      handleOpenDetail(task);
-                    }}
-                    className="h-10 px-3.5 text-xs sm:text-sm font-semibold rounded-xl min-h-[40px] text-muted-foreground hover:text-foreground"
+                    onClick={() => handleOpenDetail(task)}
+                    className="w-full h-12 min-h-[48px] px-4 text-sm font-semibold rounded-xl text-foreground hover:bg-muted/80 border-border flex items-center justify-center gap-2"
                   >
-                    <Eye className="w-4 h-4 mr-1.5" />
-                    Lihat Tugas
+                    <Eye className="w-4 h-4 text-primary" />
+                    <span>Lihat Tugas & Persyaratan</span>
                   </Button>
-
-                  <div className="flex items-center gap-1.5">
-                    {isDirectAssignment && (
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          handleOpenDeclineDialog(task);
-                        }}
-                        className="h-10 px-3 text-xs sm:text-sm font-semibold rounded-xl border-rose-300 dark:border-rose-800 text-rose-600 dark:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-950/30 min-h-[40px]"
-                      >
-                        <X className="w-4 h-4 mr-1" />
-                        Tolak
-                      </Button>
-                    )}
-
-                    <Button
-                      size="sm"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        handleClaimTask(task);
-                      }}
-                      disabled={isClaiming}
-                      className={cn(
-                        "h-10 px-4 text-xs sm:text-sm font-semibold rounded-xl shadow-2xs min-h-[40px] text-white",
-                        isDirectAssignment
-                          ? "bg-amber-600 hover:bg-amber-700"
-                          : "bg-emerald-600 hover:bg-emerald-700"
-                      )}
-                    >
-                      <Check className="w-4 h-4 mr-1.5" />
-                      {isDirectAssignment ? "Terima Tugas" : "Ambil Tugas"}
-                    </Button>
-                  </div>
                 </div>
               </Card>
             );
@@ -491,14 +463,36 @@ export function MessengerPoolTasksView({
                 {/* Berkas & Dokumen Terkait */}
                 <div className="bg-card p-3.5 rounded-xl border border-border/80 space-y-2">
                   <p className="text-xs font-bold uppercase tracking-wider text-muted-foreground">
-                    Berkas / Dokumen Terkait
+                    Berkas / Dokumen Persyaratan
                   </p>
-                  <ul className="text-xs sm:text-sm text-foreground space-y-1.5 list-disc list-inside">
-                    <li>STNK Asli / Notice Pajak</li>
-                    <li>BPKB Asli (jika ada proses balik nama/mutasi)</li>
-                    <li>KTP Pemilik Asli / Fotokopi sesuai ketentuan</li>
-                    <li>Surat Kuasa & Berkas Permohonan Samsat</li>
-                  </ul>
+                  {(() => {
+                    const reqDetail = serviceStore.getServiceRequirementsDetail(
+                      selectedTask.rawOrder || selectedTask.jenisTugas
+                    );
+
+                    return (
+                      <>
+                        {reqDetail.warningNotice && (
+                          <div className="p-2.5 rounded-lg bg-amber-50 dark:bg-amber-950/20 border border-amber-200 dark:border-amber-800 text-amber-800 dark:text-amber-300 text-xs flex items-start gap-2">
+                            <AlertCircle className="w-4 h-4 shrink-0 mt-0.5 text-amber-600 dark:text-amber-400" />
+                            <span>{reqDetail.warningNotice}</span>
+                          </div>
+                        )}
+                        {reqDetail.requirements.length > 0 && (
+                          <ul className="text-xs sm:text-sm text-foreground space-y-1.5 list-disc list-inside">
+                            {reqDetail.requirements.map((req, idx) => (
+                              <li key={idx}>{req}</li>
+                            ))}
+                          </ul>
+                        )}
+                        {reqDetail.requirements.length === 0 && !reqDetail.warningNotice && (
+                          <p className="text-xs text-muted-foreground italic">
+                            Tidak ada persyaratan dokumen khusus yang terdaftar.
+                          </p>
+                        )}
+                      </>
+                    );
+                  })()}
                   {selectedTask.rawOrder?.catatanOrder && (
                     <div className="pt-2 border-t border-border/60 text-xs text-muted-foreground">
                       <strong>Catatan Order:</strong> {selectedTask.rawOrder.catatanOrder}
@@ -518,12 +512,13 @@ export function MessengerPoolTasksView({
                 </div>
               </div>
 
-              {/* Sticky Footer */}
+              {/* Sticky Footer with min-h-[48px] */}
               <div className="p-4 border-t border-border bg-card flex items-center justify-end gap-2">
                 <Button
                   variant="outline"
                   onClick={() => setIsDetailOpen(false)}
-                  className="h-11 px-4 text-sm font-semibold rounded-xl"
+                  disabled={isClaiming}
+                  className="h-12 min-h-[48px] px-4 text-sm font-semibold rounded-xl"
                 >
                   Tutup
                 </Button>
@@ -531,11 +526,12 @@ export function MessengerPoolTasksView({
                 {selectedTask.acceptanceStatus === "PENDING" && (
                   <Button
                     variant="outline"
+                    disabled={isClaiming}
                     onClick={() => {
                       setIsDetailOpen(false);
                       handleOpenDeclineDialog(selectedTask);
                     }}
-                    className="h-11 px-4 text-sm font-semibold rounded-xl border-rose-300 dark:border-rose-800 text-rose-600 dark:text-rose-400"
+                    className="h-12 min-h-[48px] px-4 text-sm font-semibold rounded-xl border-rose-300 dark:border-rose-800 text-rose-600 dark:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-950/30"
                   >
                     Tolak Tugas
                   </Button>
@@ -544,7 +540,7 @@ export function MessengerPoolTasksView({
                 <Button
                   onClick={() => handleClaimTask(selectedTask)}
                   disabled={isClaiming}
-                  className="h-11 px-6 text-sm font-bold rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white shadow-md flex-1 sm:flex-none"
+                  className="h-12 min-h-[48px] px-6 text-sm font-bold rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white shadow-md flex-1 sm:flex-none"
                 >
                   <Check className="w-4 h-4 mr-2" />
                   {isClaiming

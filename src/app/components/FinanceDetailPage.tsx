@@ -22,6 +22,7 @@ import {
   Calendar,
   Sparkles,
   Layers,
+  History,
 } from "lucide-react";
 import {
   formatDateDDMMYYYY,
@@ -37,6 +38,7 @@ import { downloadDataUrl } from "../utils/documentSvgGenerator";
 import { useNavigationGuard } from "../context/NavigationGuardContext";
 import { toast } from "sonner";
 import { cn } from "./ui/utils";
+import { calculateInvoiceProfitMetrics } from "../../domain/finance/types";
 
 interface FieldDef {
   key: string;
@@ -187,15 +189,21 @@ export function FinanceDetailPage({
   const tandaTerima = item["Tanda Terima"] || item["Nomor Tanda Terima"] || "-";
   const catatan = item["Keterangan"] || canonicalOrder?.catatanOrder || "-";
 
-  // Financial Attributes
+  // Financial Attributes (Supports canonical camelCase, snake_case, and localized label aliases)
   const biayaSamsat = Number(
-    item["Biaya Pokok Samsat"] ?? item.biayaPokokSamsat ?? 0
+    item["Biaya Pokok Samsat"] ??
+      item.biayaPokokSamsat ??
+      item.biayaSamsat ??
+      item.biaya_samsat ??
+      canonicalOrder?.pkb ??
+      0
   );
 
   const biayaJasa = Number(
     item["Biaya Jasa"] ??
       (canonicalOrder?.payment as any)?.biayaJasa ??
       item.biayaJasa ??
+      item.biaya_jasa ??
       0
   );
 
@@ -203,6 +211,7 @@ export function FinanceDetailPage({
     item["Biaya Antar Jemput"] ??
       (canonicalOrder?.payment as any)?.biayaAntarJemput ??
       item.biayaAntarJemput ??
+      item.biaya_antar_jemput ??
       0
   );
 
@@ -210,43 +219,101 @@ export function FinanceDetailPage({
     item["Biaya Lainnya"] ??
       (canonicalOrder?.payment as any)?.biayaLainnya ??
       item.biayaLainnya ??
+      item.biaya_lainnya ??
       0
   );
 
   const totalTagihan = Number(
     item["Total Tagihan Konsumen"] ??
+      item.totalTagihan ??
+      item.total_tagihan ??
       canonicalOrder?.payment?.totalBiaya ??
       item.totalBiaya ??
       item.nominal ??
       item["Total Tagihan"] ??
-      (biayaSamsat + biayaJasa + biayaAntarJemput + biayaLainnya)
+      (item.biayaSamsat !== undefined && (item.profit !== undefined || item.uangMasuk !== undefined) && item.totalTagihan === undefined
+        ? Number(item.uangMasuk || 0)
+        : (biayaSamsat + biayaJasa + biayaAntarJemput + biayaLainnya))
   );
 
   const uangMasuk = Number(
     item["Uang Masuk dari Konsumen"] ??
+      item.uangMasuk ??
+      item.dibayar ??
+      item.terbayar ??
       canonicalOrder?.payment?.dibayar ??
       (canonicalOrder?.payment as any)?.sudahBayar ??
       item.sudahBayar ??
-      (item["Status Pembayaran"] === "Lunas" ? totalTagihan : 0)
+      (item["Status Pembayaran"] === "Lunas" || item.status === "Lunas" ? totalTagihan : 0)
   );
 
-  const profit = Number(
-    item["Profit"] ?? (uangMasuk - biayaSamsat - biayaLainnya)
+  const partnerCashback = Number(
+    item.cashback ??
+      item.cashback_nominal ??
+      item["Komisi Rekanan"] ??
+      (canonicalOrder as any)?.cashback ??
+      (canonicalOrder as any)?.cashback_mitra ??
+      0
+  );
+
+  const overpayment = Number(
+    item.overpayment ??
+      item.kelebihanBayar ??
+      item["Kelebihan Bayar"] ??
+      Math.max(0, uangMasuk - totalTagihan)
   );
 
   const sisaTagihan = Number(
-    item["Sisa Tagihan"] ?? Math.max(0, totalTagihan - uangMasuk)
+    item["Sisa Tagihan"] ??
+      item.sisa ??
+      item.sisaTagihan ??
+      Math.max(0, totalTagihan - uangMasuk)
   );
 
-  const cashback = Number(
-    item["Jumlah Cashback"] ?? Math.max(0, uangMasuk - totalTagihan)
+  const isExplicitZero = Boolean(
+    item.isExplicitZero ||
+    item.is_explicit_zero ||
+    item.isZeroCostPromotion ||
+    item.costClassification === "EXPLICIT_ZERO" ||
+    (canonicalOrder as any)?.isExplicitZero
   );
+
+  const profitMetrics = calculateInvoiceProfitMetrics({
+    dibayar: uangMasuk,
+    totalTagihan,
+    biayaSamsat,
+    biayaAntarJemput,
+    cashback: partnerCashback,
+    isExplicitZero,
+  });
+
+  const isDeficit =
+    profitMetrics.isNetDeficit ||
+    profitMetrics.isGrossDeficit ||
+    (typeof item.profit === "number" && item.profit < 0) ||
+    Boolean(item.isGrossDeficit) ||
+    Boolean(item.isNetDeficit);
+
+  const profit = isDeficit
+    ? (profitMetrics.netTransactionMargin < 0
+        ? profitMetrics.netTransactionMargin
+        : typeof item.profit === "number" && item.profit < 0
+        ? item.profit
+        : profitMetrics.grossServiceMargin)
+    : (profitMetrics.netTransactionMargin !== 0
+        ? profitMetrics.netTransactionMargin
+        : typeof item.profit === "number"
+        ? item.profit
+        : 0);
+  const cashback = partnerCashback;
 
   const statusPembayaran =
     item["Status Pembayaran"] ||
+    item.status ||
+    item.statusPembayaran ||
     (canonicalOrder
       ? deriveStatusPembayaran(null, canonicalOrder)
-      : sisaTagihan === 0 && totalTagihan > 0
+      : sisaTagihan === 0 && (totalTagihan > 0 || isExplicitZero)
       ? "Lunas"
       : uangMasuk > 0
       ? "Kurang Bayar"
@@ -830,26 +897,57 @@ export function FinanceDetailPage({
             </div>
           </div>
 
-          {/* Status Pembayaran Badge */}
-          {(() => {
-            let colorClasses = "bg-muted/40 text-muted-foreground border-border";
-            if (statusPembayaran === "Lunas" || statusPembayaran === "LUNAS") {
-              colorClasses = "bg-emerald-500/10 text-emerald-700 dark:text-emerald-400 border-emerald-500/30";
-            } else if (statusPembayaran === "Kurang Bayar" || statusPembayaran === "KURANG BAYAR") {
-              colorClasses = "bg-amber-500/10 text-amber-700 dark:text-amber-400 border-amber-500/30";
-            } else if (statusPembayaran === "Kelebihan Bayar") {
-              colorClasses = "bg-indigo-500/10 text-indigo-700 dark:text-indigo-400 border-indigo-500/30";
-            } else if (statusPembayaran === "Belum Bayar" || statusPembayaran === "BELUM BAYAR") {
-              colorClasses = "bg-rose-500/10 text-rose-700 dark:text-rose-400 border-rose-500/30";
-            }
+          {/* Status Pembayaran Badge & Akses Riwayat Audit Transaksi */}
+          <div className="flex items-center gap-2 self-start sm:self-center shrink-0">
+            {(() => {
+              let isSpvOrAdmin = false;
+              try {
+                const raw = localStorage.getItem("auth_user");
+                if (raw) {
+                  const r = JSON.parse(raw).role;
+                  isSpvOrAdmin = r === "administrator" || r === "supervisor" || r === "spv" || r === "admin";
+                }
+              } catch {}
+              if (isSpvOrAdmin) {
+                return (
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={() => {
+                      const searchKey = orderNo || noInvoice || "";
+                      navigate(`/manajemen/riwayat-aktivitas?search=${encodeURIComponent(searchKey)}`);
+                    }}
+                    className="h-7 px-2.5 text-xs gap-1.5 border-border hover:bg-muted text-muted-foreground hover:text-foreground shrink-0"
+                    title="Buka Riwayat Aktivitas & jejak audit pembatalan (void) transaksi ini"
+                  >
+                    <History className="w-3.5 h-3.5 text-primary" />
+                    <span>Riwayat Audit</span>
+                  </Button>
+                );
+              }
+              return null;
+            })()}
+            {(() => {
+              let colorClasses = "bg-muted/40 text-muted-foreground border-border";
+              if (statusPembayaran === "Lunas" || statusPembayaran === "LUNAS") {
+                colorClasses = "bg-emerald-500/10 text-emerald-700 dark:text-emerald-400 border-emerald-500/30";
+              } else if (statusPembayaran === "Kurang Bayar" || statusPembayaran === "KURANG BAYAR") {
+                colorClasses = "bg-amber-500/10 text-amber-700 dark:text-amber-400 border-amber-500/30";
+              } else if (statusPembayaran === "Kelebihan Bayar") {
+                colorClasses = "bg-indigo-500/10 text-indigo-700 dark:text-indigo-400 border-indigo-500/30";
+              } else if (statusPembayaran === "Belum Bayar" || statusPembayaran === "BELUM BAYAR") {
+                colorClasses = "bg-rose-500/10 text-rose-700 dark:text-rose-400 border-rose-500/30";
+              }
 
-            return (
-              <Badge variant="outline" className={cn("text-xs font-semibold px-3 py-1 shrink-0 self-start sm:self-center", colorClasses)}>
-                <ShieldCheck className="w-3.5 h-3.5 mr-1" />
-                {statusPembayaran}
-              </Badge>
-            );
-          })()}
+              return (
+                <Badge variant="outline" className={cn("text-xs font-semibold px-3 py-1 shrink-0", colorClasses)}>
+                  <ShieldCheck className="w-3.5 h-3.5 mr-1" />
+                  {statusPembayaran}
+                </Badge>
+              );
+            })()}
+          </div>
         </div>
 
         {/* Tabel Faktur Transaksi */}
@@ -943,7 +1041,7 @@ export function FinanceDetailPage({
               <span className="text-[10px] uppercase font-bold tracking-wider text-muted-foreground">
                 Sisa Tagihan
               </span>
-              {sisaTagihan === 0 && totalTagihan > 0 ? (
+              {sisaTagihan === 0 && (totalTagihan > 0 || isExplicitZero) ? (
                 <div className="flex items-center gap-1 text-emerald-600 dark:text-emerald-400 font-bold text-xs pt-0.5">
                   <CheckCircle2 className="w-3.5 h-3.5" />
                   <span>Lunas (Rp 0)</span>
@@ -965,19 +1063,26 @@ export function FinanceDetailPage({
               </span>
               <p className={cn(
                 "font-mono font-bold text-sm sm:text-base tabular-nums",
-                cashback > 0 ? "text-indigo-600 dark:text-indigo-400" : "text-muted-foreground"
+                overpayment > 0 ? "text-indigo-600 dark:text-indigo-400" : "text-muted-foreground"
               )}>
-                {formatRupiah(cashback)}
+                {formatRupiah(overpayment)}
               </p>
             </div>
 
-            {/* Estimasi Profit (Only if > 0) */}
+            {/* Estimasi Profit (Only if > 0 or Defisit) */}
             <div className="p-3 rounded-xl bg-indigo-500/10 border border-indigo-500/25 space-y-1">
               <span className="text-[10px] uppercase font-bold tracking-wider text-indigo-800 dark:text-indigo-300">
                 Estimasi Profit
               </span>
-              <p className="font-mono font-bold text-sm sm:text-base text-indigo-600 dark:text-indigo-400 tabular-nums">
-                {profit > 0 ? formatRupiah(profit) : "-"}
+              <p className={cn(
+                "font-mono font-bold text-sm sm:text-base tabular-nums",
+                isDeficit
+                  ? "text-rose-600 dark:text-rose-400"
+                  : (profit > 0 ? "text-indigo-600 dark:text-indigo-400" : "text-muted-foreground")
+              )}>
+                {isDeficit
+                  ? `${formatRupiah(profit)} (Defisit)`
+                  : (profit > 0 ? formatRupiah(profit) : formatRupiah(0))}
               </p>
             </div>
 

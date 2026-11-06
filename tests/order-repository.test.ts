@@ -5,21 +5,40 @@ import { MockOrderProvider } from "../src/data/mock/mockOrderProvider";
 import { OperationalOrder } from "../src/domain/order/types";
 
 test("OrderRepository - Read operations return valid fixture collections", () => {
-  const activeOrders = orderRepository.getActiveOrders();
+  const provider = new MockOrderProvider();
+  const repo = new OrderRepository(provider);
+
+  const activeOrders = repo.getActiveOrders();
   assert.ok(activeOrders, "Active orders should exist");
   assert.ok(activeOrders["Verifikasi"], "Stage Verifikasi should exist");
   assert.ok(Array.isArray(activeOrders["Verifikasi"]), "Stage Verifikasi should be an array");
 
-  const allOrders = orderRepository.getAllFlat();
+  const testOrder: OperationalOrder = {
+    orderNo: "ORD-REPO-READ-001",
+    customer: "Test Read Customer",
+    nomorHP: "081234567890",
+    layanan: "Perpanjangan 1 Tahun",
+    currentStep: 1,
+    currentStageName: "Verifikasi",
+    createdAt: new Date().toISOString(),
+    namaPemilik: "Test Read Owner",
+    kepemilikanKendaraan: "Milik Sendiri",
+    nopol: "B 1234 RPO",
+    wilayahSamsatAsal: "Jakarta Timur",
+  };
+  repo.saveOrder(testOrder);
+
+  const allOrders = repo.getAllFlat();
   assert.ok(Array.isArray(allOrders), "getAllFlat should return an array");
-  assert.ok(allOrders.length > 0, "Initial mock fixtures should have orders");
+  assert.ok(allOrders.length > 0, "Repository should have orders after saving");
 
   const firstOrder = allOrders[0];
-  const foundByNo = orderRepository.getByOrderNo(firstOrder.orderNo);
+  const foundByNo = repo.getByOrderNo(firstOrder.orderNo);
   assert.strictEqual(foundByNo?.orderNo, firstOrder.orderNo, "getByOrderNo should find the order");
 
-  const byStage = orderRepository.getByStage("Verifikasi");
+  const byStage = repo.getByStage("Verifikasi");
   assert.ok(Array.isArray(byStage), "getByStage should return an array");
+  assert.strictEqual(byStage.length, 1, "getByStage should return saved order");
 });
 
 test("OrderRepository - Mutation operations: saveOrder and updateOrder", () => {

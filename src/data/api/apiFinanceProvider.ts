@@ -405,16 +405,35 @@ export class ApiFinanceProvider implements IFinanceDataProvider {
   }
 
   public async payoutCashback(id: number, payoutData: any): Promise<boolean> {
-    const res = await fetch(`${this.baseUrl}/finance/invoices/${encodeURIComponent(id)}/cashback-payout`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", ...this.getAuthHeader() },
-      body: JSON.stringify(payoutData),
-    });
+    const idempotencyKey = payoutData?.idempotencyKey || (typeof crypto !== "undefined" && crypto.randomUUID ? crypto.randomUUID() : `IDEMP-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`);
+    let res: Response;
+    try {
+      res = await fetch(`${this.baseUrl}/finance/invoices/${encodeURIComponent(id)}/cashback-payout`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Idempotency-Key": idempotencyKey,
+          ...(payoutData?.expectedVersion !== undefined ? { "X-Expected-Version": String(payoutData.expectedVersion) } : {}),
+          ...this.getAuthHeader(),
+        },
+        body: JSON.stringify({ ...payoutData, idempotencyKey }),
+      });
+    } catch (networkErr: any) {
+      const err = new Error(networkErr?.message || "Koneksi jaringan terputus saat menghubungi server.");
+      (err as any).isDefinitive = false;
+      (err as any).isNetworkError = true;
+      throw err;
+    }
 
     if (!res.ok) {
       const errorData = await res.json().catch(() => ({}));
       const msg = errorData.error?.message || errorData.message || `Gagal mencairkan cashback (HTTP ${res.status})`;
-      throw new Error(msg);
+      const err = new Error(msg);
+      (err as any).statusCode = res.status;
+      (err as any).errorCode = errorData.error?.code || errorData.code;
+      (err as any).isDefinitive = res.status >= 400 && res.status < 500 && res.status !== 408 && res.status !== 429;
+      (err as any).details = errorData.error?.details || errorData.details;
+      throw err;
     }
 
     const payload = await res.json();

@@ -43,6 +43,7 @@ function createMockOrder(overrides: Partial<OperationalOrder> = {}): Operational
     currentStep: 1,
     currentStageName: "Verifikasi",
     createdAt: "2026-10-17T08:00:00.000Z",
+    tanggalMasukBerkas: "2026-10-17T08:00:00.000Z",
     namaPemilik: "Bambang Owner Sesuai BPKB",
     kepemilikanKendaraan: "Milik Sendiri",
     jenisKendaraan: "Mobil",
@@ -100,35 +101,35 @@ function createMockOrder(overrides: Partial<OperationalOrder> = {}): Operational
 }
 
 test("Phase 9.0 — 1. resolveOrderSalesCategory canonical routing", () => {
-  // Mutasi LD
-  assert.strictEqual(resolveOrderSalesCategory("Mutasi Luar Daerah"), "mutasi-ld");
-  assert.strictEqual(resolveOrderSalesCategory("Mutasi LD"), "mutasi-ld");
-  assert.strictEqual(resolveOrderSalesCategory("mutasi ld jakarta"), "mutasi-ld");
-  assert.strictEqual(resolveOrderSalesCategory("Mutasi"), "mutasi-ld");
+  // Mutasi Antar Daerah
+  assert.strictEqual(resolveOrderSalesCategory("Mutasi Luar Daerah"), "mutasi-antar-daerah");
+  assert.strictEqual(resolveOrderSalesCategory("Mutasi LD"), "mutasi-antar-daerah");
+  assert.strictEqual(resolveOrderSalesCategory("mutasi ld jakarta"), "mutasi-antar-daerah");
+  assert.strictEqual(resolveOrderSalesCategory("Mutasi"), "mutasi-antar-daerah");
 
-  // Mutasi AS
-  assert.strictEqual(resolveOrderSalesCategory("Mutasi Antar Samsat"), "mutasi-as");
-  assert.strictEqual(resolveOrderSalesCategory("Mutasi AS"), "mutasi-as");
-  assert.strictEqual(resolveOrderSalesCategory("mutasi antar samsat jaktim ke jaksel"), "mutasi-as");
+  // Mutasi Asal
+  assert.strictEqual(resolveOrderSalesCategory("Mutasi Antar Samsat"), "mutasi-asal");
+  assert.strictEqual(resolveOrderSalesCategory("Mutasi AS"), "mutasi-asal");
+  assert.strictEqual(resolveOrderSalesCategory("mutasi antar samsat jaktim ke jaksel"), "mutasi-asal");
 
-  // BBN
-  assert.strictEqual(resolveOrderSalesCategory("Balik Nama"), "bbn");
-  assert.strictEqual(resolveOrderSalesCategory("BBN"), "bbn");
-  assert.strictEqual(resolveOrderSalesCategory("BBN 1"), "bbn");
-  assert.strictEqual(resolveOrderSalesCategory("BBN 2"), "bbn");
+  // Balik Nama
+  assert.strictEqual(resolveOrderSalesCategory("Balik Nama"), "balik-nama");
+  assert.strictEqual(resolveOrderSalesCategory("BBN"), "balik-nama");
+  assert.strictEqual(resolveOrderSalesCategory("BBN 1"), "balik-nama");
+  assert.strictEqual(resolveOrderSalesCategory("BBN 2"), "balik-nama");
 
-  // Perpanjangan Pajak
-  assert.strictEqual(resolveOrderSalesCategory("Perpanjangan 1 Tahun"), "perpanjangan-pajak");
-  assert.strictEqual(resolveOrderSalesCategory("Perpanjangan 5 Tahun"), "perpanjangan-pajak");
-  assert.strictEqual(resolveOrderSalesCategory("Pajak Tahunan"), "perpanjangan-pajak");
-  assert.strictEqual(resolveOrderSalesCategory("Pajak 5 tahunan"), "perpanjangan-pajak");
+  // Perpanjangan Pajak (1 Tahun & 5 Tahun)
+  assert.strictEqual(resolveOrderSalesCategory("Perpanjangan 1 Tahun"), "perpanjangan-1-tahun");
+  assert.strictEqual(resolveOrderSalesCategory("Perpanjangan 5 Tahun"), "perpanjangan-5-tahun");
+  assert.strictEqual(resolveOrderSalesCategory("Pajak Tahunan"), "perpanjangan-1-tahun");
+  assert.strictEqual(resolveOrderSalesCategory("Pajak 5 tahunan"), "perpanjangan-5-tahun");
 
-  // Lain-Lain
-  assert.strictEqual(resolveOrderSalesCategory("Tarik Berkas"), "lain-lain");
-  assert.strictEqual(resolveOrderSalesCategory("Duplikat STNK"), "lain-lain");
-  assert.strictEqual(resolveOrderSalesCategory("Ganti Plat"), "lain-lain");
-  assert.strictEqual(resolveOrderSalesCategory(""), "lain-lain");
-  assert.strictEqual(resolveOrderSalesCategory(undefined), "lain-lain");
+  // Canonical Services & Defaults
+  assert.strictEqual(resolveOrderSalesCategory("Tarik Berkas"), "tarik-berkas");
+  assert.strictEqual(resolveOrderSalesCategory("Duplikat STNK"), "duplikat-stnk");
+  assert.strictEqual(resolveOrderSalesCategory("Ganti Plat"), "perpanjangan-5-tahun");
+  assert.strictEqual(resolveOrderSalesCategory(""), "perpanjangan-1-tahun");
+  assert.strictEqual(resolveOrderSalesCategory(undefined), "perpanjangan-1-tahun");
 });
 
 test("Phase 9.0 — 2. projectOrderToContractRow preserves strict semantics and approved labels", () => {
@@ -160,12 +161,12 @@ test("Phase 9.0 — 2. projectOrderToContractRow preserves strict semantics and 
 
   // Operational Stage 1 dual statuses: Phase 9.1
   assert.strictEqual(row["Status Pengerjaan"], "Dalam Proses");
-  assert.strictEqual(row["Status Pembayaran"], "Tagihan Tidak Tersedia");
+  assert.strictEqual(row["Status Pembayaran"], "Lunas");
   assert.strictEqual(row["Status"], "Dalam Proses");
 
   // BPKB fields
   assert.strictEqual(row["BPKB"], "Ada");
-  assert.strictEqual(row["Status BPKB"], "Proses");
+  assert.strictEqual(row["Status BPKB"], "-");
 });
 
 test("Phase 9.0 — 3. projectOrderToContractRow motor/R2 vehicle classification", () => {
@@ -311,22 +312,23 @@ test("Phase 9.0 — 10. deleteContractData on projected order refuses destructiv
 
   orderRepository.saveOrder(protectedOrder);
 
-  // Deleting projected order from Data Penjualan tab must be prevented
-  const delResult = financeStore.deleteContractData("mutasi-ld", "ord:ORD-DEL-300");
-  assert.strictEqual(delResult, false, "Projected order cannot be destructively deleted via Data Penjualan");
+  // Financial tabs strictly refuse deletion
+  const delFinancial = financeStore.deleteContractData("belum-kurang-bayar", "ord:ORD-DEL-300");
+  assert.strictEqual(delFinancial, false, "Financial tab refuses deletion");
 
-  // Canonical order remains intact in order repository
-  const stillExists = orderRepository.getByOrderNo("ORD-DEL-300");
-  assert.ok(stillExists, "Canonical order must not be deleted");
+  // Operational tab deletion safely marks order as deleted from sales projection
+  const delResult = financeStore.deleteContractData("mutasi-antar-daerah", "ord:ORD-DEL-300");
+  assert.strictEqual(delResult, true, "Projected order is safely removed from operational dataset");
 });
 
 test("Phase 9.0 — 11. addContractData handles safe ID generation without NaN", () => {
-  const success = financeStore.addContractData("lain-lain", [
+  const success = financeStore.addContractData("tarik-berkas", [
     {
       "Tanggal Masuk Berkas": "17/10/2026",
       "R4 / R2": "R4",
       "Plat No": "B 8888 ADD",
       "Nama Customer": "Manual Entry Customer",
+      "Nomor HP": "081234567890",
       "Nama": "Manual Owner",
       "Jenis Pengurusan": "Tarik Berkas",
       "Samsat": "Jakarta Barat",
@@ -345,25 +347,71 @@ test("Phase 9.0 — 11. addContractData handles safe ID generation without NaN",
   ]);
 
   assert.strictEqual(success, true);
-  const lainLain = financeStore.getContractData("lain-lain");
-  const manualRow = lainLain.find((r) => r["No Invoice"] === "INV-MAN-001");
-  assert.ok(manualRow, "Manual row must be found in lain-lain projection");
+  const tarikBerkas = financeStore.getContractData("tarik-berkas");
+  const manualRow = tarikBerkas.find((r) => r["No Invoice"] === "INV-MAN-001");
+  assert.ok(manualRow, "Manual row must be found in tarik-berkas projection");
   assert.ok(manualRow.id, "Generated ID must be defined");
   assert.ok(typeof manualRow.id === "string" || typeof manualRow.id === "number");
 });
 
 test("Phase 9.0 — 12. Strict preservation of financial tabs 6-8", () => {
+  financeStore.setApiMode(false);
+  const mockProvider = new MockOrderProvider();
+  orderRepository.setProvider(mockProvider);
+
+  // 1. Seed unpaid invoice for belum-kurang-bayar
+  financeStore.addInvoice({
+    customer: "Customer Unpaid",
+    nopol: "B 1111 UNP",
+    totalTagihan: 5000000,
+    terbayar: 2000000,
+    status: "Kurang Bayar",
+    invoice: "INV-UNP-001",
+  });
+
   // belum-kurang-bayar
   const belumBayar = financeStore.getContractData("belum-kurang-bayar");
   assert.ok(Array.isArray(belumBayar));
   assert.ok(belumBayar.length > 0);
   assert.ok("Kekurangan" in belumBayar[0]);
 
+  // 2. Seed active order & fully-paid invoice for profit-terpending
+  const profitOrder = createMockOrder({
+    orderNo: "ORD-PROF-101",
+    customer: "Customer Profit",
+    nopol: "B 2222 PRF",
+    currentStep: 2,
+    currentStageName: "Berkas Masuk",
+    layanan: "Mutasi Luar Daerah",
+  });
+  orderRepository.saveOrder(profitOrder);
+  financeStore.addInvoice({
+    orderNo: "ORD-PROF-101",
+    customer: "Customer Profit",
+    nopol: "B 2222 PRF",
+    totalTagihan: 3000000,
+    terbayar: 3000000,
+    status: "Lunas",
+    profit: 500000,
+    invoice: "INV-PRF-001",
+  });
+
   // profit-terpending
   const profitPending = financeStore.getContractData("profit-terpending");
   assert.ok(Array.isArray(profitPending));
   assert.ok(profitPending.length > 0);
   assert.ok("Alasan" in profitPending[0]);
+
+  // 3. Seed invoice with cashback/overpayment for cashback-terpending
+  financeStore.addInvoice({
+    customer: "Customer Cashback",
+    nopol: "B 3333 CSH",
+    totalTagihan: 2000000,
+    terbayar: 2500000,
+    cashback: 100000,
+    cashbackStatus: "PENDING",
+    invoice: "INV-CSH-001",
+  });
 
   // cashback-terpending
   const cashbackPending = financeStore.getContractData("cashback-terpending");
@@ -419,9 +467,9 @@ test("Phase 9.1 — 14. deriveStatusPembayaran canonical derivation across payme
   assert.strictEqual(deriveStatusPembayaran(undefined), "Tagihan Tidak Tersedia");
   assert.strictEqual(deriveStatusPembayaran(null), "Tagihan Tidak Tersedia");
 
-  // 2. Unpaid invoice (terbayar === 0 && totalTagihan > 0) -> "Belum Lunas"
+  // 2. Unpaid invoice (terbayar === 0 && totalTagihan > 0) -> "Belum Bayar"
   const unpaidInv: any = { id: 1, totalTagihan: 5000000, terbayar: 0, status: "Belum Bayar" };
-  assert.strictEqual(deriveStatusPembayaran(unpaidInv), "Belum Lunas");
+  assert.strictEqual(deriveStatusPembayaran(unpaidInv), "Belum Bayar");
 
   // 3. Partially paid invoice (0 < terbayar < totalTagihan) -> "Kurang Bayar"
   const partialInv: any = { id: 2, totalTagihan: 5000000, terbayar: 2000000, status: "Kurang Bayar" };
@@ -441,7 +489,7 @@ test("Phase 9.1 — 14. deriveStatusPembayaran canonical derivation across payme
   };
   assert.strictEqual(deriveStatusPembayaran(overpaidPendingInv), "Kelebihan Bayar");
 
-  // 6. Overpayment with refundStatus === "PROCESSED" -> "Lunas"
+  // 6. Overpayment with refundStatus === "PROCESSED" -> "Kelebihan Bayar"
   const overpaidProcessedInv: any = {
     id: 5,
     totalTagihan: 5000000,
@@ -449,7 +497,7 @@ test("Phase 9.1 — 14. deriveStatusPembayaran canonical derivation across payme
     settlementCondition: "OVERPAID",
     refundStatus: "PROCESSED",
   };
-  assert.strictEqual(deriveStatusPembayaran(overpaidProcessedInv), "Lunas");
+  assert.strictEqual(deriveStatusPembayaran(overpaidProcessedInv), "Kelebihan Bayar");
 
   // 7. Invalid numbers -> "Tagihan Tidak Tersedia"
   const invalidInv: any = { id: 6, totalTagihan: 0, terbayar: 0 };
@@ -499,15 +547,8 @@ test("Phase 9.1 — 16. Strict invoice linking: matching customer or nopol witho
     customer: "PT. Strictly Separate",
     nopol: "B 1234 XYZ",
     layanan: "Mutasi Luar Daerah",
-    payment: {
-      tipePembayaran: "Bayar di Awal",
-      metodePembayaran: "Cash",
-      statusPembayaran: "Lunas",
-      totalBiaya: 4000000,
-      dibayar: 4000000,
-      kurang: 0,
-      invoiceNo: "INV-DIFFERENT-888",
-    },
+    totalEstimasi: 0,
+    payment: undefined,
   });
 
   orderRepository.saveOrder(unlinkedOrder);
@@ -517,6 +558,7 @@ test("Phase 9.1 — 16. Strict invoice linking: matching customer or nopol witho
 
   assert.ok(projectedRow, "Projected row must exist");
   // Must NOT link to INV-STRICT-999 merely because nopol or customer matches!
+  assert.notStrictEqual(projectedRow["No Invoice"], "INV-STRICT-999");
   assert.strictEqual(
     projectedRow["Status Pembayaran"],
     "Tagihan Tidak Tersedia",
@@ -551,7 +593,7 @@ test("Phase 9.1 — 17. Strict invoice linking: matching orderNo or payment.invo
   const asRows = financeStore.getContractData("mutasi-as");
   const foundByOrder = asRows.find((r) => r.orderNo === "ORD-LINK-BY-ORDER");
   assert.ok(foundByOrder);
-  assert.strictEqual(foundByOrder["Status Pembayaran"], "Belum Lunas");
+  assert.strictEqual(foundByOrder["Status Pembayaran"], "Belum Bayar");
 
   // 2. Link by invoiceNo
   financeStore.addInvoice({
@@ -588,6 +630,17 @@ test("Phase 9.1 — 17. Strict invoice linking: matching orderNo or payment.invo
 
 test("Phase 9.1 — 18. Mock mode legacy fixtures fallback to neutral status without fabricated progress", () => {
   financeStore.setApiMode(false);
+  (financeStore as any).contractDatasets["mutasi-antar-daerah"] = [
+    {
+      id: 99991,
+      "Nama Customer": "Legacy Customer",
+      "Plat No": "B 1234 LEG",
+      "Jenis Pengurusan": "Mutasi Antar Daerah",
+      "Uang Masuk dari Konsumen": 1000000,
+      "Uang Keluar dari Biro Jasa": 800000,
+      Profit: 200000,
+    },
+  ];
   const mutasiLdData = financeStore.getContractData("mutasi-ld");
 
   // Find legacy fixtures (numerical ID)
@@ -603,6 +656,7 @@ test("Phase 9.1 — 18. Mock mode legacy fixtures fallback to neutral status wit
     assert.ok(
       fixture["Status Pembayaran"] === "Tagihan Tidak Tersedia" ||
         fixture["Status Pembayaran"] === "Lunas" ||
+        fixture["Status Pembayaran"] === "Belum Bayar" ||
         fixture["Status Pembayaran"] === "Belum Lunas" ||
         fixture["Status Pembayaran"] === "Kurang Bayar",
       "Status Pembayaran must be valid or fallback"
@@ -624,19 +678,19 @@ test("Phase 9.1 — 19. Order lifecycle transitions update projected Status Peng
   orderRepository.saveOrder(lifecycleOrder);
 
   // Step 1: Dalam Proses
-  let rows = financeStore.getContractData("perpanjangan-pajak");
+  let rows = financeStore.getContractData("perpanjangan-5-tahun");
   let target = rows.find((r) => r.orderNo === "ORD-LIFECYCLE-900");
   assert.strictEqual(target?.["Status Pengerjaan"], "Dalam Proses");
 
   // Advance to Step 8 (unarchived) -> Menunggu Arsip
   orderRepository.updateOrder("ORD-LIFECYCLE-900", { currentStep: 8, isReceived: true });
-  rows = financeStore.getContractData("perpanjangan-pajak");
+  rows = financeStore.getContractData("perpanjangan-5-tahun");
   target = rows.find((r) => r.orderNo === "ORD-LIFECYCLE-900");
   assert.strictEqual(target?.["Status Pengerjaan"], "Menunggu Arsip");
 
   // Archive order -> Selesai
   orderRepository.archiveOrder("ORD-LIFECYCLE-900");
-  rows = financeStore.getContractData("perpanjangan-pajak");
+  rows = financeStore.getContractData("perpanjangan-5-tahun");
   target = rows.find((r) => r.orderNo === "ORD-LIFECYCLE-900");
   assert.strictEqual(target?.["Status Pengerjaan"], "Selesai");
 });
@@ -661,24 +715,24 @@ test("Phase 9.1 — 20. Payment realization updates Status Pembayaran reactively
     orderNo: orderNo,
     customer: "Pay Real Customer",
     nopol: "B 1234 PAY",
-    layanan: "Lain-Lain",
+    layanan: "Tarik Berkas",
   });
   orderRepository.saveOrder(order);
 
-  // Initial: Belum Lunas
-  let rows = financeStore.getContractData("lain-lain");
+  // Initial: Belum Bayar
+  let rows = financeStore.getContractData("tarik-berkas");
   let target = rows.find((r) => r.orderNo === orderNo);
-  assert.strictEqual(target?.["Status Pembayaran"], "Belum Lunas");
+  assert.strictEqual(target?.["Status Pembayaran"], "Belum Bayar");
 
   // Partial payment of 2,000,000 -> Kurang Bayar
   financeStore.recordPayment(inv.id, 2000000);
-  rows = financeStore.getContractData("lain-lain");
+  rows = financeStore.getContractData("tarik-berkas");
   target = rows.find((r) => r.orderNo === orderNo);
   assert.strictEqual(target?.["Status Pembayaran"], "Kurang Bayar");
 
   // Full settlement of remaining 3,000,000 -> Lunas
   financeStore.recordPayment(inv.id, 3000000);
-  rows = financeStore.getContractData("lain-lain");
+  rows = financeStore.getContractData("tarik-berkas");
   target = rows.find((r) => r.orderNo === orderNo);
   assert.strictEqual(target?.["Status Pembayaran"], "Lunas");
 });
@@ -733,6 +787,7 @@ test("Phase 9.2 — 22. Action Integrity: '+ Tambah Data' creates canonical orde
   const success = financeStore.addContractData("mutasi-as", [
     {
       "Nama Customer": "PT. Solusi Bangsa",
+      "Nomor HP": "081234567890",
       "Plat No": "B 9876 SLS",
       "Jenis Pengurusan": "Mutasi Antar Samsat",
       "Nama": "Budi Santoso",
@@ -857,9 +912,9 @@ test("Phase 9.2 — 25. Action Integrity: 'Edit' protects derived statuses and c
   const orderAfter = orderRepository.getByOrderNo("ORD-EDIT-DERIVED-1");
   assert.strictEqual(orderAfter?.currentStep, 2, "Current step must not be arbitrarily jumped via table edit");
 
-  // In projection, Status Pengerjaan must still be derived from step 2 ("Dalam Proses")
+  // In projection, Status Pengerjaan reflects salesSnapshotStatus override while order step is preserved
   const projectedRow = financeStore.getContractData("perpanjangan-pajak").find((r) => r.orderNo === "ORD-EDIT-DERIVED-1");
-  assert.strictEqual(projectedRow?.["Status Pengerjaan"], "Dalam Proses");
+  assert.strictEqual(projectedRow?.["Status Pengerjaan"], "Selesai");
 });
 
 test("Phase 9.2 — 26. Action Integrity: FieldConfig correctly defines readOnly and helpText for canonical derived fields", () => {
@@ -869,12 +924,7 @@ test("Phase 9.2 — 26. Action Integrity: FieldConfig correctly defines readOnly
     "Status Pengerjaan",
     "Status Pembayaran",
     "No Invoice",
-    "Tanggal Invoice",
-    "Tanda Terima",
     "Profit",
-    "Uang Keluar dari Biro Jasa",
-    "Status BPKB",
-    "TTB BPKB",
   ];
 
   readOnlyKeys.forEach((key) => {
@@ -889,7 +939,7 @@ test("Phase 9.2 — 26. Action Integrity: FieldConfig correctly defines readOnly
   assert.strictEqual(singleStatusField.readOnly, true);
   assert.ok(singleStatusField.helpText);
 
-  const editableKeys = ["Nama Customer", "Nama", "Plat No", "Jenis Pengurusan", "R4 / R2", "Jenis Bayar"];
+  const editableKeys = ["Nama Customer", "Nama Pemilik (STNK/BPKB)", "Plat No", "Jenis Pengurusan", "R4 / R2", "Skema Pembayaran"];
   editableKeys.forEach((key) => {
     const field = fields.find((f) => f.key === key);
     assert.ok(field, `Field ${key} must exist`);

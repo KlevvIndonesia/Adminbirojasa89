@@ -432,45 +432,51 @@
 .dark  ::-webkit-scrollbar-thumb { background: #1e2749; }
 .dark  ::-webkit-scrollbar-thumb:hover { background: #3b82f6; }
 
-/* ── Finance Table Typography System (Phase 2B) ── */
+/* ── Finance Table Typography System (Phase 2B — 2px Reduction) ── */
 .finance-table {
   width: 100%;
   border-collapse: separate;
   border-spacing: 0;
 }
 
-/* Font Size Modifiers (1x, 2x, 3x) */
+/* Font Size Modifiers (1x, 2x, 3x) — Exact 2px reduction from baseline */
 .finance-table--font-1 {
-  font-size: 0.75rem; /* 12px default */
-  line-height: 1.15rem;
+  font-size: 0.625rem; /* 10px default (reduced by 2px from 12px baseline) */
+  line-height: 1rem;
 }
-.finance-table--font-1 .finance-table__header th {
-  font-size: 0.75rem;
+.finance-table--font-1 .finance-table__header th,
+.finance-table--font-1 th {
+  font-size: 0.625rem !important;
 }
-.finance-table--font-1 .finance-table__body td {
-  font-size: 0.75rem;
+.finance-table--font-1 .finance-table__body td,
+.finance-table--font-1 td {
+  font-size: 0.625rem !important;
 }
 
 .finance-table--font-2 {
-  font-size: 0.875rem; /* 14px larger */
-  line-height: 1.35rem;
+  font-size: 0.75rem; /* 12px (reduced by 2px from 14px) */
+  line-height: 1.15rem;
 }
-.finance-table--font-2 .finance-table__header th {
-  font-size: 0.875rem;
+.finance-table--font-2 .finance-table__header th,
+.finance-table--font-2 th {
+  font-size: 0.75rem !important;
 }
-.finance-table--font-2 .finance-table__body td {
-  font-size: 0.875rem;
+.finance-table--font-2 .finance-table__body td,
+.finance-table--font-2 td {
+  font-size: 0.75rem !important;
 }
 
 .finance-table--font-3 {
-  font-size: 1rem; /* 16px largest */
-  line-height: 1.55rem;
+  font-size: 0.875rem; /* 14px (reduced by 2px from 16px) */
+  line-height: 1.35rem;
 }
-.finance-table--font-3 .finance-table__header th {
-  font-size: 0.95rem;
+.finance-table--font-3 .finance-table__header th,
+.finance-table--font-3 th {
+  font-size: 0.8125rem !important; /* 13px */
 }
-.finance-table--font-3 .finance-table__body td {
-  font-size: 1rem;
+.finance-table--font-3 .finance-table__body td,
+.finance-table--font-3 td {
+  font-size: 0.875rem !important;
 }
 
 /* Header vs Body Typographic Hierarchy (Requirement 12 & 13) */
@@ -489,7 +495,13 @@
 .finance-table__secondary {
   font-weight: 350;
   color: var(--muted-foreground);
-  font-size: 0.75rem;
+  font-size: 0.625rem; /* 10px */
+}
+
+/* Ensure inner spans in table cells inherit table font size rather than forcing larger text */
+.finance-table th span,
+.finance-table td span:not([class*="badge"]):not([class*="Badge"]) {
+  font-size: inherit;
 }
 
 /* Monospace Plate Number (Requirement 14) */

@@ -6,6 +6,71 @@
 import { db, runInTransaction } from "../database/db";
 import { OperationalOrder, StageName, STAGES } from "../../../src/domain/order/types";
 
+/**
+ * Evaluates whether an order represents a partial estimate or complete pricing.
+ * Invariant: An order with unconfigured tariffs or PARTIAL_ESTIMATE cannot be verified
+ * unless explicit legitimate verification metadata is present.
+ */
+export function evaluateOrderCostCompleteness(order: any): {
+  isPartialEstimate: boolean;
+  costCompletenessStatus: "COMPLETE" | "PARTIAL_ESTIMATE" | "VERIFIED";
+  isCostVerified: boolean;
+} {
+  if (!order) {
+    return { isPartialEstimate: false, costCompletenessStatus: "COMPLETE", isCostVerified: true };
+  }
+
+  // 1. Check if order was already verified through official verification process
+  const hasVerifiedStatus = order.costCompletenessStatus === "VERIFIED" || order.cost_completeness_status === "VERIFIED";
+  const hasVerifier = Boolean(order.costVerifiedBy || order.cost_verified_by);
+
+  if (hasVerifiedStatus && hasVerifier) {
+    return {
+      isPartialEstimate: false,
+      costCompletenessStatus: "VERIFIED",
+      isCostVerified: true,
+    };
+  }
+
+  // 2. Evaluate if snapshot or explicit status indicates PARTIAL_ESTIMATE or unconfigured tariffs
+  const rawStatus = order.costCompletenessStatus || order.cost_completeness_status || order.completenessStatus;
+  const snapshot = order.costSnapshot || order.cost_snapshot;
+
+  let isPartial = rawStatus === "PARTIAL_ESTIMATE";
+
+  if (snapshot && typeof snapshot === "object") {
+    if (snapshot.completenessStatus === "PARTIAL_ESTIMATE") {
+      isPartial = true;
+    }
+    if (snapshot.hasUnconfiguredTariff === true) {
+      isPartial = true;
+    }
+    if (Array.isArray(snapshot.unconfiguredItems) && snapshot.unconfiguredItems.length > 0) {
+      isPartial = true;
+    }
+    if (Array.isArray(snapshot.breakdown)) {
+      if (snapshot.breakdown.some((b: any) => b && (b.status === "UNCONFIGURED" || b.isConfigured === false))) {
+        isPartial = true;
+      }
+    }
+  }
+
+  if (isPartial) {
+    return {
+      isPartialEstimate: true,
+      costCompletenessStatus: "PARTIAL_ESTIMATE",
+      isCostVerified: false,
+    };
+  }
+
+  // 3. Complete order (all tariffs configured and valid)
+  return {
+    isPartialEstimate: false,
+    costCompletenessStatus: "COMPLETE",
+    isCostVerified: true,
+  };
+}
+
 export class DbOrderRepository {
   private mapRowToOrder(row: any): OperationalOrder {
     let parsed: any = {};
@@ -39,6 +104,31 @@ export class DbOrderRepository {
     const samsatTujuan = row.samsat_tujuan !== null && row.samsat_tujuan !== undefined ? String(row.samsat_tujuan) : (parsed.wilayahSamsatTujuan || parsed.samsatTujuan || "-");
     const createdAt = row.created_at ? String(row.created_at) : (parsed.createdAt || new Date().toISOString());
     const updatedAt = row.updated_at ? String(row.updated_at) : (parsed.updatedAt || new Date().toISOString());
+    const costEval = evaluateOrderCostCompleteness({
+      ...parsed,
+      is_cost_verified: row.is_cost_verified,
+      cost_completeness_status: row.cost_completeness_status,
+      cost_verified_at: row.cost_verified_at,
+      cost_verified_by: row.cost_verified_by,
+    });
+
+    let isCostVerified: boolean;
+    let costCompletenessStatus: string;
+    let costVerifiedAt = row.cost_verified_at || parsed.costVerifiedAt || (parsed as any).cost_verified_at || undefined;
+    let costVerifiedBy = row.cost_verified_by || parsed.costVerifiedBy || (parsed as any).cost_verified_by || undefined;
+
+    if (row.is_cost_verified !== null && row.is_cost_verified !== undefined) {
+      isCostVerified = Boolean(row.is_cost_verified);
+      costCompletenessStatus = row.cost_completeness_status ? String(row.cost_completeness_status) : (isCostVerified ? "COMPLETE" : "PARTIAL_ESTIMATE");
+      // Safety invariant: if completeness status is PARTIAL_ESTIMATE, it cannot be verified unless explicit verification process completed
+      if (costCompletenessStatus === "PARTIAL_ESTIMATE" && isCostVerified) {
+        isCostVerified = false;
+      }
+    } else {
+      // Legacy rows where SQLite columns are null: evaluated dynamically from costSnapshot
+      isCostVerified = costEval.isCostVerified;
+      costCompletenessStatus = costEval.costCompletenessStatus;
+    }
 
     // 2. Evaluasi status arsip dan tahapan efektif
     let isArchived: boolean | number = false;
@@ -55,6 +145,10 @@ export class DbOrderRepository {
       isArchived = 2;
     } else {
       isArchived = false;
+      // Normalisasi kanonis: jika stage bernilai "Selesai" atau step >= 8 pada order aktif, mapping ke "Dokumen Telah Diterima"
+      if (effectiveStageName === "Selesai" || (effectiveStep >= 8 && effectiveStageName !== "Dibatalkan")) {
+        effectiveStageName = "Dokumen Telah Diterima";
+      }
     }
 
     // 3. Rekonsiliasi sub-objek payment
@@ -93,6 +187,12 @@ export class DbOrderRepository {
       payment,
       createdAt,
       updatedAt,
+      isCostVerified,
+      costCompletenessStatus,
+      cost_completeness_status: costCompletenessStatus,
+      is_cost_verified: isCostVerified ? 1 : 0,
+      costVerifiedAt,
+      costVerifiedBy,
       // Alias reporting kompatibilitas
       totalBiaya,
       total_biaya: totalBiaya,
@@ -123,7 +223,10 @@ export class DbOrderRepository {
 
     const orders = this.getAllFlat(false);
     for (const order of orders) {
-      const stage = ((order as any).stageBeforeCancel || order.currentStageName) as StageName;
+      let stage = ((order as any).stageBeforeCancel || order.currentStageName) as StageName;
+      if ((stage as string) === "Selesai" || order.currentStep >= 8) {
+        stage = "Dokumen Telah Diterima";
+      }
       if (result[stage]) {
         result[stage].push(order);
       }
@@ -161,22 +264,32 @@ export class DbOrderRepository {
     const bankUangKeluar = (order as any).bankUangKeluar || null;
     const metodePembayaranKeluar = (order as any).metodePembayaranKeluar || null;
     const alasanPending = (order as any).alasan_pending || (order as any).alasanPending || (order as any).alasan || null;
+    const nomorHP = order.nomorHP || (order as any).nomorHp || (order as any).nomor_hp || "-";
     const serviceId = (order as any).serviceId || (order as any).service_id || null;
     const tanggalMasukBerkas = (order as any).tanggalMasukBerkas || (order as any).tanggal_masuk_berkas || null;
     const samsatAsal = (order as any).wilayahSamsatAsal || (order as any).samsatAsal || (order as any).samsat_asal || (order as any).samsat || null;
     const samsatTujuan = (order as any).wilayahSamsatTujuan || (order as any).samsatTujuan || (order as any).samsat_tujuan || "-";
     const currentStep = Number(order.currentStep || 1);
-    const currentStageName = String(order.currentStageName || "Verifikasi");
+    const isArchived = order.isArchived === true ? 1 : (order.isArchived === 2 ? 2 : 0);
+    let currentStageName = String(order.currentStageName || "Verifikasi");
+    if (currentStageName === "Selesai" || (currentStep >= 8 && currentStageName !== "Dibatalkan" && isArchived === 0)) {
+      currentStageName = "Dokumen Telah Diterima";
+    }
     const paymentStatus = String(order.payment?.statusPembayaran || "Belum Lunas");
     const totalBiaya = Number(order.payment?.totalBiaya ?? order.totalEstimasi ?? order.biayaJasa ?? 0);
-    const isArchived = order.isArchived === true ? 1 : (order.isArchived === 2 ? 2 : 0);
     const createdAt = order.createdAt ? String(order.createdAt) : new Date().toISOString().split("T")[0];
+
+    const costEval = evaluateOrderCostCompleteness(order);
+    const isCostVerifiedVal = costEval.isCostVerified ? 1 : 0;
+    const costCompletenessVal = costEval.costCompletenessStatus;
+    const costVerifiedAtVal = costEval.isCostVerified ? (order.costVerifiedAt || (order as any).cost_verified_at || null) : null;
+    const costVerifiedByVal = costEval.isCostVerified ? (order.costVerifiedBy || (order as any).cost_verified_by || null) : null;
 
     const synchronizedOrder: OperationalOrder = {
       ...order,
       orderNo: order.orderNo,
       customer: order.customer,
-      nomorHP: order.nomorHP,
+      nomorHP,
       layanan: order.layanan,
       nopol: order.nopol,
       currentStep,
@@ -197,12 +310,18 @@ export class DbOrderRepository {
       wilayahSamsatTujuan: samsatTujuan,
       samsat_tujuan: samsatTujuan,
       createdAt,
+      isCostVerified: costEval.isCostVerified,
+      costCompletenessStatus: costEval.costCompletenessStatus,
+      costVerifiedAt: costVerifiedAtVal || undefined,
+      costVerifiedBy: costVerifiedByVal || undefined,
       payment: {
         ...(order.payment || {}),
         totalBiaya,
         statusPembayaran: paymentStatus as any,
-      },
+      } as any,
     };
+
+    // Cost completeness and verification values evaluated by evaluateOrderCostCompleteness above
 
     const stmt = db.prepare(`
       INSERT INTO orders (
@@ -211,16 +330,16 @@ export class DbOrderRepository {
         biaya_jasa, biaya_antar_jemput, nama_penerima_keluar, bank_uang_keluar, metode_pembayaran_keluar,
         alasan_pending, data_json, created_at, updated_at,
         service_id, tanggal_masuk_berkas, samsat_asal, samsat_tujuan,
-        samsat_tujuan_id
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), ?, ?, ?, ?, NULL)
+        samsat_tujuan_id, is_cost_verified, cost_completeness_status, cost_verified_at, cost_verified_by
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), ?, ?, ?, ?, NULL, ?, ?, ?, ?)
     `);
 
     stmt.run(
       order.orderNo,
       order.customer,
-      order.nomorHP,
-      order.layanan,
-      order.nopol,
+      nomorHP,
+      order.layanan || "-",
+      order.nopol || "-",
       currentStep,
       currentStageName,
       paymentStatus,
@@ -237,7 +356,11 @@ export class DbOrderRepository {
       serviceId,
       tanggalMasukBerkas,
       samsatAsal,
-      samsatTujuan
+      samsatTujuan,
+      isCostVerifiedVal,
+      costCompletenessVal,
+      costVerifiedAtVal,
+      costVerifiedByVal
     );
   }
 
@@ -253,7 +376,10 @@ export class DbOrderRepository {
     const resolvedLayanan = updates.layanan !== undefined ? String(updates.layanan).trim() : existing.layanan;
     const resolvedNopol = updates.nopol !== undefined ? String(updates.nopol).trim() : existing.nopol;
     const resolvedStep = updates.currentStep !== undefined ? Number(updates.currentStep) : existing.currentStep;
-    const resolvedStageName = updates.currentStageName !== undefined ? String(updates.currentStageName) : existing.currentStageName;
+    let resolvedStageName = updates.currentStageName !== undefined ? String(updates.currentStageName) : existing.currentStageName;
+    if (resolvedStageName === "Selesai" || (resolvedStep >= 8 && resolvedStageName !== "Dibatalkan" && !existing.isArchived)) {
+      resolvedStageName = "Dokumen Telah Diterima";
+    }
 
     const resolvedPaymentStatus = updates.payment?.statusPembayaran !== undefined
       ? String(updates.payment.statusPembayaran)
@@ -317,9 +443,41 @@ export class DbOrderRepository {
       ? (updates as any).wilayahSamsatTujuan
       : ((updates as any).samsat_tujuan !== undefined ? (updates as any).samsat_tujuan : ((updates as any).samsatTujuan || (existing as any).wilayahSamsatTujuan || "-"));
 
+    let resolvedIsCostVerified: number;
+    let resolvedCostCompletenessStatus: string;
+    let resolvedCostVerifiedAt: string | null;
+    let resolvedCostVerifiedBy: string | null;
+
+    if (existing.isCostVerified && (existing.costCompletenessStatus === "VERIFIED" || existing.costCompletenessStatus === "COMPLETE")) {
+      // Verified or complete order: maintain verified state and metadata
+      resolvedIsCostVerified = 1;
+      resolvedCostCompletenessStatus = existing.costCompletenessStatus;
+      resolvedCostVerifiedAt = (updates as any).costVerifiedAt || (updates as any).cost_verified_at || existing.costVerifiedAt || null;
+      resolvedCostVerifiedBy = (updates as any).costVerifiedBy || (updates as any).cost_verified_by || existing.costVerifiedBy || null;
+    } else {
+      // Unverified order: only becomes verified if updates comes from verifyOrderCost (which sets status VERIFIED and verifier)
+      if (
+        ((updates as any).costCompletenessStatus === "VERIFIED" || (updates as any).cost_completeness_status === "VERIFIED") &&
+        ((updates as any).costVerifiedBy || (updates as any).cost_verified_by)
+      ) {
+        resolvedIsCostVerified = 1;
+        resolvedCostCompletenessStatus = "VERIFIED";
+        resolvedCostVerifiedAt = (updates as any).costVerifiedAt || (updates as any).cost_verified_at || new Date().toISOString();
+        resolvedCostVerifiedBy = (updates as any).costVerifiedBy || (updates as any).cost_verified_by;
+      } else {
+        // Remains unverified partial estimate
+        resolvedIsCostVerified = 0;
+        resolvedCostCompletenessStatus = "PARTIAL_ESTIMATE";
+        resolvedCostVerifiedAt = null;
+        resolvedCostVerifiedBy = null;
+      }
+    }
+
     const synchronizedMerged: OperationalOrder = {
       ...existing,
       ...updates,
+      // Immutable Snapshot Guard (Patch D): Preserve captured snapshot
+      serviceRequirementsSnapshot: existing.serviceRequirementsSnapshot,
       customer: resolvedCustomer,
       nomorHP: resolvedNomorHP,
       layanan: resolvedLayanan,
@@ -341,12 +499,16 @@ export class DbOrderRepository {
       samsat_asal: resolvedSamsatAsal,
       wilayahSamsatTujuan: resolvedSamsatTujuan,
       samsat_tujuan: resolvedSamsatTujuan,
+      isCostVerified: Boolean(resolvedIsCostVerified),
+      costCompletenessStatus: resolvedCostCompletenessStatus,
+      costVerifiedAt: resolvedCostVerifiedAt || undefined,
+      costVerifiedBy: resolvedCostVerifiedBy || undefined,
       payment: {
         ...(existing.payment || {}),
         ...(updates.payment || {}),
         totalBiaya: resolvedTotalBiaya,
         statusPembayaran: resolvedPaymentStatus as any,
-      },
+      } as any,
     };
 
     const stmt = db.prepare(`
@@ -370,6 +532,10 @@ export class DbOrderRepository {
         tanggal_masuk_berkas = ?,
         samsat_asal = ?,
         samsat_tujuan = ?,
+        is_cost_verified = ?,
+        cost_completeness_status = ?,
+        cost_verified_at = ?,
+        cost_verified_by = ?,
         updated_at = datetime('now')
       WHERE order_no = ?
     `);
@@ -394,13 +560,81 @@ export class DbOrderRepository {
       resolvedTanggalMasukBerkas,
       resolvedSamsatAsal,
       resolvedSamsatTujuan,
+      resolvedIsCostVerified,
+      resolvedCostCompletenessStatus,
+      resolvedCostVerifiedAt,
+      resolvedCostVerifiedBy,
       orderNo
     );
 
     return res.changes > 0;
   }
 
-  public advanceOrder(orderNo: string, targetStage: StageName, updates: Partial<OperationalOrder> = {}): boolean {
+  /**
+   * Records an explicit status transition in order_status_history.
+   * Atomically called inside runInTransaction.
+   */
+  public recordStatusHistory(
+    orderNo: string,
+    stepSebelumnya: number,
+    stepBaru: number,
+    stageName: string,
+    catatan: string | null = null,
+    actorEmployeeId?: string | null
+  ): void {
+    const histStmt = db.prepare(`
+      INSERT INTO order_status_history (
+        order_no, step_sebelumnya, step_baru, stage_name, catatan, diubah_oleh_employee_id, waktu_transisi
+      ) VALUES (?, ?, ?, ?, ?, ?, datetime('now'))
+    `);
+    histStmt.run(
+      orderNo,
+      stepSebelumnya,
+      stepBaru,
+      stageName,
+      catatan,
+      actorEmployeeId || null
+    );
+  }
+
+  public getStatusHistoryByOrderNo(orderNo: string): Array<{
+    id: number;
+    order_no: string;
+    step_sebelumnya: number;
+    step_baru: number;
+    stage_name: string;
+    catatan: string | null;
+    diubah_oleh_employee_id: string | null;
+    waktu_transisi: string;
+    actor_nama?: string | null;
+    actor_jabatan?: string | null;
+  }> {
+    const stmt = db.prepare(`
+      SELECT 
+        osh.id,
+        osh.order_no,
+        osh.step_sebelumnya,
+        osh.step_baru,
+        osh.stage_name,
+        osh.catatan,
+        osh.diubah_oleh_employee_id,
+        osh.waktu_transisi,
+        e.nama_lengkap as actor_nama,
+        e.jabatan as actor_jabatan
+      FROM order_status_history osh
+      LEFT JOIN employees e ON osh.diubah_oleh_employee_id = e.id
+      WHERE UPPER(osh.order_no) = UPPER(?) OR osh.order_no = ?
+      ORDER BY osh.id ASC
+    `);
+    return stmt.all(orderNo, orderNo) as any[];
+  }
+
+  public advanceOrder(
+    orderNo: string, 
+    targetStage: StageName, 
+    updates: Partial<OperationalOrder> = {},
+    actorEmployeeId?: string | null
+  ): boolean {
     const existing = this.getByOrderNo(orderNo);
     if (!existing) return false;
 
@@ -425,17 +659,58 @@ export class DbOrderRepository {
       stageDefaults.isSamsatScheduled = false;
     }
 
-    return this.updateOrder(orderNo, {
+    const updated = this.updateOrder(orderNo, {
       ...updates,
       ...eventDates,
       ...stageDefaults,
       currentStageName: targetStage,
       currentStep: newStep,
     });
+
+    if (updated) {
+      this.recordStatusHistory(
+        orderNo,
+        existing.currentStep,
+        newStep,
+        targetStage,
+        updates.catatanPenjadwalan || (updates as any).catatan || null,
+        actorEmployeeId || null
+      );
+    }
+
+    return updated;
   }
 
-  public rollbackOrder(orderNo: string, targetStage: StageName, updates: Partial<OperationalOrder> = {}): boolean {
-    return this.advanceOrder(orderNo, targetStage, updates);
+  public rollbackOrder(
+    orderNo: string, 
+    targetStage: StageName, 
+    updates: Partial<OperationalOrder> = {},
+    actorEmployeeId?: string | null
+  ): boolean {
+    const existing = this.getByOrderNo(orderNo);
+    if (!existing) return false;
+
+    const stageIndex = (STAGES as readonly string[]).indexOf(targetStage);
+    const newStep = stageIndex >= 0 ? stageIndex + 1 : existing.currentStep;
+
+    const updated = this.updateOrder(orderNo, {
+      ...updates,
+      currentStageName: targetStage,
+      currentStep: newStep,
+    });
+
+    if (updated) {
+      this.recordStatusHistory(
+        orderNo,
+        existing.currentStep,
+        newStep,
+        targetStage,
+        (updates as any).catatanPenjadwalan || (updates as any).catatan || "Rollback stage",
+        actorEmployeeId || null
+      );
+    }
+
+    return updated;
   }
 
   public archiveOrder(orderNo: string): boolean {
@@ -534,7 +809,7 @@ export class DbOrderRepository {
   public clearArchivedOrders(): number {
     const stmt = db.prepare("UPDATE orders SET is_archived = 2, updated_at = datetime('now') WHERE is_archived = 1");
     const res = stmt.run();
-    return res.changes;
+    return Number(res.changes);
   }
 }
 

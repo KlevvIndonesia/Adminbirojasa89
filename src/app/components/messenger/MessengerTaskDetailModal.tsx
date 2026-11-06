@@ -11,7 +11,6 @@ import { Button } from "../ui/button";
 import { Badge } from "../ui/badge";
 import { Label } from "../ui/label";
 import { Input } from "../ui/input";
-import { Textarea } from "../ui/textarea";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "../ui/tabs";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../ui/select";
 import {
@@ -94,7 +93,6 @@ export function MessengerTaskDetailModal({
   const [isUploadingEvidence, setIsUploadingEvidence] = useState(false);
   const [recipientName, setRecipientName] = useState(task.rawOrder.deliveryHandover?.recipientName || task.customer || "");
   const [relationship, setRelationship] = useState(task.rawOrder.deliveryHandover?.relationship || "Pemilik Langsung");
-  const [deliveryNotes, setDeliveryNotes] = useState(task.rawOrder.deliveryHandover?.notes || "");
   const [deliveryFileUrl, setDeliveryFileUrl] = useState<string>(task.rawOrder.deliveryHandover?.photoProofUrl || "");
   const [deliveryFileName, setDeliveryFileName] = useState<string>(task.rawOrder.deliveryHandover?.fileName || (task.rawOrder.deliveryHandover?.photoProofUrl ? "Foto_Serah_Terima.jpg" : ""));
   const [deliveryFileType, setDeliveryFileType] = useState<"image" | "pdf">(task.rawOrder.deliveryHandover?.fileType || "image");
@@ -132,27 +130,6 @@ export function MessengerTaskDetailModal({
     });
   };
 
-  // Section 2.C Catatan Kendala tanpa dropdown
-  const [catatanKendala, setCatatanKendala] = useState(
-    task.rawOrder.catatanKendala || task.pickupProof?.catatanKendala || ""
-  );
-  const [isSavingKendala, setIsSavingKendala] = useState(false);
-
-  const handleSaveCatatanKendala = () => {
-    setIsSavingKendala(true);
-    const success = orderStore.updateOrder(task.orderNo, {
-      catatanKendala: catatanKendala.trim(),
-      messengerTaskNotes: catatanKendala.trim() || undefined,
-    });
-    setIsSavingKendala(false);
-    if (success) {
-      toast.success("Catatan kendala berhasil disimpan!");
-      onTaskUpdated();
-    } else {
-      toast.error("Gagal menyimpan catatan kendala");
-    }
-  };
-
   const [isSubmittingPickup, setIsSubmittingPickup] = useState(false);
 
   const handleCompletePickup = (e?: React.FormEvent) => {
@@ -169,7 +146,6 @@ export function MessengerTaskDetailModal({
     const res = completeMessengerPickup(
       task.orderNo,
       {
-        catatanKendala: catatanKendala.trim() || undefined,
         pickupChecklist: checkedDocs,
       },
       currentUser
@@ -202,13 +178,13 @@ export function MessengerTaskDetailModal({
     setIsWaitingDialogOpen(true);
   };
 
-  const handleWaitingDialogSubmit = (reason: WaitingReason, note: string) => {
+  const handleWaitingDialogSubmit = (reason: WaitingReason) => {
     if (waitingTargetComponentId) {
       // Component-level waiting
       const res = updateMessengerComponent(
         task.orderNo,
         waitingTargetComponentId,
-        { status: "WAITING", waitingReason: reason, note },
+        { status: "WAITING", waitingReason: reason },
         currentUser
       );
       if (res.success) {
@@ -222,7 +198,7 @@ export function MessengerTaskDetailModal({
       const res = updateMessengerTaskStatus(
         task.orderNo,
         "WAITING",
-        { waitingReason: reason, note },
+        { waitingReason: reason },
         currentUser
       );
       if (res.success) {
@@ -548,37 +524,17 @@ export function MessengerTaskDetailModal({
                     </div>
                   </div>
 
-                  {/* Section 2.C: Catatan Kendala tanpa dropdown */}
-                  <div className="p-4 rounded-xl border border-border bg-card space-y-2">
-                    <div className="flex items-center justify-between">
-                      <Label htmlFor="modal-catatan-kendala" className="text-xs font-bold text-foreground uppercase tracking-wider block">
-                        Catatan Kendala
-                      </Label>
-                      <span className="text-[10px] text-muted-foreground">Opsional jika tidak ada kendala</span>
+                  {/* Section 2.C: Catatan Kendala Historis (Read-Only) */}
+                  {(task.rawOrder.catatanKendala || task.rawOrder.pickupProof?.catatanKendala) && (
+                    <div className="p-3.5 rounded-xl border border-amber-500/20 bg-amber-500/5 space-y-1">
+                      <span className="text-xs font-bold text-amber-700 dark:text-amber-400 uppercase tracking-wider block">
+                        Catatan Kendala Historis
+                      </span>
+                      <p className="text-xs text-foreground italic">
+                        "{task.rawOrder.catatanKendala || task.rawOrder.pickupProof?.catatanKendala}"
+                      </p>
                     </div>
-
-                    <Textarea
-                      id="modal-catatan-kendala"
-                      placeholder="Tulis kendala operasional (contoh: alamat salah, tidak ditemukan, klien tidak dapat dihubungi, dokumen belum siap)..."
-                      value={catatanKendala}
-                      onChange={(e) => setCatatanKendala(e.target.value)}
-                      rows={2}
-                      className="text-xs resize-none"
-                    />
-
-                    <div className="flex justify-end">
-                      <Button
-                        type="button"
-                        variant="outline"
-                        size="sm"
-                        disabled={isSavingKendala}
-                        onClick={handleSaveCatatanKendala}
-                        className="text-xs h-7 px-3 border-border font-medium"
-                      >
-                        {isSavingKendala ? "Menyimpan..." : "Simpan Catatan Kendala"}
-                      </Button>
-                    </div>
-                  </div>
+                  )}
 
                   {/* Selesaikan Penjemputan Action (When in progress) */}
                   {(task.status === "Dalam Proses" || task.statusCode === "IN_PROGRESS") && (

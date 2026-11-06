@@ -21,6 +21,9 @@ function DialogTrigger({
 function DialogPortal({
   ...props
 }: React.ComponentProps<typeof DialogPrimitive.Portal>) {
+  if (typeof window === "undefined" || (globalThis as any).__TEST_ENV__) {
+    return <div data-slot="dialog-portal">{props.children}</div>;
+  }
   return <DialogPrimitive.Portal data-slot="dialog-portal" {...props} />;
 }
 

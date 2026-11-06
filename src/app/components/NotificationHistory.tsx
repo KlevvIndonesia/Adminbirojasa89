@@ -264,17 +264,20 @@ export function NotificationHistory() {
             </div>
 
             {/* Table Container */}
-            <div className="rounded-lg border border-border bg-card overflow-hidden shadow-2xs flex-1 flex flex-col min-h-[260px]">
-              <Table className={cn("w-full min-w-[800px]", filteredInApp.length === 0 && "h-full")}>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead className="w-12 text-center">Status</TableHead>
-                    <TableHead>Prioritas & Tipe</TableHead>
-                    <TableHead>Pemberitahuan</TableHead>
-                    <TableHead>Customer & Nopol</TableHead>
-                    <TableHead className="text-right">Sisa / Nominal</TableHead>
-                    <TableHead>Jatuh Tempo</TableHead>
-                    <TableHead className="text-right">Aksi</TableHead>
+            <div className="rounded-lg border border-border bg-card overflow-hidden shadow-2xs flex-1 flex flex-col min-h-0">
+              <Table 
+                containerClassName="overflow-y-auto overflow-x-auto max-h-[calc(100vh-320px)] sm:max-h-[calc(100vh-340px)] min-h-[160px]"
+                className={cn("w-full min-w-[800px]", filteredInApp.length === 0 && "h-full")}
+              >
+                <TableHeader className="sticky top-0 z-10 bg-card border-b border-border shadow-2xs">
+                  <TableRow className="hover:bg-transparent">
+                    <TableHead className="w-12 text-center bg-card">Status</TableHead>
+                    <TableHead className="bg-card">Prioritas & Tipe</TableHead>
+                    <TableHead className="bg-card">Pemberitahuan</TableHead>
+                    <TableHead className="bg-card">Customer & Nopol</TableHead>
+                    <TableHead className="text-right bg-card">Sisa / Nominal</TableHead>
+                    <TableHead className="bg-card">Jatuh Tempo</TableHead>
+                    <TableHead className="text-right bg-card">Aksi</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
@@ -457,22 +460,21 @@ export function NotificationHistory() {
                   )}
                 </TableBody>
               </Table>
-            </div>
 
-            {/* Pagination */}
-            {filteredInApp.length > 0 && (
-              <TablePagination
-                currentPage={inAppPage}
-                totalItems={filteredInApp.length}
-                itemsPerPage={inAppItemsPerPage}
-                onPageChange={setInAppPage}
-                onItemsPerPageChange={(val) => {
-                  setInAppItemsPerPage(val);
-                  setInAppPage(1);
-                }}
-                pageSizeOptions={[10, 25, 50]}
-              />
-            )}
+              <div className="border-t border-border/80 p-3 bg-card shrink-0 mt-auto">
+                <TablePagination
+                  currentPage={inAppPage}
+                  totalItems={filteredInApp.length}
+                  itemsPerPage={inAppItemsPerPage}
+                  onPageChange={setInAppPage}
+                  onItemsPerPageChange={(val) => {
+                    setInAppItemsPerPage(val);
+                    setInAppPage(1);
+                  }}
+                  pageSizeOptions={[10, 25, 50]}
+                />
+              </div>
+            </div>
           </Card>
         </TabsContent>
 
@@ -552,16 +554,19 @@ export function NotificationHistory() {
             </div>
 
             {/* Table Container */}
-            <div className="rounded-lg border border-border bg-card overflow-hidden shadow-2xs flex-1 flex flex-col min-h-[260px]">
-              <Table className={cn("w-full min-w-[800px]", filteredEmailLogs.length === 0 && "h-full")}>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead>Waktu Kirim</TableHead>
-                    <TableHead>Penerima Email</TableHead>
-                    <TableHead>Referensi / Order</TableHead>
-                    <TableHead>Judul Notifikasi</TableHead>
-                    <TableHead className="text-center">Status Pengiriman</TableHead>
-                    <TableHead>Keterangan / Pesan</TableHead>
+            <div className="rounded-lg border border-border bg-card overflow-hidden shadow-2xs flex-1 flex flex-col min-h-0">
+              <Table 
+                containerClassName="overflow-y-auto overflow-x-auto max-h-[calc(100vh-320px)] sm:max-h-[calc(100vh-340px)] min-h-[160px]"
+                className={cn("w-full min-w-[800px]", filteredEmailLogs.length === 0 && "h-full")}
+              >
+                <TableHeader className="sticky top-0 z-10 bg-card border-b border-border shadow-2xs">
+                  <TableRow className="hover:bg-transparent">
+                    <TableHead className="bg-card">Waktu Kirim</TableHead>
+                    <TableHead className="bg-card">Penerima Email</TableHead>
+                    <TableHead className="bg-card">Referensi / Order</TableHead>
+                    <TableHead className="bg-card">Judul Notifikasi</TableHead>
+                    <TableHead className="text-center bg-card">Status Pengiriman</TableHead>
+                    <TableHead className="bg-card">Keterangan / Pesan</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
@@ -639,22 +644,21 @@ export function NotificationHistory() {
                   )}
                 </TableBody>
               </Table>
-            </div>
 
-            {/* Pagination */}
-            {filteredEmailLogs.length > 0 && (
-              <TablePagination
-                currentPage={emailPage}
-                totalItems={filteredEmailLogs.length}
-                itemsPerPage={emailItemsPerPage}
-                onPageChange={setEmailPage}
-                onItemsPerPageChange={(val) => {
-                  setEmailItemsPerPage(val);
-                  setEmailPage(1);
-                }}
-                pageSizeOptions={[10, 25, 50]}
-              />
-            )}
+              <div className="border-t border-border/80 p-3 bg-card shrink-0 mt-auto">
+                <TablePagination
+                  currentPage={emailPage}
+                  totalItems={filteredEmailLogs.length}
+                  itemsPerPage={emailItemsPerPage}
+                  onPageChange={setEmailPage}
+                  onItemsPerPageChange={(val) => {
+                    setEmailItemsPerPage(val);
+                    setEmailPage(1);
+                  }}
+                  pageSizeOptions={[10, 25, 50]}
+                />
+              </div>
+            </div>
           </Card>
         </TabsContent>
       </Tabs>

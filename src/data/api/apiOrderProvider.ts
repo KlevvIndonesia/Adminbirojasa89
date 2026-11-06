@@ -21,12 +21,33 @@ export class ApiOrderProvider implements IOrderDataProvider {
   private isInitialized = false;
   private isLoading = false;
   private error: string | null = null;
+  private inFlightMutationCount = 0;
+  private currentDataVersion = 0;
+  private latestAppliedGetId = 0;
+  private nextGetRequestId = 0;
 
   constructor(baseUrl = APP_CONFIG.apiBaseUrl) {
     this.baseUrl = baseUrl.replace(/\/$/, "");
     if (typeof window === "undefined" || (typeof window !== "undefined" && window.localStorage?.getItem("auth_token"))) {
       this.initFromApi();
     }
+  }
+
+  public getInFlightMutationCount(): number {
+    return this.inFlightMutationCount;
+  }
+
+  public getCurrentDataVersion(): number {
+    return this.currentDataVersion;
+  }
+
+  public getLatestAppliedGetId(): number {
+    return this.latestAppliedGetId;
+  }
+
+  public bumpDataVersion(): number {
+    this.currentDataVersion++;
+    return this.currentDataVersion;
   }
 
   public getIsLoading(): boolean {
@@ -43,27 +64,54 @@ export class ApiOrderProvider implements IOrderDataProvider {
 
   public async refresh(silent = false): Promise<void> {
     if (silent) {
+      if (this.inFlightMutationCount > 0) {
+        // Prevent background heartbeat from overwriting ongoing mutation with potentially stale snapshot
+        return;
+      }
       const authHeaders = this.getAuthHeader();
       if (!authHeaders.Authorization) return;
+
+      const capturedVersion = this.currentDataVersion;
+      const requestId = ++this.nextGetRequestId;
+
       try {
         const res = await fetch(`${this.baseUrl}/orders`, {
           headers: { "Content-Type": "application/json", ...authHeaders },
         });
+
+        // Discard stale GET response if a mutation completed or newer GET arrived while request was in-flight
+        if (capturedVersion < this.currentDataVersion || requestId < this.latestAppliedGetId) {
+          return;
+        }
+
+        let fetchedActive: Record<StageName, OperationalOrder[]> | null = null;
         if (res.ok) {
           const payload = await res.json();
           if (payload.success && payload.data) {
-            this.activeOrders = payload.data;
+            fetchedActive = payload.data;
           }
         }
+
         const archRes = await fetch(`${this.baseUrl}/orders/archived`, {
           headers: { "Content-Type": "application/json", ...authHeaders },
         });
+
+        if (capturedVersion < this.currentDataVersion || requestId < this.latestAppliedGetId) {
+          return;
+        }
+
         if (archRes.ok) {
           const archPayload = await archRes.json();
           if (archPayload.success && Array.isArray(archPayload.data)) {
             this.archivedOrders = archPayload.data;
           }
         }
+
+        if (fetchedActive) {
+          this.activeOrders = fetchedActive;
+        }
+
+        this.latestAppliedGetId = requestId;
         this.notify();
       } catch {
         // Silent background sync error safe fallback
@@ -91,6 +139,10 @@ export class ApiOrderProvider implements IOrderDataProvider {
   }
 
   public async initFromApi(): Promise<void> {
+    if (this.inFlightMutationCount > 0) {
+      // In-flight mutation taking place; do not overwrite local state with stale API snapshot
+      return;
+    }
     const authHeaders = this.getAuthHeader();
     if (!authHeaders.Authorization) {
       this.isInitialized = true;
@@ -101,6 +153,9 @@ export class ApiOrderProvider implements IOrderDataProvider {
     this.isLoading = true;
     this.error = null;
     this.notify();
+
+    const capturedVersion = this.currentDataVersion;
+    const requestId = ++this.nextGetRequestId;
 
     try {
       const res = await fetch(`${this.baseUrl}/orders`, {
@@ -117,10 +172,16 @@ export class ApiOrderProvider implements IOrderDataProvider {
         throw new Error(`Gagal memuat data order (HTTP ${res.status})`);
       }
 
+      if (capturedVersion < this.currentDataVersion || requestId < this.latestAppliedGetId) {
+        this.isLoading = false;
+        this.notify();
+        return;
+      }
+
       const payload = await res.json();
+      let fetchedActive: Record<StageName, OperationalOrder[]> | null = null;
       if (payload.success && payload.data) {
-        this.activeOrders = payload.data;
-        this.isInitialized = true;
+        fetchedActive = payload.data;
       }
 
       const archRes = await fetch(`${this.baseUrl}/orders/archived`, {
@@ -133,6 +194,13 @@ export class ApiOrderProvider implements IOrderDataProvider {
         this.notify();
         return;
       }
+
+      if (capturedVersion < this.currentDataVersion || requestId < this.latestAppliedGetId) {
+        this.isLoading = false;
+        this.notify();
+        return;
+      }
+
       if (archRes.ok) {
         const archPayload = await archRes.json();
         if (archPayload.success && Array.isArray(archPayload.data)) {
@@ -140,6 +208,12 @@ export class ApiOrderProvider implements IOrderDataProvider {
         }
       }
 
+      if (fetchedActive) {
+        this.activeOrders = fetchedActive;
+        this.isInitialized = true;
+      }
+
+      this.latestAppliedGetId = requestId;
       this.isLoading = false;
       this.error = null;
       this.notify();
@@ -260,6 +334,7 @@ export class ApiOrderProvider implements IOrderDataProvider {
         }
       }
 
+      this.bumpDataVersion();
       this.notify();
       return canonicalOrder;
     } catch (err) {
@@ -278,6 +353,7 @@ export class ApiOrderProvider implements IOrderDataProvider {
       } catch {
         // safe fallback
       }
+      this.bumpDataVersion();
       this.notify();
       throw err;
     }
@@ -292,6 +368,7 @@ export class ApiOrderProvider implements IOrderDataProvider {
       this.activeOrders[targetStage] = [];
     }
     this.activeOrders[targetStage].unshift(order);
+    this.bumpDataVersion();
     this.notify();
 
     // Persist and reconcile in background, rolling back on failure
@@ -309,6 +386,7 @@ export class ApiOrderProvider implements IOrderDataProvider {
       this.activeOrders[targetStage] = [];
     }
     this.activeOrders[targetStage].unshift(order);
+    this.bumpDataVersion();
     this.notify();
 
     return await this.syncOrderToBackend(order, targetStage);
@@ -341,6 +419,7 @@ export class ApiOrderProvider implements IOrderDataProvider {
     }
 
     if (updated) {
+      this.bumpDataVersion();
       this.notify();
 
       // Sanitize protected fields before sending PUT to backend (enforces P1-B protection compatibility)
@@ -353,7 +432,11 @@ export class ApiOrderProvider implements IOrderDataProvider {
         "documentsVerified", "isVerified", "finalCost", "finalCostBreakdown", "finalBiayaJasa",
         "finalPkb", "finalSwdkllj", "finalDendaSwdkllj", "finalMutasiKeluar", "finalMutasiMasuk",
         "finalBiayaLainnya", "settlementCondition", "refundStatus", "refundAmount",
-        "refundProcessedAt", "refundProcessedBy", "totalBiaya", "paymentStatus"
+        "refundProcessedAt", "refundProcessedBy", "totalBiaya", "paymentStatus",
+        // Cost verification protection
+        "isCostVerified", "is_cost_verified", "costCompletenessStatus", "cost_completeness_status",
+        "costVerifiedAt", "cost_verified_at", "costVerifiedBy", "cost_verified_by",
+        "costSnapshot", "cost_snapshot", "costBreakdown", "cost_breakdown"
       ]);
       const sanitizedUpdates: Record<string, any> = {};
       for (const [key, val] of Object.entries(updates)) {
@@ -428,79 +511,184 @@ export class ApiOrderProvider implements IOrderDataProvider {
     return updated;
   }
 
-  public advanceOrder(orderNo: string, targetStage: StageName, updates: Partial<OperationalOrder> = {}): boolean {
-    let foundOrder: OperationalOrder | undefined;
-    let originStage: StageName | undefined;
+  public async advanceOrderAsync(
+    orderNo: string,
+    targetStage: StageName,
+    updates: Partial<OperationalOrder> = {}
+  ): Promise<OperationalOrder> {
+    this.inFlightMutationCount++;
+    try {
+      const res = await fetch(`${this.baseUrl}/orders/${encodeURIComponent(orderNo)}/advance`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...this.getAuthHeader() },
+        body: JSON.stringify({ targetStage, updates }),
+      });
 
-    for (const stage of STAGES) {
-      const idx = this.activeOrders[stage]?.findIndex((o) => o.orderNo === orderNo) ?? -1;
-      if (idx !== -1) {
-        foundOrder = this.activeOrders[stage][idx];
-        originStage = stage;
-        this.activeOrders[stage].splice(idx, 1);
-        break;
+      if (!res.ok) {
+        let errMsg = `HTTP ${res.status}`;
+        try {
+          const errPayload = await res.json();
+          if (errPayload.error?.message || errPayload.message) {
+            errMsg = errPayload.error?.message || errPayload.message;
+          }
+        } catch {}
+        throw new Error(errMsg);
       }
+
+      const payload = await res.json();
+      if (!payload.success || !payload.data) {
+        throw new Error(payload.message || `Gagal memajukan order ${orderNo} ke ${targetStage}`);
+      }
+
+      const serverOrder: OperationalOrder = payload.data;
+
+      // Authoritative state update: remove order from all stages, place into destination stage
+      for (const stage of STAGES) {
+        if (!this.activeOrders[stage]) continue;
+        this.activeOrders[stage] = this.activeOrders[stage].filter(
+          (o) => o.orderNo !== orderNo
+        );
+      }
+
+      const destStage = (STAGES as readonly string[]).includes(serverOrder.currentStageName as StageName)
+        ? (serverOrder.currentStageName as StageName)
+        : targetStage;
+
+      if (!this.activeOrders[destStage]) {
+        this.activeOrders[destStage] = [];
+      }
+      this.activeOrders[destStage].unshift(serverOrder);
+
+      this.bumpDataVersion();
+      this.notify();
+      return serverOrder;
+    } finally {
+      this.inFlightMutationCount = Math.max(0, this.inFlightMutationCount - 1);
     }
+  }
 
-    if (!foundOrder) return false;
-
-    const stageIndex = (STAGES as readonly string[]).indexOf(targetStage);
-    const updatedOrder: OperationalOrder = {
-      ...foundOrder,
-      ...updates,
-      currentStageName: targetStage,
-      currentStep: stageIndex >= 0 ? stageIndex + 1 : foundOrder.currentStep,
-    };
-
-    if (!this.activeOrders[targetStage]) {
-      this.activeOrders[targetStage] = [];
-    }
-    this.activeOrders[targetStage].unshift(updatedOrder);
-    this.notify();
-
-    fetch(`${this.baseUrl}/orders/${encodeURIComponent(orderNo)}/advance`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", ...this.getAuthHeader() },
-      body: JSON.stringify({ targetStage, updates }),
-    }).catch(() => {
-      // background sync fallback
+  public advanceOrder(orderNo: string, targetStage: StageName, updates: Partial<OperationalOrder> = {}): boolean {
+    this.advanceOrderAsync(orderNo, targetStage, updates).catch((err) => {
+      console.error(`[ApiOrderProvider] advanceOrder error:`, err);
+      toast.error(`Gagal memajukan order ${orderNo}: ${err?.message || "Kesalahan server"}`);
     });
-
     return true;
   }
 
+  public async rollbackOrderAsync(
+    orderNo: string,
+    targetStage: StageName,
+    updates: Partial<OperationalOrder> = {}
+  ): Promise<OperationalOrder> {
+    this.inFlightMutationCount++;
+    try {
+      const res = await fetch(`${this.baseUrl}/orders/${encodeURIComponent(orderNo)}/rollback`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...this.getAuthHeader() },
+        body: JSON.stringify({ targetStage, updates }),
+      });
+
+      if (!res.ok) {
+        let errMsg = `HTTP ${res.status}`;
+        try {
+          const errPayload = await res.json();
+          if (errPayload.error?.message || errPayload.message) {
+            errMsg = errPayload.error?.message || errPayload.message;
+          }
+        } catch {}
+        throw new Error(errMsg);
+      }
+
+      const payload = await res.json();
+      if (!payload.success || !payload.data) {
+        throw new Error(payload.message || `Gagal me-rollback order ${orderNo} ke ${targetStage}`);
+      }
+
+      const serverOrder: OperationalOrder = payload.data;
+
+      for (const stage of STAGES) {
+        if (!this.activeOrders[stage]) continue;
+        this.activeOrders[stage] = this.activeOrders[stage].filter(
+          (o) => o.orderNo !== orderNo
+        );
+      }
+
+      const destStage = (STAGES as readonly string[]).includes(serverOrder.currentStageName as StageName)
+        ? (serverOrder.currentStageName as StageName)
+        : targetStage;
+
+      if (!this.activeOrders[destStage]) {
+        this.activeOrders[destStage] = [];
+      }
+      this.activeOrders[destStage].unshift(serverOrder);
+
+      this.bumpDataVersion();
+      this.notify();
+      return serverOrder;
+    } finally {
+      this.inFlightMutationCount = Math.max(0, this.inFlightMutationCount - 1);
+    }
+  }
+
   public rollbackOrder(orderNo: string, targetStage: StageName, updates: Partial<OperationalOrder> = {}): boolean {
-    return this.advanceOrder(orderNo, targetStage, updates);
+    this.rollbackOrderAsync(orderNo, targetStage, updates).catch((err) => {
+      console.error(`[ApiOrderProvider] rollbackOrder error:`, err);
+      toast.error(`Gagal me-rollback order ${orderNo}: ${err?.message || "Kesalahan server"}`);
+    });
+    return true;
+  }
+
+  public async archiveOrderAsync(orderNo: string): Promise<boolean> {
+    this.inFlightMutationCount++;
+    try {
+      const res = await fetch(`${this.baseUrl}/orders/${encodeURIComponent(orderNo)}/archive`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...this.getAuthHeader() },
+      });
+
+      if (!res.ok) {
+        let errMsg = `HTTP ${res.status}`;
+        try {
+          const errPayload = await res.json();
+          if (errPayload.error?.message || errPayload.message) {
+            errMsg = errPayload.error?.message || errPayload.message;
+          }
+        } catch {}
+        throw new Error(errMsg);
+      }
+
+      let archivedOrder: OperationalOrder | undefined;
+      for (const stage of STAGES) {
+        const idx = this.activeOrders[stage]?.findIndex((o) => o.orderNo === orderNo) ?? -1;
+        if (idx !== -1) {
+          archivedOrder = this.activeOrders[stage][idx];
+          this.activeOrders[stage].splice(idx, 1);
+          break;
+        }
+      }
+
+      if (archivedOrder) {
+        this.archivedOrders.unshift({
+          ...archivedOrder,
+          isArchived: true,
+          currentStageName: "Dokumen Telah Diterima",
+          currentStep: 8,
+        });
+      }
+
+      this.bumpDataVersion();
+      this.notify();
+      return true;
+    } finally {
+      this.inFlightMutationCount = Math.max(0, this.inFlightMutationCount - 1);
+    }
   }
 
   public archiveOrder(orderNo: string): boolean {
-    let foundOrder: OperationalOrder | undefined;
-
-    for (const stage of STAGES) {
-      const idx = this.activeOrders[stage]?.findIndex((o) => o.orderNo === orderNo) ?? -1;
-      if (idx !== -1) {
-        foundOrder = this.activeOrders[stage][idx];
-        this.activeOrders[stage].splice(idx, 1);
-        break;
-      }
-    }
-
-    if (!foundOrder) return false;
-
-    this.archivedOrders.unshift({
-      ...foundOrder,
-      currentStageName: "Dokumen Telah Diterima",
-      currentStep: 8,
+    this.archiveOrderAsync(orderNo).catch((err) => {
+      console.error(`[ApiOrderProvider] archiveOrder error:`, err);
+      toast.error(`Gagal mengarsipkan order ${orderNo}: ${err?.message || "Kesalahan server"}`);
     });
-    this.notify();
-
-    fetch(`${this.baseUrl}/orders/${encodeURIComponent(orderNo)}/archive`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", ...this.getAuthHeader() },
-    }).catch(() => {
-      // background sync fallback
-    });
-
     return true;
   }
 
@@ -508,6 +696,7 @@ export class ApiOrderProvider implements IOrderDataProvider {
     const idx = this.archivedOrders.findIndex((o) => o.orderNo === orderNo);
     if (idx !== -1) {
       this.archivedOrders.splice(idx, 1);
+      this.bumpDataVersion();
       this.notify();
 
       fetch(`${this.baseUrl}/orders/${encodeURIComponent(orderNo)}/archive`, {
@@ -546,6 +735,7 @@ export class ApiOrderProvider implements IOrderDataProvider {
     }
 
     if (found) {
+      this.bumpDataVersion();
       this.notify();
     }
 
@@ -564,6 +754,7 @@ export class ApiOrderProvider implements IOrderDataProvider {
 
   public clearArchivedOrders(): boolean {
     this.archivedOrders = [];
+    this.bumpDataVersion();
     this.notify();
 
     fetch(`${this.baseUrl}/orders/archive/clear-all`, {
@@ -611,6 +802,7 @@ export class ApiOrderProvider implements IOrderDataProvider {
       (this.archivedOrders[archIdx] as any).cancellationReason = reasonText;
     }
 
+    this.bumpDataVersion();
     this.notify();
 
     try {
@@ -671,6 +863,7 @@ export class ApiOrderProvider implements IOrderDataProvider {
         }
       }
 
+      this.bumpDataVersion();
       this.notify();
       return true;
     } catch (err) {

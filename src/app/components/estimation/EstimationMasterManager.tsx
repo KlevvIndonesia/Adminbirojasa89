@@ -770,19 +770,19 @@ export function EstimationMasterManager() {
           </div>
         </CardHeader>
 
-        <div className="overflow-x-auto">
+        <div className="overflow-x-auto overflow-y-auto max-h-[calc(100vh-320px)] sm:max-h-[calc(100vh-340px)] min-h-[160px]">
           <Table>
-            <TableHeader className="bg-muted/40 border-b border-border">
+            <TableHeader className="sticky top-0 z-10 bg-card border-b border-border shadow-2xs">
               <TableRow className="hover:bg-transparent">
-                <TableHead className="w-12 text-center text-xs font-semibold text-foreground">#</TableHead>
-                <TableHead className="w-24 text-xs font-semibold text-foreground">Kode</TableHead>
-                <TableHead className="min-w-[180px] text-xs font-semibold text-foreground">Nama Komponen</TableHead>
-                <TableHead className="w-36 text-xs font-semibold text-foreground">Kategori</TableHead>
-                <TableHead className="w-36 text-xs font-semibold text-foreground">Metode Perhitungan</TableHead>
-                <TableHead className="w-32 text-right text-xs font-semibold text-foreground">Tarif Default</TableHead>
-                <TableHead className="w-28 text-center text-xs font-semibold text-foreground">Status Aktif</TableHead>
-                <TableHead className="w-28 text-center text-xs font-semibold text-foreground">Masuk Total</TableHead>
-                <TableHead className="w-24 text-center text-xs font-semibold text-foreground">Aksi</TableHead>
+                <TableHead className="w-12 text-center text-xs font-semibold text-foreground bg-card">#</TableHead>
+                <TableHead className="w-24 text-xs font-semibold text-foreground bg-card">Kode</TableHead>
+                <TableHead className="min-w-[180px] text-xs font-semibold text-foreground bg-card">Nama Komponen</TableHead>
+                <TableHead className="w-36 text-xs font-semibold text-foreground bg-card">Kategori</TableHead>
+                <TableHead className="w-36 text-xs font-semibold text-foreground bg-card">Metode Perhitungan</TableHead>
+                <TableHead className="w-32 text-right text-xs font-semibold text-foreground bg-card">Tarif Default</TableHead>
+                <TableHead className="w-28 text-center text-xs font-semibold text-foreground bg-card">Status Aktif</TableHead>
+                <TableHead className="w-28 text-center text-xs font-semibold text-foreground bg-card">Masuk Total</TableHead>
+                <TableHead className="w-24 text-center text-xs font-semibold text-foreground bg-card">Aksi</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>

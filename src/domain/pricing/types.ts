@@ -33,13 +33,49 @@ export interface PricingItem {
   id: string; // Stable ID, e.g. "mutasi-legalisir", "mutasi-cf", "mutasi-cek-blokir"
   code: string; // Business code, e.g. "MK-01"
   name: string; // Display name, e.g. "Legalisir Berkas"
-  category: "Mutasi Keluar" | "Mutasi Masuk" | "Layanan Standar" | "Pajak & Fiskal";
+  category: "Mutasi Keluar" | "Mutasi Masuk";
   active: boolean;
   description?: string;
 }
 
 export interface SamsatCostItem extends PricingItem {
   basePrice: number; // Baseline cost from Samsat
+  namaItem?: string;
+  biayaDasar?: number;
+  kategori?: string;
+  tipeKendaraan?: string;
+  deskripsi?: string;
+  isConfigured?: boolean;
+  isActive?: boolean;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+export type TariffResolutionStatus =
+  | "CONFIGURED_OVERRIDE"
+  | "CONFIGURED_DEFAULT"
+  | "NOT_CONFIGURED"
+  | "DISABLED_ITEM"
+  | "CORRUPTED_OVERRIDE"
+  | "PENDING_DESTINATION";
+
+export type TariffResolutionSource = "OVERRIDE" | "DEFAULT" | "NONE";
+
+export interface ResolvedTariff {
+  pricingItemId: string;
+  namaItem: string;
+  category: string;
+  tipeKendaraan: string;
+  samsatId: string;
+  jurisdiction: "ASAL" | "TUJUAN" | "STANDARD";
+  effectivePrice: number | null;
+  source: TariffResolutionSource;
+  status: TariffResolutionStatus;
+  isExplicitZero: boolean;
+  isMasterActive: boolean;
+  overrideId?: string | null;
+  nationalDefaultPrice: number | null;
+  overridePrice: number | null;
 }
 
 export interface ServiceCostItem {
@@ -76,7 +112,8 @@ export interface ServiceFeeConfig {
   serviceName: string; // e.g. "Mutasi Antar Samsat"
   samsatId: string; // e.g. "samsat-jakarta-timur"
   wilayah: string; // e.g. "Jakarta Timur"
-  biayaJasa: number; // e.g. 800000 (backward-compatible alias)
+  biayaJasa: number;
+  totalBiayaJasa?: number; // e.g. 800000 (backward-compatible alias)
   jasaLengkap?: {
     nominal: number;
     enabled: boolean;
@@ -123,6 +160,8 @@ export interface OrderCostBreakdownItem {
   category?: "Samsat" | "Jasa" | "Operasional" | "Pajak";
   source: "HargaDasarSamsat" | "BiayaLayanan" | "Kendaraan" | "Operasional";
   isRequired?: boolean;
+  status?: "CONFIGURED" | "ZERO_EXPLICIT" | "UNCONFIGURED";
+  isEstimated?: boolean;
 }
 
 export interface OrderCostSnapshot {
@@ -133,6 +172,7 @@ export interface OrderCostSnapshot {
   metodeLayanan: "Antar Jemput" | "Datang Langsung";
   wilayahSamsat?: string;
   biayaJasa: number;
+  totalBiayaJasa?: number;
   biayaPengurusanKhusus?: number;
   biayaSamsat: number;
   biayaAntarJemput: number;
@@ -142,5 +182,11 @@ export interface OrderCostSnapshot {
   dendaSwdkllj: number;
   totalEstimasi: number;
   breakdown: OrderCostBreakdownItem[];
+  completenessStatus?: "COMPLETE" | "PARTIAL_ESTIMATE";
+  hasUnconfiguredTariff?: boolean;
+  unconfiguredItems?: string[];
+  isCostVerified?: boolean;
+  costVerifiedAt?: string;
+  costVerifiedBy?: string;
   createdAt: string;
 }

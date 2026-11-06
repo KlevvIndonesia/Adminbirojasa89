@@ -6,6 +6,8 @@
 import { Router } from "express";
 import {
   getInvoices,
+  getProfitList,
+  getLabaRugiSummary,
   getInvoiceById,
   getInvoicePayments,
   payInvoice,
@@ -23,6 +25,8 @@ import {
   voidInvoicePayment,
   voidCashbackPayout,
   getVoidAuditHistory,
+  transferMessengerToOffice,
+  transferOfficeToMessenger,
 } from "../controllers/financeController";
 import { requireAuth, requireRoles } from "../middleware/auth";
 import {
@@ -39,6 +43,27 @@ financeRouter.get(
   requireAuth,
   requireRoles("administrator", "finance", "svp", "admin"),
   getInvoices
+);
+
+financeRouter.get(
+  "/laba-rugi",
+  requireAuth,
+  requireRoles("administrator", "finance", "svp", "admin"),
+  getLabaRugiSummary
+);
+
+financeRouter.get(
+  "/pnl",
+  requireAuth,
+  requireRoles("administrator", "finance", "svp", "admin"),
+  getLabaRugiSummary
+);
+
+financeRouter.get(
+  "/profit",
+  requireAuth,
+  requireRoles("administrator", "finance", "svp", "admin"),
+  getProfitList
 );
 
 financeRouter.get(
@@ -172,3 +197,19 @@ financeRouter.delete(
   deleteKasMessenger
 );
 
+
+// Internal Transfer: Setor Sisa Kas Messenger ke Kas Kantor
+financeRouter.post(
+  "/transfer/messenger-to-office",
+  requireAuth,
+  requireRoles("administrator", "finance", "supervisor", "svp", "admin"),
+  transferMessengerToOffice
+);
+
+// Internal Transfer: Kas Kantor ke Messenger (Panjar/Uang Jalan)
+financeRouter.post(
+  "/transfer/office-to-messenger",
+  requireAuth,
+  requireRoles("administrator", "finance", "supervisor", "svp", "admin"),
+  transferOfficeToMessenger
+);

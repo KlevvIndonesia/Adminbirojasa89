@@ -249,19 +249,23 @@ export function AuditLog({ currentUserRole }: AuditLogProps) {
         </div>
 
         {/* Table */}
-        <div className="rounded-lg border border-border bg-card overflow-hidden shadow-2xs flex-1 flex flex-col min-h-[220px]">
-          <Table className={`w-full min-w-[700px] ${paginatedLogs.length === 0 ? "h-full" : ""}`}>
-            <TableHeader className="bg-muted/40 border-b border-border">
-              <TableRow className="hover:bg-transparent">
-                <TableHead className="h-9 px-3.5 text-xs font-semibold text-foreground/80 min-w-[110px]">Waktu</TableHead>
-                <TableHead className="h-9 px-3.5 text-xs font-semibold text-foreground/80">Pengguna</TableHead>
-                <TableHead className="h-9 px-3.5 text-xs font-semibold text-foreground/80 text-center">Jabatan</TableHead>
-                <TableHead className="h-9 px-3.5 text-xs font-semibold text-foreground/80 text-center">Jenis Aksi</TableHead>
-                <TableHead className="h-9 px-3.5 text-xs font-semibold text-foreground/80">Modul</TableHead>
-                <TableHead className="h-9 px-3.5 text-xs font-semibold text-foreground/80">Detail</TableHead>
-                <TableHead className="h-9 px-2 text-xs font-semibold text-foreground/80 text-center w-[75px]">Aksi</TableHead>
-              </TableRow>
-            </TableHeader>
+        <div className="rounded-lg border border-border bg-card overflow-hidden shadow-2xs flex-1 flex flex-col min-h-0">
+          <div className="w-full flex-1 flex flex-col min-h-0">
+            <Table 
+              containerClassName="overflow-y-auto overflow-x-auto max-h-[calc(100vh-270px)] sm:max-h-[calc(100vh-280px)] min-h-[160px]"
+              className={`w-full min-w-[700px] ${paginatedLogs.length === 0 ? "h-full" : ""}`}
+            >
+              <TableHeader className="sticky top-0 z-10 bg-card border-b border-border shadow-2xs">
+                <TableRow className="hover:bg-transparent">
+                  <TableHead className="h-9 px-3.5 text-xs font-semibold text-foreground/80 min-w-[110px] bg-card">Waktu</TableHead>
+                  <TableHead className="h-9 px-3.5 text-xs font-semibold text-foreground/80 bg-card">Pengguna</TableHead>
+                  <TableHead className="h-9 px-3.5 text-xs font-semibold text-foreground/80 text-center bg-card">Jabatan</TableHead>
+                  <TableHead className="h-9 px-3.5 text-xs font-semibold text-foreground/80 text-center bg-card">Jenis Aksi</TableHead>
+                  <TableHead className="h-9 px-3.5 text-xs font-semibold text-foreground/80 bg-card">Modul</TableHead>
+                  <TableHead className="h-9 px-3.5 text-xs font-semibold text-foreground/80 bg-card">Detail</TableHead>
+                  <TableHead className="h-9 px-2 text-xs font-semibold text-foreground/80 text-center w-[75px] bg-card">Aksi</TableHead>
+                </TableRow>
+              </TableHeader>
             <TableBody>
               {paginatedLogs.length > 0 ? (
                 paginatedLogs.map((log) => (
@@ -314,7 +318,7 @@ export function AuditLog({ currentUserRole }: AuditLogProps) {
         </div>
 
         {/* Standardized Table Pagination */}
-        <div className="mt-auto pt-1 shrink-0">
+        <div className="border-t border-border/80 p-3 bg-card shrink-0 mt-auto">
           <TablePagination
             currentPage={currentPage}
             totalItems={filteredLogs.length}
@@ -327,6 +331,7 @@ export function AuditLog({ currentUserRole }: AuditLogProps) {
             pageSizeOptions={[10, 25, 50, 100]}
           />
         </div>
+      </div>
       </Card>
 
       {/* View Log Detail Dialog */}

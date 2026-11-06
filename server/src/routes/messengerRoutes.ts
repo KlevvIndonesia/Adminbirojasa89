@@ -13,6 +13,7 @@ import {
   createReimbursement,
   reviewReimbursement,
   payReimbursement,
+  voidReimbursement,
 } from "../controllers/messengerController";
 
 export const messengerRouter = Router();
@@ -71,4 +72,12 @@ messengerRouter.post(
   requireAuth,
   requireRoles("administrator", "finance"),
   payReimbursement
+);
+
+// 8. Void / Reversal Reimbursement (Supervisor / Admin only)
+messengerRouter.post(
+  "/reimbursements/:id/void",
+  requireAuth,
+  requireRoles("administrator", "supervisor", "svp"),
+  voidReimbursement
 );

@@ -192,99 +192,104 @@ export function EnhancedTable({
       </div>
 
       {/* Table */}
-      <div className="rounded-xl border border-border/80 overflow-hidden shadow-xs bg-card flex-1 flex flex-col min-h-[220px]">
-        <Table className={`w-full min-w-[550px] ${paginatedData.length === 0 ? "h-full" : ""}`}>
-          <TableHeader className="bg-muted/40 border-b border-border/80">
-            <TableRow>
-              {columns.map(col => {
-                const align = getColAlignment(col);
-                const alignClass = align === "right" ? "text-right" : align === "center" ? "text-center" : "text-left";
-                return (
-                  <TableHead
-                    key={col.key}
-                    className={cn(
-                      "h-9 px-3.5 text-xs font-semibold text-muted-foreground uppercase tracking-wider",
-                      alignClass
-                    )}
-                  >
-                    {col.label}
-                  </TableHead>
-                );
-              })}
-              {(onEdit || onDelete) && <TableHead className="text-right h-9 px-3 text-xs font-semibold text-muted-foreground uppercase tracking-wider w-[90px]">Aksi</TableHead>}
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {paginatedData.length === 0 ? (
-              <TableRow className="h-full hover:bg-transparent">
-                <TableCell colSpan={columns.length + (onEdit || onDelete ? 1 : 0)} className="text-center py-8 align-middle p-0">
-                  <EmptyState
-                    title="Tidak ada data ditemukan"
-                    description="Belum ada data yang cocok dengan kriteria pencarian atau filter saat ini."
-                  />
-                </TableCell>
+      <div className="rounded-xl border border-border/80 overflow-hidden shadow-xs bg-card flex-1 flex flex-col min-h-0">
+        <div className="w-full flex-1 flex flex-col min-h-0">
+          <Table 
+            containerClassName="overflow-y-auto overflow-x-auto max-h-[calc(100vh-270px)] sm:max-h-[calc(100vh-280px)] min-h-[160px]"
+            className={`w-full min-w-[550px] ${paginatedData.length === 0 ? "h-full" : ""}`}
+          >
+            <TableHeader className="sticky top-0 z-10 bg-card border-b border-border/80 shadow-2xs">
+              <TableRow className="hover:bg-transparent">
+                {columns.map(col => {
+                  const align = getColAlignment(col);
+                  const alignClass = align === "right" ? "text-right" : align === "center" ? "text-center" : "text-left";
+                  return (
+                    <TableHead
+                      key={col.key}
+                      className={cn(
+                        "h-9 px-3.5 text-xs font-semibold text-muted-foreground uppercase tracking-wider bg-card",
+                        alignClass
+                      )}
+                    >
+                      {col.label}
+                    </TableHead>
+                  );
+                })}
+                {(onEdit || onDelete) && <TableHead className="text-right h-9 px-3 text-xs font-semibold text-muted-foreground uppercase tracking-wider w-[90px] bg-card">Aksi</TableHead>}
               </TableRow>
-            ) : (
-              paginatedData.map((item, idx) => (
-                <TableRow
-                  key={item.id ?? idx}
-                  className="hover:bg-muted/30 transition-colors border-b border-border/60 last:border-0 h-10"
-                >
-                  {columns.map(col => {
-                    const align = getColAlignment(col);
-                    const alignClass = align === "right" ? "text-right" : align === "center" ? "text-center" : "text-left";
-                    return (
-                      <TableCell key={col.key} className={cn("px-3.5 py-2 text-xs", alignClass)}>
-                        {formatValue(item[col.key], col.key)}
-                      </TableCell>
-                    );
-                  })}
-                  {(onEdit || onDelete) && (
-                    <TableCell className="text-right px-3 py-1.5">
-                      <div className="flex gap-1 justify-end">
-                        {onEdit && (
-                          <Button
-                            variant="ghost"
-                            size="sm"
-                            onClick={() => onEdit(item)}
-                            className="h-7 w-7 p-0 text-muted-foreground hover:text-blue-600 dark:hover:text-blue-400 hover:bg-blue-500/10 rounded transition-colors"
-                          >
-                            <Edit className="w-3.5 h-3.5" />
-                          </Button>
-                        )}
-                        {onDelete && (
-                          <Button
-                            variant="ghost"
-                            size="sm"
-                            onClick={() => onDelete(item)}
-                            className="h-7 w-7 p-0 text-muted-foreground hover:text-rose-600 dark:hover:text-rose-400 hover:bg-rose-500/10 rounded transition-colors"
-                          >
-                            <Trash2 className="w-3.5 h-3.5" />
-                          </Button>
-                        )}
-                      </div>
-                    </TableCell>
-                  )}
+            </TableHeader>
+            <TableBody>
+              {paginatedData.length === 0 ? (
+                <TableRow className="h-full hover:bg-transparent">
+                  <TableCell colSpan={columns.length + (onEdit || onDelete ? 1 : 0)} className="text-center py-8 align-middle p-0">
+                    <EmptyState
+                      title="Tidak ada data ditemukan"
+                      description="Belum ada data yang cocok dengan kriteria pencarian atau filter saat ini."
+                    />
+                  </TableCell>
                 </TableRow>
-              ))
-            )}
-          </TableBody>
-        </Table>
-      </div>
+              ) : (
+                paginatedData.map((item, idx) => (
+                  <TableRow
+                    key={item.id ?? idx}
+                    className="hover:bg-muted/30 transition-colors border-b border-border/60 last:border-0 h-10"
+                  >
+                    {columns.map(col => {
+                      const align = getColAlignment(col);
+                      const alignClass = align === "right" ? "text-right" : align === "center" ? "text-center" : "text-left";
+                      return (
+                        <TableCell key={col.key} className={cn("px-3.5 py-2 text-xs", alignClass)}>
+                          {formatValue(item[col.key], col.key)}
+                        </TableCell>
+                      );
+                    })}
+                    {(onEdit || onDelete) && (
+                      <TableCell className="text-right px-3 py-1.5">
+                        <div className="flex gap-1 justify-end">
+                          {onEdit && (
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              onClick={() => onEdit(item)}
+                              className="h-7 w-7 p-0 text-muted-foreground hover:text-blue-600 dark:hover:text-blue-400 hover:bg-blue-500/10 rounded transition-colors"
+                            >
+                              <Edit className="w-3.5 h-3.5" />
+                            </Button>
+                          )}
+                          {onDelete && (
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              onClick={() => onDelete(item)}
+                              className="h-7 w-7 p-0 text-muted-foreground hover:text-rose-600 dark:hover:text-rose-400 hover:bg-rose-500/10 rounded transition-colors"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </Button>
+                          )}
+                        </div>
+                      </TableCell>
+                    )}
+                  </TableRow>
+                ))
+              )}
+            </TableBody>
+          </Table>
+        </div>
 
-      {/* Standardized Table Pagination */}
-      <div className="mt-auto pt-1 shrink-0">
-        <TablePagination
-          currentPage={currentPage}
-          totalItems={filteredData.length}
-          itemsPerPage={itemsPerPage}
-          onPageChange={setCurrentPage}
-          onItemsPerPageChange={(newSize) => {
-            setItemsPerPage(newSize);
-            setCurrentPage(1);
-          }}
-          pageSizeOptions={itemsPerPageOptions}
-        />
+        {/* Standardized Table Pagination */}
+        <div className="border-t border-border/80 p-3 bg-card shrink-0 mt-auto">
+          <TablePagination
+            currentPage={currentPage}
+            totalItems={filteredData.length}
+            itemsPerPage={itemsPerPage}
+            onPageChange={setCurrentPage}
+            onItemsPerPageChange={(newSize) => {
+              setItemsPerPage(newSize);
+              setCurrentPage(1);
+            }}
+            pageSizeOptions={itemsPerPageOptions}
+          />
+        </div>
       </div>
     </div>
   );

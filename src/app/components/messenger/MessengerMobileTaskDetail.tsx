@@ -25,6 +25,8 @@ import {
   ArrowRight,
   Upload,
   FileCheck2,
+  Save,
+  Share2,
   Info,
 } from "lucide-react";
 import {
@@ -39,9 +41,18 @@ import {
   completeMessengerDelivery,
   completeMessengerPickup,
   completeSamsatResultPickup,
+  acceptMessengerTaskAction,
+  declineMessengerTaskAction,
+  releasePickupTaskAction,
+  releaseDeliveryTaskAction,
+  startPickupTaskAction,
+  completePickupTaskAction,
+  startDeliveryTaskAction,
+  completeDeliveryTaskAction,
   UserContext,
 } from "../../data/messengerTaskAdapter";
 import { orderStore } from "../../data/orderStore";
+import { serviceStore } from "../../data/serviceStore";
 import { MessengerWaitingReasonDialog } from "./MessengerWaitingReasonDialog";
 import { toast } from "sonner";
 import { cn } from "../ui/utils";
@@ -54,6 +65,8 @@ interface MessengerMobileTaskDetailProps {
   currentUser: UserContext;
   onTaskUpdated: () => void;
   onNavigateToSamsat?: (orderNo: string) => void;
+  onAcceptTask?: (task: MessengerTaskItem) => Promise<void> | void;
+  onDeclineTask?: (task: MessengerTaskItem) => void;
 }
 
 export function MessengerMobileTaskDetail({
@@ -63,17 +76,83 @@ export function MessengerMobileTaskDetail({
   currentUser,
   onTaskUpdated,
   onNavigateToSamsat,
+  onAcceptTask,
+  onDeclineTask,
 }: MessengerMobileTaskDetailProps) {
   if (!task) return null;
 
   const [isWaitingDialogOpen, setIsWaitingDialogOpen] = useState(false);
+  const [isAcceptingTask, setIsAcceptingTask] = useState(false);
+  const [isDetailDeclineOpen, setIsDetailDeclineOpen] = useState(false);
+  const [detailDeclineReason, setDetailDeclineReason] = useState("");
+  const [isDetailDeclineSubmitting, setIsDetailDeclineSubmitting] = useState(false);
+
+  const handleAcceptPendingTask = async () => {
+    setIsAcceptingTask(true);
+    try {
+      if (onAcceptTask) {
+        await onAcceptTask(task);
+        onTaskUpdated();
+        onOpenChange(false);
+        return;
+      }
+
+      const res = await acceptMessengerTaskAction(task.orderNo, task.keteranganTugas, currentUser);
+      if (res.success) {
+        toast.success(`Tugas ${task.orderNo} (${task.keteranganTugas}) berhasil diterima!`);
+        onTaskUpdated();
+        onOpenChange(false);
+      } else {
+        const errorMsg = res.error || "Gagal menerima tugas";
+        const isConflict =
+          errorMsg.toLowerCase().includes("conflict") ||
+          errorMsg.toLowerCase().includes("sudah diambil") ||
+          errorMsg.toLowerCase().includes("tidak tersedia");
+        if (isConflict) {
+          toast.error(errorMsg || "Tugas ini sudah diambil kurir lain.");
+          onOpenChange(false);
+        } else {
+          toast.error(errorMsg);
+        }
+        onTaskUpdated();
+      }
+    } finally {
+      setIsAcceptingTask(false);
+    }
+  };
+
+  const handleConfirmDetailDecline = async () => {
+    if (!detailDeclineReason.trim()) {
+      toast.error("Alasan penolakan tugas wajib diisi!");
+      return;
+    }
+    setIsDetailDeclineSubmitting(true);
+    try {
+      const res = await declineMessengerTaskAction(
+        task.orderNo,
+        task.keteranganTugas,
+        detailDeclineReason.trim(),
+        currentUser
+      );
+      if (res.success) {
+        toast.success(`Tugas ${task.orderNo} berhasil ditolak.`);
+        setIsDetailDeclineOpen(false);
+        setDetailDeclineReason("");
+        onTaskUpdated();
+        onOpenChange(false);
+      } else {
+        toast.error(res.error || "Gagal menolak tugas");
+      }
+    } finally {
+      setIsDetailDeclineSubmitting(false);
+    }
+  };
 
   // Hidden file input refs for real image picker
   const pickupFileInputRef = useRef<HTMLInputElement>(null);
   const deliveryFileInputRef = useRef<HTMLInputElement>(null);
 
   // Local state for Jemput Dokumen completion form
-  const [pickupNotes, setPickupNotes] = useState(task.pickupProof?.notes || "");
   const [pickupPhotoUrl, setPickupPhotoUrl] = useState(task.pickupProof?.photoProofUrl || "");
   const [isSubmittingPickup, setIsSubmittingPickup] = useState(false);
 
@@ -87,6 +166,16 @@ export function MessengerMobileTaskDetail({
         isMandatory: doc.isOptional !== true,
       }));
     }
+    const reqDetail = serviceStore.getServiceRequirementsDetail(
+      task.rawOrder || task.jenisTugas
+    );
+    if (reqDetail.requirements && reqDetail.requirements.length > 0) {
+      return reqDetail.requirements.map((reqName, idx) => ({
+        key: `req-${idx}`,
+        name: reqName,
+        isMandatory: true,
+      }));
+    }
     return [
       { key: "stnk", name: "STNK Asli", isMandatory: true },
       { key: "bpkb", name: "BPKB Asli", isMandatory: true },
@@ -94,7 +183,7 @@ export function MessengerMobileTaskDetail({
       { key: "skkp", name: "SKKP (Surat Ketetapan Pajak)", isMandatory: false },
       { key: "lainnya", name: "Dokumen Tambahan / Surat Kuasa", isMandatory: false },
     ];
-  }, [task.rawOrder.clientDocuments]);
+  }, [task.rawOrder.clientDocuments, task.rawOrder?.service_id, task.rawOrder?.layanan, task.jenisTugas]);
 
   const [checkedDocs, setCheckedDocs] = useState<Record<string, boolean>>(() => {
     return task.rawOrder.pickupChecklist || {};
@@ -106,27 +195,6 @@ export function MessengerMobileTaskDetail({
     orderStore.updateOrder(task.orderNo, {
       pickupChecklist: updated,
     });
-  };
-
-  // Section 2.C Catatan Kendala tanpa dropdown
-  const [catatanKendala, setCatatanKendala] = useState(
-    task.rawOrder.catatanKendala || task.pickupProof?.catatanKendala || ""
-  );
-  const [isSavingKendala, setIsSavingKendala] = useState(false);
-
-  const handleSaveCatatanKendala = () => {
-    setIsSavingKendala(true);
-    const success = orderStore.updateOrder(task.orderNo, {
-      catatanKendala: catatanKendala.trim(),
-      messengerTaskNotes: catatanKendala.trim() || undefined,
-    });
-    setIsSavingKendala(false);
-    if (success) {
-      toast.success("Catatan kendala berhasil disimpan!");
-      onTaskUpdated();
-    } else {
-      toast.error("Gagal menyimpan catatan kendala");
-    }
   };
 
   // Local state for Delivery Handover Form (Stage 7 -> 8)
@@ -152,8 +220,66 @@ export function MessengerMobileTaskDetail({
   const [isSubmittingDelivery, setIsSubmittingDelivery] = useState(false);
 
   // Local state for Samsat Result Pickup completion form
-  const [samsatPickupNotes, setSamsatPickupNotes] = useState(task.rawOrder.samsatPickupNotes || "");
   const [isSubmittingSamsatPickup, setIsSubmittingSamsatPickup] = useState(false);
+
+  // Scope C: Save Progress & Handover State (Tetap Pegang vs Serahkan ke Tim)
+  const [isSaveProgressOpen, setIsSaveProgressOpen] = useState(false);
+  const [saveProgressReleaseToPool, setSaveProgressReleaseToPool] = useState(false);
+  const [isSavingProgress, setIsSavingProgress] = useState(false);
+
+  const handleOpenSaveProgress = () => {
+    setSaveProgressReleaseToPool(false);
+    setIsSaveProgressOpen(true);
+  };
+
+  const handleConfirmSaveProgress = async () => {
+    setIsSavingProgress(true);
+    try {
+      if (saveProgressReleaseToPool) {
+        let res: { success: boolean; error?: string };
+        if (task.keteranganTugas === "Jemput Dokumen") {
+          res = releasePickupTaskAction(task.orderNo, currentUser);
+        } else if (task.keteranganTugas === "Pengantaran Dokumen") {
+          res = releaseDeliveryTaskAction(task.orderNo, currentUser);
+        } else {
+          res = { success: false, error: "Workflow tidak mendukung serah terima tugas" };
+        }
+
+        if (res.success) {
+          toast.success("Tugas berhasil disimpan dan diserahkan ke tim (Daftar Tugas)!");
+          setIsSaveProgressOpen(false);
+          onOpenChange(false);
+          onTaskUpdated();
+        } else {
+          toast.error(res.error || "Gagal menyerahkan tugas ke tim");
+        }
+      } else {
+        // Tetap Pegang Tugas Ini
+        if (task.keteranganTugas === "Jemput Dokumen") {
+          orderStore.updateOrder(task.orderNo, {
+            pickupChecklist: checkedDocs,
+          });
+          toast.success("Progres penjemputan berhasil disimpan!");
+        } else if (task.keteranganTugas === "Pengantaran Dokumen") {
+          orderStore.updateOrder(task.orderNo, {
+            deliveryHandover: {
+              recipientName,
+              relationship,
+              photoProofUrl: deliveryFileUrl,
+              fileName: deliveryFileName,
+              fileType: deliveryFileType,
+              fileSize: deliveryFileSize,
+            },
+          });
+          toast.success("Progres pengantaran berhasil disimpan!");
+        }
+        setIsSaveProgressOpen(false);
+        onTaskUpdated();
+      }
+    } finally {
+      setIsSavingProgress(false);
+    }
+  };
 
   const isStartable =
     task.status === "Belum Diambil" ||
@@ -181,11 +307,11 @@ export function MessengerMobileTaskDetail({
     }
   };
 
-  const handleWaitingReasonSubmit = (reason: string, note: string) => {
+  const handleWaitingReasonSubmit = (reason: string) => {
     const res = updateMessengerTaskStatus(
       task.orderNo,
       "WAITING",
-      { waitingReason: reason, note },
+      { waitingReason: reason },
       currentUser
     );
     if (res.success) {
@@ -259,8 +385,6 @@ export function MessengerMobileTaskDetail({
       task.orderNo,
       {
         photoProofUrl: pickupPhotoUrl || undefined,
-        notes: catatanKendala.trim() || pickupNotes.trim() || undefined,
-        catatanKendala: catatanKendala.trim() || undefined,
         pickupChecklist: checkedDocs,
       },
       currentUser
@@ -312,7 +436,7 @@ export function MessengerMobileTaskDetail({
     e.preventDefault();
     setIsSubmittingSamsatPickup(true);
 
-    const res = completeSamsatResultPickup(task.orderNo, samsatPickupNotes.trim() || undefined, currentUser);
+    const res = completeSamsatResultPickup(task.orderNo, undefined, currentUser);
     setIsSubmittingSamsatPickup(false);
 
     if (res.success) {
@@ -534,42 +658,7 @@ export function MessengerMobileTaskDetail({
                   </div>
                 </div>
 
-                {/* Section 2.C: Catatan Kendala tanpa dropdown */}
-                <div className="p-4 rounded-xl border border-border bg-card space-y-2.5">
-                  <div className="flex items-center justify-between">
-                    <div>
-                      <Label htmlFor="catatan-kendala" className="text-xs sm:text-sm font-bold text-foreground uppercase tracking-wider block">
-                        Catatan Kendala
-                      </Label>
-                      <p className="text-[11px] text-muted-foreground mt-0.5">
-                        Tulis kendala operasional (alamat salah, tidak ditemukan, klien tidak dapat dihubungi, dokumen belum siap).
-                      </p>
-                    </div>
-                    <span className="text-[10px] text-muted-foreground shrink-0">Boleh kosong</span>
-                  </div>
-
-                  <Textarea
-                    id="catatan-kendala"
-                    placeholder="Tulis kendala lapangan jika ada (contoh: alamat tidak ditemukan, klien minta dijadwal ulang, dokumen belum lengkap)..."
-                    value={catatanKendala}
-                    onChange={(e) => setCatatanKendala(e.target.value)}
-                    rows={2}
-                    className="text-sm rounded-xl resize-none"
-                  />
-
-                  <div className="flex justify-end">
-                    <Button
-                      type="button"
-                      variant="outline"
-                      size="sm"
-                      disabled={isSavingKendala}
-                      onClick={handleSaveCatatanKendala}
-                      className="text-xs min-h-[36px] px-3.5 rounded-lg border-border font-semibold hover:bg-muted"
-                    >
-                      {isSavingKendala ? "Menyimpan..." : "Simpan Catatan Kendala"}
-                    </Button>
-                  </div>
-                </div>
+                {/* Catatan Kendala textarea removed per Scope B Requirement 9 */}
 
                 {/* Selesaikan Penjemputan Form (When in progress) */}
                 {isInProgress && (
@@ -689,17 +778,6 @@ export function MessengerMobileTaskDetail({
                       <p className="text-xs sm:text-sm text-muted-foreground mt-0.5">
                         Konfirmasi penyerahan fisik berkas hasil Samsat kepada tim Admin di kantor.
                       </p>
-                    </div>
-
-                    <div className="space-y-2">
-                      <Label className="text-sm font-semibold text-foreground">Catatan Penyerahan (Opsional)</Label>
-                      <Textarea
-                        placeholder="Contoh: Dokumen diserahkan lengkap ke meja Admin, plat nomor ada 2 buah..."
-                        value={samsatPickupNotes}
-                        onChange={(e) => setSamsatPickupNotes(e.target.value)}
-                        rows={3}
-                        className="text-base min-h-[80px] resize-none rounded-xl"
-                      />
                     </div>
 
                     <Button
@@ -961,34 +1039,148 @@ export function MessengerMobileTaskDetail({
             )}
           </div>
 
-          {/* Sticky Bottom Actions Bar */}
+          {/* Sticky Bottom Actions Bar with touch target >= 48px */}
           <div className="sticky bottom-0 z-20 bg-card border-t border-border px-4 py-3 flex items-center justify-between gap-3 shadow-lg">
-            {task.keteranganTugas !== "Jemput Dokumen" && (
-              <Button
-                variant="outline"
-                onClick={() => setIsWaitingDialogOpen(true)}
-                className="text-sm text-amber-600 border-amber-300 hover:bg-amber-50 dark:hover:bg-amber-950 min-h-[44px] px-4 rounded-xl"
-              >
-                <Clock className="w-4 h-4 mr-1.5" />
-                Kendala
-              </Button>
-            )}
+            {task.acceptanceStatus === "PENDING" ? (
+              <>
+                <Button
+                  variant="outline"
+                  disabled={isAcceptingTask}
+                  onClick={() => {
+                    if (onDeclineTask) {
+                      onDeclineTask(task);
+                      onOpenChange(false);
+                    } else {
+                      setIsDetailDeclineOpen(true);
+                    }
+                  }}
+                  className="h-12 min-h-[48px] px-5 text-sm font-semibold rounded-xl border-rose-300 dark:border-rose-800 text-rose-600 dark:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-950/30"
+                >
+                  <X className="w-4 h-4 mr-1.5" />
+                  Tolak Tugas
+                </Button>
 
-            {isStartable && (
-              <Button
-                onClick={handleStartTask}
-                className="bg-primary hover:bg-primary/90 text-primary-foreground text-sm sm:text-base font-semibold min-h-[44px] px-5 flex-1 rounded-xl shadow-xs"
-              >
-                <Play className="w-4 h-4 mr-2 fill-current" />
-                Mulai Tugas
-              </Button>
-            )}
+                <Button
+                  disabled={isAcceptingTask}
+                  onClick={handleAcceptPendingTask}
+                  className="h-12 min-h-[48px] px-6 text-sm font-bold rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white shadow-md flex-1"
+                >
+                  <CheckCircle2 className="w-4 h-4 mr-2" />
+                  {isAcceptingTask ? "Memproses..." : "Terima Tugas Ini"}
+                </Button>
+              </>
+            ) : (
+              <>
+                {task.keteranganTugas !== "Jemput Dokumen" && (
+                  <Button
+                    variant="outline"
+                    onClick={() => setIsWaitingDialogOpen(true)}
+                    className="text-sm text-amber-600 border-amber-300 hover:bg-amber-50 dark:hover:bg-amber-950 min-h-[48px] h-12 px-4 rounded-xl"
+                  >
+                    <Clock className="w-4 h-4 mr-1.5" />
+                    Kendala
+                  </Button>
+                )}
 
-            {isCompleted && (
-              <div className="text-sm text-emerald-600 font-bold flex items-center gap-1.5">
-                <CheckCircle2 className="w-5 h-5" /> Tugas Selesai
-              </div>
+                {isStartable && (
+                  <Button
+                    onClick={handleStartTask}
+                    className="bg-primary hover:bg-primary/90 text-primary-foreground text-sm sm:text-base font-semibold min-h-[48px] h-12 px-5 flex-1 rounded-xl shadow-xs"
+                  >
+                    <Play className="w-4 h-4 mr-2 fill-current" />
+                    Mulai Tugas
+                  </Button>
+                )}
+
+                {isCompleted && (
+                  <div className="text-sm text-emerald-600 font-bold flex items-center gap-1.5 min-h-[48px]">
+                    <CheckCircle2 className="w-5 h-5" /> Tugas Selesai
+                  </div>
+                )}
+              </>
             )}
+          </div>
+        </DialogContent>
+      </Dialog>
+
+
+      {/* Scope C: Save Progress & Handover Dialog (Tetap Pegang vs Serahkan ke Tim) */}
+      <Dialog open={isSaveProgressOpen} onOpenChange={setIsSaveProgressOpen}>
+        <DialogContent className="sm:max-w-md rounded-2xl p-5 text-left">
+          <DialogTitle className="text-base sm:text-lg font-bold text-foreground flex items-center gap-2">
+            <Save className="w-5 h-5 text-primary" />
+            Simpan Progres Tugas
+          </DialogTitle>
+          <DialogDescription className="text-xs text-muted-foreground">
+            Pilih apakah Anda akan tetap memegang tugas ini atau menyerahkan sisa pekerjaan ke tim (Daftar Tugas).
+          </DialogDescription>
+
+          <div className="space-y-3 py-2 text-sm">
+            <div className="grid grid-cols-1 gap-2.5">
+              <button
+                type="button"
+                onClick={() => setSaveProgressReleaseToPool(false)}
+                className={cn(
+                  "p-3.5 rounded-xl border text-left transition-all",
+                  !saveProgressReleaseToPool
+                    ? "border-primary bg-primary/10 shadow-2xs"
+                    : "border-border hover:bg-muted/50"
+                )}
+              >
+                <p className="text-sm font-bold text-foreground">
+                  Tetap Pegang Tugas Ini
+                </p>
+                <p className="text-xs text-muted-foreground mt-0.5">
+                  Progres saat ini tersimpan dan Anda tetap menjadi penanggung jawab tugas ini.
+                </p>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setSaveProgressReleaseToPool(true)}
+                className={cn(
+                  "p-3.5 rounded-xl border text-left transition-all",
+                  saveProgressReleaseToPool
+                    ? "border-amber-600 bg-amber-500/10 shadow-2xs"
+                    : "border-border hover:bg-muted/50"
+                )}
+              >
+                <p className="text-sm font-bold text-foreground flex items-center gap-1.5">
+                  <Share2 className="w-4 h-4 text-amber-600" />
+                  Serahkan ke Tim (Kembalikan ke Daftar Tugas)
+                </p>
+                <p className="text-xs text-muted-foreground mt-0.5">
+                  Progres saat ini tersimpan. Tugas akan kembali ke Daftar Tugas (Pool) agar dapat dilanjutkan oleh rekan kurir lain.
+                </p>
+              </button>
+            </div>
+          </div>
+
+          <div className="flex items-center justify-end gap-2 pt-2">
+            <Button
+              variant="outline"
+              disabled={isSavingProgress}
+              onClick={() => setIsSaveProgressOpen(false)}
+              className="h-11 px-4 text-sm font-semibold rounded-xl"
+            >
+              Batal
+            </Button>
+            <Button
+              onClick={handleConfirmSaveProgress}
+              disabled={isSavingProgress}
+              className={cn(
+                "h-11 px-5 text-sm font-bold rounded-xl text-white shadow-xs",
+                saveProgressReleaseToPool
+                  ? "bg-amber-600 hover:bg-amber-700"
+                  : "bg-primary hover:bg-primary/90"
+              )}
+            >
+              {isSavingProgress
+                ? "Menyimpan..."
+                : saveProgressReleaseToPool
+                ? "Simpan & Serahkan ke Tim"
+                : "Simpan Progres"}
+            </Button>
           </div>
         </DialogContent>
       </Dialog>
@@ -999,6 +1191,71 @@ export function MessengerMobileTaskDetail({
         onOpenChange={setIsWaitingDialogOpen}
         onSubmit={handleWaitingReasonSubmit}
       />
+
+      {/* Detail Decline Confirmation Dialog */}
+      <Dialog
+        open={isDetailDeclineOpen}
+        onOpenChange={(open) => {
+          if (!open) {
+            setIsDetailDeclineOpen(false);
+            setDetailDeclineReason("");
+          }
+        }}
+      >
+        <DialogContent className="sm:max-w-md rounded-2xl p-5 text-left">
+          <DialogTitle className="text-lg font-bold text-rose-600 flex items-center gap-2">
+            <X className="w-5 h-5" />
+            Tolak Penugasan
+          </DialogTitle>
+          <DialogDescription className="text-xs text-muted-foreground">
+            Apakah Anda yakin ingin menolak tugas ini? Tugas akan dikembalikan ke status belum ditugaskan agar dapat dialihkan oleh Admin.
+          </DialogDescription>
+
+          <div className="space-y-3 py-2 text-sm">
+            <div className="p-3 rounded-xl bg-muted/60 space-y-1 border border-border">
+              <div className="flex justify-between text-xs">
+                <span className="text-muted-foreground">Nomor Order:</span>
+                <span className="font-bold text-foreground font-mono">{task.orderNo}</span>
+              </div>
+              <div className="flex justify-between text-xs">
+                <span className="text-muted-foreground">Tugas:</span>
+                <span className="font-semibold text-primary">{task.keteranganTugas}</span>
+              </div>
+            </div>
+
+            <div className="space-y-1.5">
+              <label className="text-xs font-semibold text-foreground">
+                Alasan Penolakan <span className="text-rose-500">*</span>
+              </label>
+              <Textarea
+                value={detailDeclineReason}
+                onChange={(e) => setDetailDeclineReason(e.target.value)}
+                placeholder="Contoh: Kendaraan sedang servis, kapasitas tugas penuh..."
+                rows={3}
+                className="text-sm rounded-xl"
+              />
+            </div>
+          </div>
+
+          <div className="flex items-center justify-end gap-2 pt-2">
+            <Button
+              variant="outline"
+              disabled={isDetailDeclineSubmitting}
+              onClick={() => setIsDetailDeclineOpen(false)}
+              className="h-11 px-4 text-sm font-semibold rounded-xl"
+            >
+              Batal
+            </Button>
+            <Button
+              onClick={handleConfirmDetailDecline}
+              disabled={isDetailDeclineSubmitting || !detailDeclineReason.trim()}
+              className="h-11 px-5 text-sm font-bold rounded-xl bg-rose-600 hover:bg-rose-700 text-white shadow-xs"
+            >
+              {isDetailDeclineSubmitting ? "Menolak..." : "Ya, Tolak Tugas"}
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
     </>
   );
 }

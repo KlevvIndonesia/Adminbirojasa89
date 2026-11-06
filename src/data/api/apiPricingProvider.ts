@@ -239,6 +239,20 @@ export class ApiPricingProvider implements IPricingDataProvider {
     }
   }
 
+  public async batchReplicateServicePricing(params: any): Promise<any> {
+    const res = await fetch(`${this.baseUrl}/pricing/services/batch-replicate`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...this.getAuthHeader() },
+      body: JSON.stringify(params),
+    });
+    if (!res.ok) {
+      const errJson = await res.json().catch(() => ({}));
+      throw new Error(errJson.error?.message || errJson.message || `Gagal mereplikasi biaya layanan (HTTP ${res.status})`);
+    }
+    const payload = await res.json();
+    return payload?.data || payload;
+  }
+
   public async createServicePricing(config: any): Promise<any> {
     const res = await fetch(`${this.baseUrl}/pricing/services`, {
       method: "POST",
@@ -333,6 +347,73 @@ export class ApiPricingProvider implements IPricingDataProvider {
       this.samsatOffices.splice(idx, 1);
       this.notify();
     }
+    return true;
+  }
+
+  // ─── SAMSAT OPERATIONAL TARIFFS (PER-SAMSAT PRICING) ─────────────────────────
+
+  public async getSamsatOperationalTariffs(samsatId?: string): Promise<any[]> {
+    const query = samsatId ? `?samsatId=${encodeURIComponent(samsatId)}` : "";
+    const res = await fetch(`${this.baseUrl}/pricing/samsat-tariffs${query}`, {
+      headers: { "Content-Type": "application/json", ...this.getAuthHeader() },
+    });
+    if (!res.ok) {
+      const errJson = await res.json().catch(() => ({}));
+      throw new Error(errJson.message || `Gagal memuat tarif operasional Samsat (HTTP ${res.status})`);
+    }
+    const payload = await res.json();
+    return payload.data || [];
+  }
+
+  public async updateSamsatOperationalTariff(samsatId: string, pricingItemId: string, nominal: number): Promise<any> {
+    const res = await fetch(`${this.baseUrl}/pricing/samsat-tariffs`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json", ...this.getAuthHeader() },
+      body: JSON.stringify({ samsatId, pricingItemId, nominal }),
+    });
+    if (!res.ok) {
+      const errJson = await res.json().catch(() => ({}));
+      throw new Error(errJson.message || `Gagal menyimpan tarif operasional Samsat (HTTP ${res.status})`);
+    }
+    const payload = await res.json();
+    this.notify();
+    return payload.data;
+  }
+
+  public async updateSamsatOperationalTariffsBatch(
+    samsatId: string,
+    tariffs: Array<{ pricingItemId: string; nominal: number }>
+  ): Promise<any[]> {
+    const res = await fetch(`${this.baseUrl}/pricing/samsat-tariffs`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json", ...this.getAuthHeader() },
+      body: JSON.stringify({ samsatId, tariffs }),
+    });
+    if (!res.ok) {
+      const errJson = await res.json().catch(() => ({}));
+      throw new Error(errJson.message || `Gagal menyimpan batch tarif operasional Samsat (HTTP ${res.status})`);
+    }
+    const payload = await res.json();
+    this.notify();
+    return payload.data || [];
+  }
+
+  public async deleteSamsatOperationalTariff(
+    idOrParams: string | { samsatId: string; pricingItemId: string }
+  ): Promise<boolean> {
+    const url = typeof idOrParams === "string"
+      ? `${this.baseUrl}/pricing/samsat-tariffs/${encodeURIComponent(idOrParams)}`
+      : `${this.baseUrl}/pricing/samsat-tariffs?samsatId=${encodeURIComponent(idOrParams.samsatId)}&pricingItemId=${encodeURIComponent(idOrParams.pricingItemId)}`;
+
+    const res = await fetch(url, {
+      method: "DELETE",
+      headers: { ...this.getAuthHeader() },
+    });
+    if (!res.ok) {
+      const errJson = await res.json().catch(() => ({}));
+      throw new Error(errJson.message || `Gagal menghapus tarif operasional Samsat (HTTP ${res.status})`);
+    }
+    this.notify();
     return true;
   }
 }

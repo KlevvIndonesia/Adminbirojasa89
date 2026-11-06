@@ -9,7 +9,7 @@ export interface AuditLogRecord {
   id: string;
   userId: string;
   userName: string;
-  userRole: 'administrator' | 'finance' | 'admin' | 'messenger';
+  userRole: 'administrator' | 'finance' | 'admin' | 'messenger' | 'supervisor' | 'svp' | 'system' | string;
   action: string;
   module: string;
   details: string;

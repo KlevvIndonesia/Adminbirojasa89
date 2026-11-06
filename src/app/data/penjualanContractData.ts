@@ -701,25 +701,43 @@ export function deriveStatusPembayaran(
     return "Tagihan Tidak Tersedia";
   }
 
-  const total =
-    typeof invoice?.totalTagihan === "number" && !isNaN(invoice.totalTagihan)
-      ? invoice.totalTagihan
-      : typeof order?.payment?.totalBiaya === "number" && !isNaN(order.payment.totalBiaya)
-      ? order.payment.totalBiaya
-      : typeof order?.totalEstimasi === "number" && !isNaN(order.totalEstimasi)
-      ? order.totalEstimasi
-      : NaN;
+  const toValidNumber = (val: any): number => {
+    if (val === null || val === undefined) return NaN;
+    if (typeof val === "number") return isNaN(val) ? NaN : val;
+    if (typeof val === "string") {
+      const trimmed = val.trim();
+      if (trimmed === "") return NaN;
+      const num = Number(trimmed);
+      return isNaN(num) ? NaN : num;
+    }
+    return NaN;
+  };
 
-  const paid =
-    typeof invoice?.terbayar === "number" && !isNaN(invoice.terbayar)
-      ? invoice.terbayar
-      : typeof invoice?.dibayar === "number" && !isNaN(invoice.dibayar)
-      ? invoice.dibayar
-      : typeof order?.payment?.dibayar === "number" && !isNaN(order.payment.dibayar)
-      ? order.payment.dibayar
-      : invoice?.status === "Lunas" && typeof total === "number" && !isNaN(total) && total > 0
-      ? total
-      : 0;
+  const totalCandidate = toValidNumber(invoice?.totalTagihan);
+  const totalOrderPay = toValidNumber(order?.payment?.totalBiaya);
+  const totalOrderEst = toValidNumber(order?.totalEstimasi);
+
+  const total = !isNaN(totalCandidate)
+    ? totalCandidate
+    : !isNaN(totalOrderPay)
+    ? totalOrderPay
+    : !isNaN(totalOrderEst)
+    ? totalOrderEst
+    : NaN;
+
+  const paidCandidate = toValidNumber(invoice?.terbayar);
+  const paidInvDibayar = toValidNumber(invoice?.dibayar);
+  const paidOrderDibayar = toValidNumber(order?.payment?.dibayar);
+
+  const paid = !isNaN(paidCandidate)
+    ? paidCandidate
+    : !isNaN(paidInvDibayar)
+    ? paidInvDibayar
+    : !isNaN(paidOrderDibayar)
+    ? paidOrderDibayar
+    : invoice?.status === "Lunas" && !isNaN(total) && total > 0
+    ? total
+    : 0;
 
   if (
     order?.currentStageName === "Dibatalkan" ||
@@ -732,7 +750,7 @@ export function deriveStatusPembayaran(
     return "Dibatalkan" as any;
   }
 
-  if (isNaN(total) || total < 0 || isNaN(paid) || paid < 0) {
+  if (isNaN(total) || total <= 0 || isNaN(paid) || paid < 0) {
     return "Tagihan Tidak Tersedia";
   }
 
@@ -980,6 +998,7 @@ export function projectOrderToContractRow(
     "Status Pengerjaan": statusPengerjaan,
     "Status Pembayaran": statusPembayaran,
     "No Invoice": noInvoice,
+    "Tanggal Invoice": tanggalInvoice,
     "Tanda Terima": tandaTerima,
     "Nomor Tanda Terima": nomorTandaTerima,
     "Dokumen BPKB": dokumenBPKB,

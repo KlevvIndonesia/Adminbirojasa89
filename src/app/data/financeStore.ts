@@ -29,7 +29,8 @@ export type { ProfitItem, KasMessengerItem, KasKantorItem, PengeluaranItem, Laba
 
 import { orderRepository } from "../../data/repositories/orderRepository";
 import { documentRepository } from "../../data/repositories/documentRepository";
-import { computeCanonicalLabaRugi, CanonicalLabaRugiSummary } from "../../domain/finance/labaRugiCanonical";
+import { computeCanonicalLabaRugi, computeCashFlowReconciliation, CanonicalLabaRugiSummary, CashFlowReconciliationSummary } from "../../domain/finance/labaRugiCanonical";
+export type { CashFlowReconciliationSummary };
 export type { CanonicalLabaRugiSummary };
 import {
   resolveOrderSalesCategory,
@@ -65,6 +66,7 @@ import {
   PaymentDueTrigger,
   CollectionState,
   derivePaymentStatus,
+  calculateInvoiceProfitMetrics,
 } from "../../domain/finance/types";
 import { SettlementCondition, RefundStatus, OperationalOrder } from "../../domain/order/types";
 import type { ReimbursementRequest } from "../../domain/messenger/types";
@@ -103,6 +105,7 @@ export type OrderCreatorFn = (data: {
 
 export {
   derivePaymentStatus,
+  calculateInvoiceProfitMetrics,
   resolveOrderSalesCategory,
   projectOrderToContractRow,
   deriveStatusPengerjaan,
@@ -143,8 +146,9 @@ function buildInitialInvoices(): InvoiceBillingRecord[] {
       alamat: "Kabupaten Bogor, Jawa Barat",
     };
 
-    const profit = Math.round(total * 0.25);
-    const biayaSamsat = total - profit;
+    const biayaSamsat = (tagihan as any).biayaSamsat ?? 0;
+    const initialMetrics = calculateInvoiceProfitMetrics({ dibayar: paid, totalTagihan: total, biayaSamsat });
+    const profit = (tagihan as any).profit ?? (total > 0 ? initialMetrics.grossServiceMargin : 0);
 
     invoiceList.push({
       id: currentId++,
@@ -581,8 +585,27 @@ class FinanceStore {
       const namaBank = isCash ? "" : ((item as any).namaBank || (item as any).bank || rek);
       const noRekening = isCash ? "" : ((item as any).nomorRekening || (item as any).noRekening || defaultAccountNumbers[rek] || "772-019-2831");
       const namaRekening = isCash ? "" : ((item as any).namaPemilikRekening || (item as any).namaRekening || "PT Biro Jasa SUN89 Abadi");
+
+      const metrics = calculateInvoiceProfitMetrics({
+        dibayar: item.uangMasuk,
+        totalTagihan: (item as any).totalTagihan !== undefined ? (item as any).totalTagihan : item.uangMasuk,
+        biayaSamsat: item.biayaSamsat,
+        biayaAntarJemput: (item as any).biayaAntarJemput,
+        cashback: (item as any).cashback,
+        isExplicitZero: Boolean((item as any).isExplicitZero || (item as any).costClassification === "EXPLICIT_ZERO"),
+      });
+
+      const canonicalProfit = metrics.isGrossDeficit && item.profit === 0
+        ? metrics.grossServiceMargin
+        : (item.profit !== undefined ? item.profit : metrics.grossServiceMargin);
+
       return {
         ...item,
+        profit: canonicalProfit,
+        grossServiceMargin: metrics.grossServiceMargin,
+        netTransactionMargin: metrics.netTransactionMargin,
+        isGrossDeficit: metrics.isGrossDeficit,
+        isNetDeficit: metrics.isNetDeficit,
         metodePencairan,
         metodePembayaran: item.metodePembayaran || (isCash ? "Cash" : `Transfer ${rek}`),
         namaBank: isCash ? "" : namaBank,
@@ -594,6 +617,19 @@ class FinanceStore {
         tanggalUangMasuk: item.uangMasuk > 0 ? (item.tanggalBayar || (item as any).tanggalUangMasuk || item.tanggal) : "",
       };
     });
+  }
+
+  public getRefundPendingList(): any[] {
+    return this.invoices
+      .filter((inv) => {
+        const overpayment = Number(inv.overpayment || 0);
+        return overpayment > 0 && inv.refundStatus !== "PROCESSED";
+      })
+      .map((inv) => ({
+        ...inv,
+        overpayment: Number(inv.overpayment || 0),
+        statusRefund: inv.refundStatus || "PENDING",
+      }));
   }
 
   public getProfitPendingList(): any[] {
@@ -773,11 +809,10 @@ class FinanceStore {
         const overpayment = Math.max(0, paid - total);
         const legacyCashback = Number(inv.cashback) || 0;
 
-        const hasOverpaymentPending = overpayment > 0 && inv.refundStatus !== "PROCESSED";
-        const hasCashbackPending = legacyCashback > 0 && inv.cashbackStatus !== "REALIZED";
+        const hasCashbackPending = legacyCashback > 0 && (inv.cashbackStatus === "PENDING" || inv.cashbackStatus !== "REALIZED");
 
-        // If neither pending, exclude
-        if (!hasOverpaymentPending && !hasCashbackPending) return false;
+        // Overpayment belongs in refund list, NOT cashback list (Scenario 12/13 requirement)
+        if (!hasCashbackPending) return false;
 
         // Dedup by orderNo if exists
         const key = inv.orderNo || `inv:${inv.id}`;
@@ -1020,13 +1055,34 @@ class FinanceStore {
     return this.labaRugiData;
   }
 
-  public getCanonicalLabaRugi(periodFilter: string = "monthly"): CanonicalLabaRugiSummary {
+  public getCanonicalLabaRugi(
+    periodFilter: string = "monthly",
+    customStartDate?: string,
+    customEndDate?: string
+  ): CanonicalLabaRugiSummary {
     return computeCanonicalLabaRugi(
       this.invoices,
       this.pengeluaran,
       this.kasMessenger,
       periodFilter,
-      this.profitData
+      this.profitData,
+      customStartDate,
+      customEndDate,
+      this.kasKantor
+    );
+  }
+
+  public getCashFlowReconciliation(
+    periodFilter: string = "monthly",
+    customStartDate?: string,
+    customEndDate?: string
+  ): CashFlowReconciliationSummary {
+    return computeCashFlowReconciliation(
+      this.kasKantor,
+      this.kasMessenger,
+      periodFilter,
+      customStartDate,
+      customEndDate
     );
   }
 
@@ -1511,6 +1567,8 @@ class FinanceStore {
       namaRekening?: string;
       paymentType?: "ALL" | "KOMISI" | "KELEBIHAN";
       paymentMethod?: string;
+      idempotencyKey?: string;
+      expectedVersion?: number;
     }
   ): Promise<boolean> {
     const idx = this.invoices.findIndex((inv) => inv.id === invoiceId || inv.invoice === String(invoiceId) || inv.invoiceNo === String(invoiceId));
@@ -1585,6 +1643,8 @@ class FinanceStore {
           buktiPembayaran: proof,
           catatan: options?.catatan,
           tanggal: options?.tanggal || new Date().toISOString().split("T")[0],
+          idempotencyKey: options?.idempotencyKey,
+          expectedVersion: options?.expectedVersion,
         });
         this.syncFromRepository();
         return true;
@@ -1853,11 +1913,19 @@ class FinanceStore {
       phone: data.phone?.trim() ? data.phone.trim() : undefined,
       email: data.email,
       alamat: data.alamat,
-      biayaSamsat: data.biayaSamsat || Math.round(total * 0.75),
-      profit: data.profit || Math.round(total * 0.25),
+      biayaSamsat: data.biayaSamsat !== undefined ? Number(data.biayaSamsat) : 0,
+      profit: data.profit !== undefined
+        ? Number(data.profit)
+        : calculateInvoiceProfitMetrics({
+            dibayar: paid,
+            totalTagihan: total,
+            biayaSamsat: data.biayaSamsat !== undefined ? Number(data.biayaSamsat) : 0,
+            biayaAntarJemput: (data as any).biayaAntarJemput,
+            cashback: data.cashback,
+          }).grossServiceMargin,
       profitStatus: isLunas && data.settlementCondition !== "PENDING_FINALIZATION" ? "REALIZED" : "PENDING",
       cashback: data.cashback || 0,
-      cashbackStatus: isLunas && data.settlementCondition !== "PENDING_FINALIZATION" ? "REALIZED" : "PENDING",
+      cashbackStatus: data.cashbackStatus || (isLunas && data.settlementCondition !== "PENDING_FINALIZATION" ? "REALIZED" : "PENDING"),
       isCashRealized: paid > 0,
       cashRecordedAmount: paid, // Set recorded amount to prevent double inflow
       metodePembayaran: data.metodePembayaran || (paid > 0 ? "Transfer Bank" : "Tempo"),
@@ -1920,7 +1988,16 @@ class FinanceStore {
 
     const settlementCond = updates.settlementCondition || current.settlementCondition;
     const isFinalized = settlementCond && settlementCond !== "PENDING_FINALIZATION";
-    const isProfitRealized = isLunas && isFinalized;
+    const isProfitRealized = (isLunas || status === "Kelebihan Bayar") && isFinalized;
+
+    const profitMetrics = calculateInvoiceProfitMetrics({
+      dibayar: paid,
+      totalTagihan: total,
+      biayaSamsat: updates.biayaSamsat !== undefined ? updates.biayaSamsat : current.biayaSamsat,
+      biayaAntarJemput: (updates as any).biayaAntarJemput ?? (current as any).biayaAntarJemput,
+      cashback: updates.cashback !== undefined ? updates.cashback : current.cashback,
+    });
+    const calculatedProfit = profitMetrics.grossServiceMargin;
 
     this.invoices[idx] = {
       ...current,
@@ -1929,6 +2006,7 @@ class FinanceStore {
       terbayar: paid,
       sisa: Math.max(0, total - paid),
       status,
+      profit: updates.profit !== undefined ? updates.profit : calculatedProfit,
       profitStatus: isProfitRealized ? "REALIZED" : "PENDING",
       cashbackStatus: isProfitRealized ? "REALIZED" : "PENDING",
     };
@@ -1940,9 +2018,9 @@ class FinanceStore {
       if (existingProfitIdx >= 0) {
         this.profitData[existingProfitIdx] = {
           ...this.profitData[existingProfitIdx],
-          uangMasuk: total, // Final cost (strictly excludes overpayment)
-          biayaSamsat: current.biayaSamsat,
-          profit: current.profit,
+          uangMasuk: profitMetrics.recognizedRevenue, // Recognized revenue strictly excludes overpayment
+          biayaSamsat: this.invoices[idx].biayaSamsat,
+          profit: this.invoices[idx].profit,
         };
       } else {
         this.profitData.unshift({
@@ -1952,9 +2030,9 @@ class FinanceStore {
           customer: current.customer,
           namaBerkas: current.namaBerkas || "-",
           pengurusan: current.jenisLayanan,
-          uangMasuk: total, // Final cost (strictly excludes overpayment)
-          biayaSamsat: current.biayaSamsat,
-          profit: current.profit,
+          uangMasuk: profitMetrics.recognizedRevenue, // Recognized revenue strictly excludes overpayment
+          biayaSamsat: this.invoices[idx].biayaSamsat,
+          profit: this.invoices[idx].profit,
           rekening: current.bank || "BCA",
           invoice: current.invoice,
           tanggalTTB: current.tanggal,
@@ -2741,7 +2819,7 @@ class FinanceStore {
             statusKepemilikan: kepemilikanKendaraan,
             statusPembayaran: statusPembayaranVal,
             currentStep: isSelesai ? 8 : 1,
-            currentStageName: isSelesai ? "Selesai" : "Verifikasi",
+            currentStageName: isSelesai ? "Dokumen Telah Diterima" : "Verifikasi",
             isArchived: isMutasiLD && isSelesai,
             rekapDocuments: rekapDocs,
             namaPenerimaKeluar,
@@ -2796,7 +2874,7 @@ class FinanceStore {
             if (isMutasiLD) {
               if (isSelesai) {
                 res.currentStep = 8;
-                res.currentStageName = "Selesai";
+                res.currentStageName = "Dokumen Telah Diterima";
                 res.isArchived = true;
                 orderRepository.archiveOrder?.(finalOrderNo);
               } else {
@@ -2870,7 +2948,7 @@ class FinanceStore {
             nomorHP: phone,
             layanan,
             currentStep: isSelesai ? 8 : 1,
-            currentStageName: isSelesai ? "Selesai" : "Verifikasi",
+            currentStageName: isSelesai ? "Dokumen Telah Diterima" : "Verifikasi",
             catatanOrder: isMutasiLD
               ? `Order Mutasi LD dibuat langsung dari Data Penjualan (Status ${statusPengerjaan}).`
               : "Order dibuat dari Data Penjualan (+ Tambah Data).",
@@ -3482,6 +3560,7 @@ export function useFinanceStore() {
     tagihanList: financeStore.getTagihanList(),
     completedTagihanList: financeStore.getCompletedTagihanList(),
     profitList: financeStore.getProfitList(),
+    refundPendingList: financeStore.getRefundPendingList(),
     profitPendingList: financeStore.getProfitPendingList(),
     cashbackPendingList: financeStore.getCashbackPendingList(),
     belumBayarList: financeStore.getBelumBayarList(),
@@ -3491,6 +3570,7 @@ export function useFinanceStore() {
     labaRugiData: financeStore.getLabaRugiData(),
     getLabaRugiData: financeStore.getLabaRugiData.bind(financeStore),
     getCanonicalLabaRugi: financeStore.getCanonicalLabaRugi.bind(financeStore),
+    getCashFlowReconciliation: financeStore.getCashFlowReconciliation.bind(financeStore),
 
     // Contract Data for DataPenjualan
     getContractData: financeStore.getContractData.bind(financeStore),

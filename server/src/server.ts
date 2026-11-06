@@ -5,7 +5,13 @@
 
 import { createApp } from "./app";
 import { CONFIG } from "./config/env";
-import { closeDb } from "./database/db";
+import { closeDb, initDatabase } from "./database/db";
+
+// Official Server Startup: validate environment fail-fast BEFORE database initialization
+CONFIG.validate();
+
+// Official Server Startup: explicitly initialize database and schema
+initDatabase({ runSchema: true, allowOperationalWrite: true });
 
 const app = createApp();
 

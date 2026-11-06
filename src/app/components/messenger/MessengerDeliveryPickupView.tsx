@@ -1,4 +1,4 @@
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect } from "react";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import { Card } from "../ui/card";
@@ -21,6 +21,7 @@ import {
 import { useOrderStore } from "../../data/orderStore";
 import { MessengerTaskCard } from "./MessengerTaskCard";
 import { MessengerMobileTaskDetail } from "./MessengerMobileTaskDetail";
+import { MessengerJemputHasilDetailView } from "./MessengerJemputHasilDetailView";
 import { toast } from "sonner";
 import { cn } from "../ui/utils";
 
@@ -28,19 +29,31 @@ interface MessengerDeliveryPickupViewProps {
   currentUser: UserContext;
   onNavigateToTab?: (tab: string, orderNo?: string) => void;
   initialSelectedOrderNo?: string;
+  onDetailActiveChange?: (active: boolean) => void;
 }
 
-type DeliveryChip = "ALL" | "Jemput Dokumen" | "Pengantaran Dokumen";
+type DeliveryChip = "ALL" | "Jemput Dokumen" | "Jemput Hasil" | "Pengantaran Dokumen";
 
 export function MessengerDeliveryPickupView({
   currentUser,
   onNavigateToTab,
   initialSelectedOrderNo,
+  onDetailActiveChange,
 }: MessengerDeliveryPickupViewProps) {
   const { activeOrders, isLoading } = useOrderStore();
   const [selectedChip, setSelectedChip] = useState<DeliveryChip>("ALL");
   const [selectedTask, setSelectedTask] = useState<MessengerTaskItem | null>(null);
   const [isDetailOpen, setIsDetailOpen] = useState(false);
+
+  // Dedicated Jemput Hasil page lifecycle: Notify parent workspace to hide bottom navigation bar
+  const isJemputHasilOpen = Boolean(selectedTask && selectedTask.keteranganTugas === "Jemput Hasil Samsat");
+
+  useEffect(() => {
+    onDetailActiveChange?.(isJemputHasilOpen);
+    return () => {
+      onDetailActiveChange?.(false);
+    };
+  }, [isJemputHasilOpen, onDetailActiveChange]);
 
   // Active delivery/pickup tasks strictly assigned to this messenger
   const activeTasks = useMemo(() => {
@@ -61,9 +74,8 @@ export function MessengerDeliveryPickupView({
   const counts = useMemo(() => {
     return {
       all: activeTasks.length,
-      jemput: activeTasks.filter(
-        (t) => t.keteranganTugas === "Jemput Dokumen" || t.keteranganTugas === "Jemput Hasil Samsat"
-      ).length,
+      jemput: activeTasks.filter((t) => t.keteranganTugas === "Jemput Dokumen").length,
+      jemputHasil: activeTasks.filter((t) => t.keteranganTugas === "Jemput Hasil Samsat").length,
       antar: activeTasks.filter((t) => t.keteranganTugas === "Pengantaran Dokumen").length,
     };
   }, [activeTasks]);
@@ -72,7 +84,10 @@ export function MessengerDeliveryPickupView({
     return activeTasks.filter((t) => {
       if (selectedChip === "ALL") return true;
       if (selectedChip === "Jemput Dokumen") {
-        return t.keteranganTugas === "Jemput Dokumen" || t.keteranganTugas === "Jemput Hasil Samsat";
+        return t.keteranganTugas === "Jemput Dokumen";
+      }
+      if (selectedChip === "Jemput Hasil") {
+        return t.keteranganTugas === "Jemput Hasil Samsat";
       }
       return t.keteranganTugas === "Pengantaran Dokumen";
     });
@@ -96,6 +111,24 @@ export function MessengerDeliveryPickupView({
     setSelectedTask(task);
     setIsDetailOpen(true);
   };
+
+  // Phase 4: Dedicated Full-Page View for Jemput Hasil Samsat
+  if (selectedTask && selectedTask.keteranganTugas === "Jemput Hasil Samsat") {
+    return (
+      <MessengerJemputHasilDetailView
+        task={selectedTask}
+        currentUser={currentUser}
+        onBack={() => {
+          setSelectedTask(null);
+          setIsDetailOpen(false);
+        }}
+        onTaskUpdated={() => {
+          setSelectedTask(null);
+          setIsDetailOpen(false);
+        }}
+      />
+    );
+  }
 
   return (
     <div className="w-full space-y-4 max-w-xl mx-auto pb-6 text-left">
@@ -146,6 +179,18 @@ export function MessengerDeliveryPickupView({
           )}
         >
           Jemput Dokumen ({counts.jemput})
+        </button>
+
+        <button
+          onClick={() => setSelectedChip("Jemput Hasil")}
+          className={cn(
+            "px-4 py-2 min-h-[44px] rounded-full font-semibold transition-all shrink-0 text-sm",
+            selectedChip === "Jemput Hasil"
+              ? "bg-purple-600 text-white shadow-2xs"
+              : "bg-muted/80 text-muted-foreground hover:bg-muted hover:text-foreground"
+          )}
+        >
+          Jemput Hasil ({counts.jemputHasil})
         </button>
 
         <button

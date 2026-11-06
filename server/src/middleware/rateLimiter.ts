@@ -16,11 +16,9 @@ export interface RateLimiterMiddleware {
 }
 
 export function getClientIp(req: Request): string {
-  const forwarded = req.headers["x-forwarded-for"];
-  let ip = (typeof forwarded === "string" ? forwarded.split(",")[0].trim() : Array.isArray(forwarded) ? forwarded[0] : null)
-    || req.ip
-    || req.socket.remoteAddress
-    || "127.0.0.1";
+  // Use Express resolved req.ip which respects app.get("trust proxy") configuration
+  // instead of blindly trusting raw unverified X-Forwarded-For headers
+  let ip = req.ip || req.socket.remoteAddress || "127.0.0.1";
   if (typeof ip === "string") {
     if (ip.startsWith("::ffff:")) {
       ip = ip.substring(7);

@@ -72,6 +72,7 @@ const DEFAULT_PERMISSIONS: PermissionMatrix = {
       "finance-laba-rugi": { view: true, manage: true },
       // Master Data
       "master-data": { view: true, manage: true },
+      "master-layanan": { view: true, manage: true },
       "master-samsat": { view: true, manage: true },
       "master-metode-pembayaran": { view: true, manage: true },
       "master-biaya-layanan": { view: true, manage: true },
@@ -125,6 +126,7 @@ const DEFAULT_PERMISSIONS: PermissionMatrix = {
       "finance-tagihan": { view: true, manage: true },
       "finance-laba-rugi": { view: true, manage: true },
       "master-data": { view: true, manage: true },
+      "master-layanan": { view: true, manage: true },
       "master-samsat": { view: true, manage: true },
       "master-metode-pembayaran": { view: true, manage: true },
       "master-biaya-layanan": { view: true, manage: true },
@@ -179,6 +181,7 @@ const DEFAULT_PERMISSIONS: PermissionMatrix = {
       "finance-laba-rugi": { view: false, manage: false },
       // Master Data: FULL ACCESS
       "master-data": { view: true, manage: true },
+      "master-layanan": { view: true, manage: true },
       "master-samsat": { view: true, manage: true },
       "master-metode-pembayaran": { view: true, manage: true },
       "master-biaya-layanan": { view: true, manage: true },
@@ -236,6 +239,7 @@ const DEFAULT_PERMISSIONS: PermissionMatrix = {
       "finance-laba-rugi": { view: true, manage: true },
       // Master Data: NO ACCESS
       "master-data": { view: false, manage: false },
+      "master-layanan": { view: false, manage: false },
       "master-samsat": { view: false, manage: false },
       "master-metode-pembayaran": { view: false, manage: false },
       "master-biaya-layanan": { view: false, manage: false },
@@ -293,6 +297,7 @@ const DEFAULT_PERMISSIONS: PermissionMatrix = {
       "finance-laba-rugi": { view: false, manage: false },
       // Master Data: NO ACCESS
       "master-data": { view: false, manage: false },
+      "master-layanan": { view: false, manage: false },
       "master-samsat": { view: false, manage: false },
       "master-metode-pembayaran": { view: false, manage: false },
       "master-biaya-layanan": { view: false, manage: false },
@@ -355,6 +360,7 @@ class PermissionStore {
         if (adminPerms && adminPerms.modules) {
           adminPerms.modules["finance-kas-messenger"] = { view: true, manage: true };
           adminPerms.modules["finance"] = { view: true, manage: true };
+          adminPerms.modules["master-layanan"] = { view: true, manage: true };
         }
         // Ensure all roles exist
         return {

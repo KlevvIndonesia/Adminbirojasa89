@@ -526,18 +526,18 @@ export function WilayahSamsatManager() {
           </Card>
 
           {/* Wilayah Table */}
-          <Card className="border border-border/80 bg-card overflow-hidden">
-            <div className="overflow-x-auto">
+          <Card className="border border-border/80 bg-card overflow-hidden shadow-2xs flex-1 flex flex-col min-h-0">
+            <div className="overflow-x-auto overflow-y-auto max-h-[calc(100vh-320px)] sm:max-h-[calc(100vh-340px)] min-h-[160px]">
               <table className="w-full text-xs text-left">
-                <thead className="bg-muted/50 text-muted-foreground uppercase text-[10px] tracking-wider border-b border-border">
+                <thead className="sticky top-0 z-10 bg-card border-b border-border shadow-2xs text-muted-foreground uppercase text-[10px] tracking-wider">
                   <tr>
-                    <th className="py-2.5 px-3 font-semibold w-24">Kode</th>
-                    <th className="py-2.5 px-3 font-semibold">Kabupaten / Kota</th>
-                    <th className="py-2.5 px-3 font-semibold w-28">Jenis</th>
-                    <th className="py-2.5 px-3 font-semibold">Provinsi</th>
-                    <th className="py-2.5 px-3 font-semibold">Kantor Samsat Terdaftar</th>
-                    <th className="py-2.5 px-3 font-semibold w-36">Status Biaya</th>
-                    <th className="py-2.5 px-3 font-semibold text-right w-40">Aksi</th>
+                    <th className="py-2.5 px-3 font-semibold w-24 bg-card">Kode</th>
+                    <th className="py-2.5 px-3 font-semibold bg-card">Kabupaten / Kota</th>
+                    <th className="py-2.5 px-3 font-semibold w-28 bg-card">Jenis</th>
+                    <th className="py-2.5 px-3 font-semibold bg-card">Provinsi</th>
+                    <th className="py-2.5 px-3 font-semibold bg-card">Kantor Samsat Terdaftar</th>
+                    <th className="py-2.5 px-3 font-semibold w-36 bg-card">Status Biaya</th>
+                    <th className="py-2.5 px-3 font-semibold text-right w-40 bg-card">Aksi</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-border/60">
@@ -626,7 +626,7 @@ export function WilayahSamsatManager() {
             </div>
 
             {/* Pagination */}
-            <div className="p-3 border-t border-border/80">
+            <div className="p-3 border-t border-border/80 bg-card shrink-0 mt-auto">
               <TablePagination
                 currentPage={currentPage}
                 totalItems={totalWilayahItems}
@@ -664,17 +664,17 @@ export function WilayahSamsatManager() {
               </Button>
             </div>
 
-            <div className="overflow-x-auto rounded-lg border border-border/80">
+            <div className="overflow-x-auto overflow-y-auto max-h-[calc(100vh-320px)] sm:max-h-[calc(100vh-340px)] min-h-[160px] rounded-lg border border-border/80">
               <table className="w-full text-xs text-left">
-                <thead className="bg-muted/50 text-muted-foreground uppercase text-[10px] tracking-wider border-b border-border">
+                <thead className="sticky top-0 z-10 bg-card border-b border-border shadow-2xs text-muted-foreground uppercase text-[10px] tracking-wider">
                   <tr>
-                    <th className="py-2.5 px-3 font-semibold">Nama Samsat</th>
-                    <th className="py-2.5 px-3 font-semibold">Alamat Kantor</th>
-                    <th className="py-2.5 px-3 font-semibold">Wilayah Layanan</th>
-                    <th className="py-2.5 px-3 font-semibold">Kode & Kab/Kota Kemendagri</th>
-                    <th className="py-2.5 px-3 font-semibold">Provinsi</th>
-                    <th className="py-2.5 px-3 font-semibold w-28">Status</th>
-                    <th className="py-2.5 px-3 font-semibold text-right w-24">Aksi</th>
+                    <th className="py-2.5 px-3 font-semibold bg-card">Nama Samsat</th>
+                    <th className="py-2.5 px-3 font-semibold bg-card">Alamat Kantor</th>
+                    <th className="py-2.5 px-3 font-semibold bg-card">Wilayah Layanan</th>
+                    <th className="py-2.5 px-3 font-semibold bg-card">Kode & Kab/Kota Kemendagri</th>
+                    <th className="py-2.5 px-3 font-semibold bg-card">Provinsi</th>
+                    <th className="py-2.5 px-3 font-semibold w-28 bg-card">Status</th>
+                    <th className="py-2.5 px-3 font-semibold text-right w-24 bg-card">Aksi</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-border/60">

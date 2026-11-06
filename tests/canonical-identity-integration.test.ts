@@ -289,6 +289,7 @@ test("Phase 9.4 Integration — 5. Provider Routing Integrity (Buat Order, +Tamb
   const contractAdded = financeStore.addContractData("bbn", [
     {
       "Nama Customer": "Contract Add Customer",
+      "Nomor HP": "081234567890",
       "Plat No": "B 8888 CTD",
       "Jenis Pengurusan": "Balik Nama",
       "Uang Masuk dari Konsumen": 700000,

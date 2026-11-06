@@ -27,7 +27,8 @@ import {
   Car,
   CreditCard,
   User,
-  AlertTriangle
+  AlertTriangle,
+  Save
 } from "lucide-react";
 import {
   exportToCSV,
@@ -112,6 +113,11 @@ interface EnhancedTableWithDialogsProps {
   bypassInternalDeleteDialog?: boolean;
   bypassInternalEditDialog?: boolean;
   subTabTitle?: string;
+  suppressTrailingActionColumn?: boolean;
+  serverPageOffset?: number;
+  renderBottom?: (context: { filteredData: any[]; sortedData: any[]; totalItems: number }) => React.ReactNode;
+  onFilteredDataChange?: (filteredData: any[]) => void;
+  tableContainerClassName?: string;
 }
 
 type SortDirection = "asc" | "desc" | null;
@@ -133,7 +139,12 @@ export function EnhancedTableWithDialogs({
   hideDeleteButton = false,
   bypassInternalDeleteDialog = false,
   bypassInternalEditDialog = false,
-  subTabTitle
+  subTabTitle,
+  suppressTrailingActionColumn = false,
+  serverPageOffset,
+  renderBottom,
+  onFilteredDataChange,
+  tableContainerClassName,
 }: EnhancedTableWithDialogsProps) {
   // Search inputs (Requirement 12: separate date and text searches)
   const [searchTerm, setSearchTerm] = useState("");
@@ -178,15 +189,15 @@ export function EnhancedTableWithDialogs({
   const [sortKey, setSortKey] = useState<string | null>(null);
   const [sortDirection, setSortDirection] = useState<SortDirection>(null);
 
-  // Desktop Table Settings: Font size & column visibility (Requirements 20-26)
-  const [tableFontSize, setTableFontSize] = useState<"1x" | "2x" | "3x">(() => {
+  // Desktop Table Settings: Saved & Draft Font size & column visibility (Explicit Save Model)
+  const [savedTableFontSize, setSavedTableFontSize] = useState<"1x" | "2x" | "3x">(() => {
     if (savedSettings?.tableFontSize && ["1x", "2x", "3x"].includes(savedSettings.tableFontSize)) {
       return savedSettings.tableFontSize;
     }
     return "1x";
   });
 
-  const [visibleColumnKeys, setVisibleColumnKeys] = useState<Set<string>>(() => {
+  const [savedVisibleColumnKeys, setSavedVisibleColumnKeys] = useState<Set<string>>(() => {
     const allColKeys = new Set(columns.map((c) => c.key));
     if (Array.isArray(savedSettings?.visibleColumns) && savedSettings.visibleColumns.length > 0) {
       const validKeys = savedSettings.visibleColumns.filter((k: string) => allColKeys.has(k));
@@ -197,19 +208,49 @@ export function EnhancedTableWithDialogs({
     return allColKeys;
   });
 
-  // Persist table settings to localStorage whenever changes occur
-  React.useEffect(() => {
+  // Settings Popover Open State & Draft States
+  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [draftTableFontSize, setDraftTableFontSize] = useState<"1x" | "2x" | "3x">(savedTableFontSize);
+  const [draftVisibleColumnKeys, setDraftVisibleColumnKeys] = useState<Set<string>>(() => new Set(savedVisibleColumnKeys));
+
+  // Determine if draft differs from saved configuration
+  const hasUnsavedFontSize = draftTableFontSize !== savedTableFontSize;
+  const hasUnsavedColumns = useMemo(() => {
+    if (draftVisibleColumnKeys.size !== savedVisibleColumnKeys.size) return true;
+    for (const key of draftVisibleColumnKeys) {
+      if (!savedVisibleColumnKeys.has(key)) return true;
+    }
+    return false;
+  }, [draftVisibleColumnKeys, savedVisibleColumnKeys]);
+  const hasUnsavedSettings = hasUnsavedFontSize || hasUnsavedColumns;
+
+  // Persist table settings helper
+  const persistTableSettings = useCallback((cols: Set<string>, fontSize: "1x" | "2x" | "3x", perPage: number) => {
     try {
       if (typeof window !== "undefined" && window.localStorage) {
         const payload = {
-          visibleColumns: Array.from(visibleColumnKeys),
-          tableFontSize,
-          itemsPerPage,
+          visibleColumns: Array.from(cols),
+          tableFontSize: fontSize,
+          itemsPerPage: perPage,
         };
         localStorage.setItem(storageKey, JSON.stringify(payload));
       }
     } catch {}
-  }, [storageKey, visibleColumnKeys, tableFontSize, itemsPerPage]);
+  }, [storageKey]);
+
+  // Handle opening/closing of Settings Popover
+  const handleSettingsOpenChange = (open: boolean) => {
+    if (open) {
+      // Saat menu dibuka kembali, tampilkan pengaturan terakhir yang tersimpan
+      setDraftTableFontSize(savedTableFontSize);
+      setDraftVisibleColumnKeys(new Set(savedVisibleColumnKeys));
+    } else {
+      // Pastikan perubahan draft yang dibatalkan tidak menggantikan konfigurasi tersimpan
+      setDraftTableFontSize(savedTableFontSize);
+      setDraftVisibleColumnKeys(new Set(savedVisibleColumnKeys));
+    }
+    setIsSettingsOpen(open);
+  };
 
   // Synchronize visibleColumnKeys when columns prop updates or when subTabTitle changes
   const prevSubTabRef = React.useRef(subTabTitle);
@@ -230,19 +271,20 @@ export function EnhancedTableWithDialogs({
     if (subTabChanged) {
       const saved = loadPersistedSettings();
       const allKeys = new Set(columns.map((c) => c.key));
+      let initialKeys = allKeys;
       if (Array.isArray(saved?.visibleColumns) && saved.visibleColumns.length > 0) {
         const valid = saved.visibleColumns.filter((k: string) => allKeys.has(k));
         if (valid.length > 0) {
-          setVisibleColumnKeys(new Set(valid));
-        } else {
-          setVisibleColumnKeys(allKeys);
+          initialKeys = new Set(valid);
         }
-      } else {
-        setVisibleColumnKeys(allKeys);
       }
-      if (saved?.tableFontSize && ["1x", "2x", "3x"].includes(saved.tableFontSize)) {
-        setTableFontSize(saved.tableFontSize);
-      }
+      setSavedVisibleColumnKeys(initialKeys);
+      setDraftVisibleColumnKeys(new Set(initialKeys));
+
+      const initialFont = (saved?.tableFontSize && ["1x", "2x", "3x"].includes(saved.tableFontSize)) ? saved.tableFontSize : "1x";
+      setSavedTableFontSize(initialFont);
+      setDraftTableFontSize(initialFont);
+
       if (saved?.itemsPerPage && itemsPerPageOptions.includes(saved.itemsPerPage)) {
         setItemsPerPage(saved.itemsPerPage);
       }
@@ -250,7 +292,7 @@ export function EnhancedTableWithDialogs({
     }
 
     if (columnsChanged) {
-      setVisibleColumnKeys((prev) => {
+      setSavedVisibleColumnKeys((prev) => {
         const currentKeys = new Set(columns.map((c) => c.key));
         if (prev.size === 0) return currentKeys;
         const next = new Set<string>();
@@ -258,19 +300,28 @@ export function EnhancedTableWithDialogs({
           if (prev.has(c.key)) next.add(c.key);
         });
         const resolved = (next.size <= 1 && columns.length > 2) ? currentKeys : (next.size > 0 ? next : currentKeys);
-        if (resolved.size === prev.size && Array.from(resolved).every((k) => prev.has(k))) {
-          return prev;
-        }
+        setDraftVisibleColumnKeys(new Set(resolved));
         return resolved;
       });
     }
   }, [subTabTitle, columns, loadPersistedSettings, itemsPerPageOptions]);
 
+  const handleSaveTableSettings = () => {
+    setSavedTableFontSize(draftTableFontSize);
+    setSavedVisibleColumnKeys(new Set(draftVisibleColumnKeys));
+    persistTableSettings(draftVisibleColumnKeys, draftTableFontSize, itemsPerPage);
+    toast.success("Pengaturan tabel berhasil disimpan");
+    setIsSettingsOpen(false);
+  };
+
   const handleResetTableSettings = () => {
     const allKeys = new Set(columns.map((c) => c.key));
-    setVisibleColumnKeys(allKeys);
-    setTableFontSize("1x");
-    setItemsPerPage(itemsPerPageOptions.includes(25) ? 25 : itemsPerPageOptions[0]);
+    setDraftVisibleColumnKeys(new Set(allKeys));
+    setDraftTableFontSize("1x");
+    setSavedVisibleColumnKeys(new Set(allKeys));
+    setSavedTableFontSize("1x");
+    const defaultPerPage = itemsPerPageOptions.includes(25) ? 25 : itemsPerPageOptions[0];
+    setItemsPerPage(defaultPerPage);
     try {
       if (typeof window !== "undefined" && window.localStorage) {
         localStorage.removeItem(storageKey);
@@ -279,26 +330,26 @@ export function EnhancedTableWithDialogs({
     toast.success("Pengaturan tabel dikembalikan ke default");
   };
 
-  const isAllColumnsVisible = visibleColumnKeys.size === columns.length;
-  const isSomeColumnsVisible = visibleColumnKeys.size > 0 && visibleColumnKeys.size < columns.length;
-  const selectAllState: boolean | "indeterminate" = isAllColumnsVisible ? true : (isSomeColumnsVisible ? "indeterminate" : false);
+  const isDraftAllColumnsVisible = draftVisibleColumnKeys.size === columns.length;
+  const isDraftSomeColumnsVisible = draftVisibleColumnKeys.size > 0 && draftVisibleColumnKeys.size < columns.length;
+  const draftSelectAllState: boolean | "indeterminate" = isDraftAllColumnsVisible ? true : (isDraftSomeColumnsVisible ? "indeterminate" : false);
 
-  const handleToggleSelectAll = () => {
-    if (isAllColumnsVisible) {
-      setVisibleColumnKeys(new Set());
+  const handleDraftToggleSelectAll = () => {
+    if (isDraftAllColumnsVisible) {
+      setDraftVisibleColumnKeys(new Set());
     } else {
-      setVisibleColumnKeys(new Set(columns.map(c => c.key)));
+      setDraftVisibleColumnKeys(new Set(columns.map((c) => c.key)));
     }
   };
 
-  const handleToggleColumn = (key: string) => {
-    const next = new Set(visibleColumnKeys);
+  const handleDraftToggleColumn = (key: string) => {
+    const next = new Set(draftVisibleColumnKeys);
     if (next.has(key)) {
       next.delete(key);
     } else {
       next.add(key);
     }
-    setVisibleColumnKeys(next);
+    setDraftVisibleColumnKeys(next);
   };
 
   // Structured filter columns (Requirements 4 & 5: Pengurusan, Rekening, and dropdown categories)
@@ -502,6 +553,20 @@ export function EnhancedTableWithDialogs({
     });
   }, [data, searchTerm, dateFilter, filters]);
 
+  const prevEmittedRef = React.useRef<any[]>([]);
+  React.useEffect(() => {
+    if (!onFilteredDataChange) return;
+    const prev = prevEmittedRef.current;
+    if (
+      prev.length === filteredData.length &&
+      prev.every((item, i) => item === filteredData[i] || (item && item.id !== undefined && item.id === filteredData[i]?.id))
+    ) {
+      return;
+    }
+    prevEmittedRef.current = filteredData;
+    onFilteredDataChange(filteredData);
+  }, [filteredData, onFilteredDataChange]);
+
   // Sorted data (Requirement 10 & 11)
   const sortedData = useMemo(() => {
     if (!sortKey || !sortDirection) return filteredData;
@@ -585,14 +650,14 @@ export function EnhancedTableWithDialogs({
       .filter((c) => {
         const k = c.key.toLowerCase();
         if (k === "aksi" || k === "actions" || k === "aksipelunasan") return false;
-        return visibleColumnKeys.has(c.key);
+        return savedVisibleColumnKeys.has(c.key);
       })
       .map((c) => ({
         key: c.key,
         label: c.label,
         align: getColumnAlignment(c),
       }));
-  }, [columns, visibleColumnKeys]);
+  }, [columns, savedVisibleColumnKeys]);
 
   // Preview / filtered dataset for export respecting table filters and export period
   const previewExportData = useMemo(() => {
@@ -680,20 +745,43 @@ export function EnhancedTableWithDialogs({
     // Dates in numeric DD/MM/YYYY (Requirement 9 & 15)
     if (lowerKey.includes("tanggal") || lowerKey.includes("tgl") || lowerKey.includes("tempo")) {
       return (
-        <span className="finance-table__date font-mono text-xs text-foreground/90 whitespace-nowrap">
+        <span className="finance-table__date font-mono text-[10px] text-muted-foreground/85 whitespace-nowrap">
           {formatDateDDMMYYYY(String(value))}
         </span>
       );
     }
 
-    // Customer name with sentence case preserving acronyms (Requirement 7)
+    // Secondary metadata: Order numbers and Invoice numbers (de-emphasized)
+    if (
+      lowerKey === "nomor order" ||
+      lowerKey === "no order" ||
+      lowerKey === "orderno" ||
+      lowerKey === "order_no" ||
+      lowerKey === "no invoice" ||
+      lowerKey === "nomor invoice" ||
+      lowerKey === "invoiceno" ||
+      lowerKey === "invoice"
+    ) {
+      return (
+        <span className="font-mono text-[10px] text-muted-foreground/85 font-medium whitespace-nowrap">
+          {String(value)}
+        </span>
+      );
+    }
+
+    // Customer name with sentence case preserving acronyms (Requirement 7: Primary Business Data)
     if (lowerKey === "customer" || lowerKey === "nama customer") {
-      return <span className="text-foreground/90 font-medium">{formatCustomerName(String(value))}</span>;
+      return <span className="text-foreground font-semibold">{formatCustomerName(String(value))}</span>;
     }
 
     // Nama berkas with sentence case preserving acronyms (Requirement 8)
     if (lowerKey === "nama" || lowerKey === "namaberkas" || lowerKey === "namasesuaibpkb") {
-      return <span className="text-foreground/90">{formatBerkasName(String(value))}</span>;
+      return <span className="text-foreground/90 font-medium">{formatBerkasName(String(value))}</span>;
+    }
+
+    // Jenis Pengurusan / Layanan (Primary Business Data)
+    if (lowerKey === "pengurusan" || lowerKey === "jenis pengurusan" || lowerKey === "layanan") {
+      return <span className="text-foreground/90 font-medium">{String(value)}</span>;
     }
 
     // Status as PLAIN TEXT without pill/badge (Requirement 23 & Phase 9.1)
@@ -706,14 +794,14 @@ export function EnhancedTableWithDialogs({
       const count = item.attachedDocsCount || 0;
       if (count > 0) {
         return (
-          <span className="inline-flex items-center gap-1 text-[11px] font-medium text-emerald-600 dark:text-emerald-400 bg-emerald-500/10 px-2 py-0.5 rounded border border-emerald-500/20">
+          <span className="inline-flex items-center gap-1 text-[10px] font-medium text-emerald-600 dark:text-emerald-400 bg-emerald-500/10 px-2 py-0.5 rounded border border-emerald-500/20">
             <FileText className="w-3 h-3" />
             {value}
           </span>
         );
       }
       return (
-        <span className="text-[11px] text-muted-foreground/70 italic">
+        <span className="text-[10px] text-muted-foreground/70 italic">
           Belum Ada
         </span>
       );
@@ -1050,16 +1138,19 @@ export function EnhancedTableWithDialogs({
           </Popover>
 
           {/* Table Settings & Integrated Export (Reachable on desktop & mobile) */}
-          <Popover>
+          <Popover open={isSettingsOpen} onOpenChange={handleSettingsOpenChange}>
             <PopoverTrigger asChild>
               <Button
                 variant="outline"
                 size="sm"
                 aria-label="Pengaturan tabel"
-                className="inline-flex h-8 text-xs border-border gap-1.5 shrink-0"
+                className="inline-flex h-8 text-xs border-border gap-1.5 shrink-0 relative"
               >
                 <SlidersHorizontal className="w-3.5 h-3.5" />
                 <span>Pengaturan tabel</span>
+                {hasUnsavedSettings && (
+                  <span className="w-2 h-2 rounded-full bg-amber-500 absolute -top-1 -right-1 ring-2 ring-background" title="Terdapat perubahan yang belum disimpan" />
+                )}
               </Button>
             </PopoverTrigger>
             <PopoverContent
@@ -1069,7 +1160,9 @@ export function EnhancedTableWithDialogs({
               <div className="flex items-center justify-between pb-2 border-b border-border/70">
                 <div>
                   <h4 className="font-semibold text-sm leading-tight text-foreground">Pengaturan tabel</h4>
-                  <p className="text-xs text-muted-foreground mt-0.5">Tersimpan otomatis di browser</p>
+                  <p className="text-xs text-muted-foreground mt-0.5">
+                    {hasUnsavedSettings ? "Perubahan draft belum disimpan" : "Tersimpan di browser"}
+                  </p>
                 </div>
                 <Button
                   type="button"
@@ -1083,6 +1176,14 @@ export function EnhancedTableWithDialogs({
                 </Button>
               </div>
 
+              {/* Indicator if changes are unsaved */}
+              {hasUnsavedSettings && (
+                <div className="flex items-center gap-2 p-2 rounded-md bg-amber-500/10 border border-amber-500/30 text-amber-700 dark:text-amber-400 text-xs">
+                  <span className="w-2 h-2 rounded-full bg-amber-500 shrink-0 animate-pulse" />
+                  <span className="font-medium text-[11px]">Terdapat perubahan yang belum disimpan</span>
+                </div>
+              )}
+
               {/* Font Size Setting */}
               <div className="space-y-2">
                 <Label className="text-xs font-semibold text-foreground/85">Ukuran teks</Label>
@@ -1091,14 +1192,14 @@ export function EnhancedTableWithDialogs({
                     <button
                       key={size}
                       type="button"
-                      onClick={() => setTableFontSize(size)}
+                      onClick={() => setDraftTableFontSize(size)}
                       className={`py-1.5 px-2 rounded-md text-xs font-medium border transition-colors flex items-center justify-center gap-1.5 ${
-                        tableFontSize === size
+                        draftTableFontSize === size
                           ? "bg-primary text-primary-foreground border-primary shadow-2xs"
                           : "bg-background hover:bg-muted text-foreground border-border"
                       }`}
                     >
-                      <span className={`w-2 h-2 rounded-full border ${tableFontSize === size ? "bg-primary-foreground border-primary-foreground" : "border-muted-foreground"}`} />
+                      <span className={`w-2 h-2 rounded-full border ${draftTableFontSize === size ? "bg-primary-foreground border-primary-foreground" : "border-muted-foreground"}`} />
                       <span>{size}</span>
                     </button>
                   ))}
@@ -1110,7 +1211,7 @@ export function EnhancedTableWithDialogs({
                 <div className="flex items-center justify-between">
                   <Label className="text-xs font-semibold text-foreground/85">Kolom yang ditampilkan</Label>
                   <span className="text-[11px] text-muted-foreground">
-                    {visibleColumnKeys.size} dari {columns.length} aktif
+                    {draftVisibleColumnKeys.size} dari {columns.length} aktif
                   </span>
                 </div>
 
@@ -1118,8 +1219,8 @@ export function EnhancedTableWithDialogs({
                   {/* Select All Checkbox */}
                   <label className="flex items-center gap-2.5 p-1 rounded hover:bg-muted/50 cursor-pointer text-xs font-semibold select-none border-b border-border/60 pb-1.5">
                     <Checkbox
-                      checked={selectAllState}
-                      onCheckedChange={handleToggleSelectAll}
+                      checked={draftSelectAllState}
+                      onCheckedChange={handleDraftToggleSelectAll}
                     />
                     <span className="text-foreground">Pilih semua</span>
                   </label>
@@ -1128,7 +1229,7 @@ export function EnhancedTableWithDialogs({
                   <ScrollArea className="h-40 pr-1.5">
                     <div className="space-y-1">
                       {columns.map((col) => {
-                        const isChecked = visibleColumnKeys.has(col.key);
+                        const isChecked = draftVisibleColumnKeys.has(col.key);
                         return (
                           <label
                             key={col.key}
@@ -1136,7 +1237,7 @@ export function EnhancedTableWithDialogs({
                           >
                             <Checkbox
                               checked={isChecked}
-                              onCheckedChange={() => handleToggleColumn(col.key)}
+                              onCheckedChange={() => handleDraftToggleColumn(col.key)}
                             />
                             <span className={isChecked ? "text-foreground font-medium" : "text-muted-foreground"}>
                               {col.label}
@@ -1147,6 +1248,19 @@ export function EnhancedTableWithDialogs({
                     </div>
                   </ScrollArea>
                 </div>
+              </div>
+
+              {/* Tombol Simpan Pengaturan */}
+              <div className="pt-2 border-t border-border/70 flex items-center gap-2">
+                <Button
+                  type="button"
+                  size="sm"
+                  onClick={handleSaveTableSettings}
+                  className="w-full h-8 text-xs font-semibold gap-1.5 bg-primary text-primary-foreground hover:bg-primary/90 shadow-2xs"
+                >
+                  <Save className="w-3.5 h-3.5" />
+                  <span>Simpan Pengaturan</span>
+                </Button>
               </div>
 
               {/* Integrated Export Action Section */}
@@ -1188,13 +1302,27 @@ export function EnhancedTableWithDialogs({
 
 
       {/* Main Table: Desktop (Full Columns with desktop settings) & Mobile (2 Primary Columns + Actions) */}
-      <div className="rounded-lg border border-border bg-card overflow-hidden shadow-2xs flex-1 flex flex-col min-h-[220px]">
+      <div className="rounded-lg border border-border bg-card overflow-hidden shadow-2xs flex-1 flex flex-col min-h-0">
         <div className="w-full flex-1 flex flex-col min-h-0">
-          <Table className={`finance-table finance-table--font-${tableFontSize === "1x" ? "1" : tableFontSize === "2x" ? "2" : "3"} w-full min-w-[700px] md:min-w-[850px] ${paginatedData.length === 0 ? "h-full" : ""}`}>
-            <TableHeader className="finance-table__header bg-muted/40 border-b border-border">
+          <Table 
+            containerClassName={cn(
+              "flex-1 min-h-[160px] md:min-h-0 overflow-y-auto overflow-x-auto",
+              tableContainerClassName
+
+
+
+            )}
+            className={`finance-table finance-table--font-${savedTableFontSize === "1x" ? "1" : savedTableFontSize === "2x" ? "2" : "3"} w-full min-w-[700px] md:min-w-[850px] ${paginatedData.length === 0 ? "h-full" : ""}`}
+          >
+            <TableHeader className="finance-table__header sticky top-0 z-10 bg-card border-b border-border shadow-2xs">
               <TableRow className="hover:bg-transparent">
+                {/* No. Column (Row Numbering - always visible, cannot be hidden via settings) */}
+                <TableHead className="h-9 px-2 font-semibold text-foreground/80 text-center whitespace-nowrap text-[10px] w-12 min-w-[48px] max-w-[48px] bg-card">
+                  No.
+                </TableHead>
+
                 {columns.map(col => {
-                  const isVisibleDesktop = visibleColumnKeys.has(col.key);
+                  const isVisibleDesktop = savedVisibleColumnKeys.has(col.key);
                   const isMobileVisible = mobilePrimaryKeys.has(col.key);
 
                   if (!isVisibleDesktop && !isMobileVisible) return null;
@@ -1223,7 +1351,7 @@ export function EnhancedTableWithDialogs({
                       role="button"
                       aria-sort={isSorted ? (sortDirection === "asc" ? "ascending" : "descending") : "none"}
                       aria-label={`Urutkan kolom ${col.label}`}
-                      className={`h-9 px-3.5 font-semibold text-foreground/80 whitespace-nowrap text-xs select-none cursor-pointer hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-primary ${alignClass} ${visibilityClass}`}
+                      className={`h-9 px-3.5 font-semibold text-foreground/80 whitespace-nowrap text-[10px] select-none cursor-pointer hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-primary ${alignClass} ${visibilityClass} bg-card`}
                     >
                       <div className={`inline-flex items-center gap-1 ${align === "right" ? "flex-row-reverse" : align === "center" ? "justify-center" : "flex-row"}`}>
                         <span>{col.label}</span>
@@ -1242,16 +1370,18 @@ export function EnhancedTableWithDialogs({
                 })}
 
                 {/* Actions Column Header (Desktop & Mobile, Requirement 10 & 11) */}
-                <TableHead className="h-9 px-2 font-semibold text-foreground/80 text-center whitespace-nowrap text-xs w-[95px]">
-                  Aksi
-                </TableHead>
+                {!suppressTrailingActionColumn && (
+                  <TableHead className="h-9 px-2 font-semibold text-foreground/80 text-center whitespace-nowrap text-[10px] w-[95px] bg-card">
+                    Aksi
+                  </TableHead>
+                )}
               </TableRow>
             </TableHeader>
             <TableBody className="finance-table__body">
               {paginatedData.length === 0 ? (
                 <TableRow className="h-full hover:bg-transparent">
                   <TableCell 
-                    colSpan={columns.filter(c => visibleColumnKeys.has(c.key) || mobilePrimaryKeys.has(c.key)).length + 1} 
+                    colSpan={columns.filter(c => savedVisibleColumnKeys.has(c.key) || mobilePrimaryKeys.has(c.key)).length + (suppressTrailingActionColumn ? 0 : 1) + 1} 
                     className="h-full min-h-[200px] text-center p-0 align-middle"
                   >
                     <EmptyState
@@ -1262,38 +1392,46 @@ export function EnhancedTableWithDialogs({
                   </TableCell>
                 </TableRow>
               ) : (
-                paginatedData.map((item, idx) => (
-                  <TableRow
-                    key={item.id || idx}
-                    className="hover:bg-muted/30 transition-colors border-b border-border/60 last:border-0 h-10"
-                  >
-                    {columns.map(col => {
-                      const isVisibleDesktop = visibleColumnKeys.has(col.key);
-                      const isMobileVisible = mobilePrimaryKeys.has(col.key);
+                paginatedData.map((item, idx) => {
+                  const rowNumber = (serverPageOffset !== undefined ? serverPageOffset : startIndex) + idx + 1;
+                  return (
+                    <TableRow
+                      key={item.id || idx}
+                      className="hover:bg-muted/30 transition-colors border-b border-border/60 last:border-0 h-10"
+                    >
+                      {/* No. Cell (Row Numbering - always visible, cannot be hidden via settings) */}
+                      <TableCell className="px-2 py-2 text-center text-muted-foreground font-mono text-[10px] tabular-nums w-12 min-w-[48px] max-w-[48px]">
+                        {rowNumber}
+                      </TableCell>
 
-                      if (!isVisibleDesktop && !isMobileVisible) return null;
+                      {columns.map(col => {
+                        const isVisibleDesktop = savedVisibleColumnKeys.has(col.key);
+                        const isMobileVisible = mobilePrimaryKeys.has(col.key);
 
-                      const visibilityClass = isMobileVisible && isVisibleDesktop
-                        ? ""
-                        : isVisibleDesktop
-                          ? "hidden md:table-cell"
-                          : "table-cell md:hidden";
+                        if (!isVisibleDesktop && !isMobileVisible) return null;
 
-                      const align = getColumnAlignment(col);
-                      const alignClass = align === "right" ? "text-right" : align === "center" ? "text-center" : "text-left";
+                        const visibilityClass = isMobileVisible && isVisibleDesktop
+                          ? ""
+                          : isVisibleDesktop
+                            ? "hidden md:table-cell"
+                            : "table-cell md:hidden";
 
-                      return (
-                        <TableCell 
-                          key={col.key} 
-                          className={`px-3.5 py-2 text-xs ${alignClass} ${visibilityClass}`}
-                        >
-                          {formatCellValue(item[col.key], col.key, item, col)}
-                        </TableCell>
-                      );
-                    })}
+                        const align = getColumnAlignment(col);
+                        const alignClass = align === "right" ? "text-right" : align === "center" ? "text-center" : "text-left";
+
+                        return (
+                          <TableCell 
+                            key={col.key} 
+                            className={`px-3.5 py-2 text-[10px] ${alignClass} ${visibilityClass}`}
+                          >
+                            {formatCellValue(item[col.key], col.key, item, col)}
+                          </TableCell>
+                        );
+                      })}
 
                     {/* Actions Cell (Requirements 10 & 11: Direct visible View, Edit, Delete with soft default and distinct hover) */}
-                    <TableCell className="px-2 py-1.5 text-center">
+                    {!suppressTrailingActionColumn && (
+                      <TableCell className="px-2 py-1.5 text-center">
                       <div className="finance-table__actions flex items-center justify-center gap-1">
                         {onView && (
                           <Button
@@ -1346,8 +1484,10 @@ export function EnhancedTableWithDialogs({
                         )}
                       </div>
                     </TableCell>
+                    )}
                   </TableRow>
-                ))
+                );
+              })
               )}
             </TableBody>
           </Table>
@@ -1364,10 +1504,18 @@ export function EnhancedTableWithDialogs({
           onItemsPerPageChange={(newSize) => {
             setItemsPerPage(newSize);
             setCurrentPage(1);
+            persistTableSettings(savedVisibleColumnKeys, savedTableFontSize, newSize);
           }}
           pageSizeOptions={itemsPerPageOptions}
         />
       </div>
+
+      {/* Optional Bottom Summary Slot (e.g. Data Penjualan Totals) */}
+      {renderBottom && (
+        <div className="pt-3 border-t border-border/60 shrink-0">
+          {renderBottom({ filteredData, sortedData, totalItems: sortedData.length })}
+        </div>
+      )}
 
       {/* Edit Data Modal (For surgical inline update following Buat Order design standards) */}
       {editFields && (

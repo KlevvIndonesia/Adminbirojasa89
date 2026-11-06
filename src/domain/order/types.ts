@@ -45,6 +45,22 @@ export interface SamsatProcessItem {
   actualCost?: number;
 }
 
+
+export interface ServiceRequirementItem {
+  id: string;
+  label: string;
+  required: boolean;
+}
+
+export interface ServiceRequirementsSnapshot {
+  schemaVersion: 1;
+  sourceServiceId: string;
+  sourceServiceName?: string;
+  sourceRequirementsVersion: number;
+  capturedAt: string;
+  requirements: ServiceRequirementItem[];
+  isLegacyFallback?: boolean;
+}
 export interface PaymentProof {
   fileName: string;
   fileType: "image" | "pdf";
@@ -61,13 +77,13 @@ export type SettlementCondition =
   | "OVERPAID"
   | "SETTLED";
 
-export type RefundStatus = "NONE" | "PENDING" | "PROCESSED";
+export type RefundStatus = "NONE" | "PENDING" | "PARTIALLY_REFUNDED" | "PROCESSED" | "VOIDED";
 
 export interface DocumentApprovalMetadata {
-  stage5Verified: boolean;
+  stage5Verified?: boolean;
   stage5VerifiedBy?: string;
   stage5VerifiedAt?: string;
-  stage6Approved: boolean;
+  stage6Approved?: boolean;
   stage6ApprovedBy?: string;
   stage6ApprovedAt?: string;
   approvedDocsSnapshot?: string[];
@@ -102,6 +118,8 @@ export interface PaymentRecordItem {
   namaBank?: string;
   namaRekening?: string;
   noRekening?: string;
+  nomorRekening?: string;
+  documentId?: string;
   buktiPembayaran?: PaymentProof;
   statusVerifikasi: "MENUNGGU_BUKTI" | "MENUNGGU_VERIFIKASI" | "TERVERIFIKASI" | "DITOLAK";
   verifiedAt?: string;
@@ -170,11 +188,14 @@ export interface OperationalOrder {
   customer: string;
   nomorHP: string;
   layanan: string;
+  serviceId?: string;
+  service_id?: string;
   currentStep: number; // 1 to 8
   currentStageName: string;
   catatanOrder?: string;
   createdAt: string;
   tanggalMasukBerkas?: string;
+  tanggal_masuk_berkas?: string;
   tanggalPengeluaranSamsat?: string;
 
   // Data Pemilik & Kendaraan
@@ -190,6 +211,8 @@ export interface OperationalOrder {
   nominalSwdkllj: number;
   kodePromo?: string;
   wilayahSamsatAsal: string;
+  samsat_asal?: string;
+  samsat_tujuan?: string;
   wilayahSamsatTujuan?: string;
 
   // Alamat Terstruktur
@@ -198,7 +221,8 @@ export interface OperationalOrder {
 
   // Dokumen
   clientDocuments: Record<string, OrderDocument>;
-  updatedDocuments: string[]; // Hasil Samsat
+  updatedDocuments?: string[]; // Hasil Samsat
+  documents?: any[];
   documentNotes?: string;
   documentsVerified?: boolean;
   documentApproval?: DocumentApprovalMetadata;
@@ -207,10 +231,11 @@ export interface OperationalOrder {
   biayaJasa: number;
   biayaAntarJemput?: number;
   biayaLainnya?: number;
-  pkb: number;
-  swdkllj: number;
-  dendaSwdkllj: number;
-  totalEstimasi: number;
+  pkb?: number;
+  swdkllj?: number;
+  dendaSwdkllj?: number;
+  totalEstimasi?: number;
+  totalBiaya?: number;
 
   // Metadata Pengeluaran Samsat
   namaPenerimaKeluar?: string;
@@ -231,6 +256,9 @@ export interface OperationalOrder {
   keteranganMutasiMasuk?: string;
   keteranganBiayaLainnya?: string;
   isVerified?: boolean;
+  isFinancialAnomaly?: boolean;
+  financialAnomalyReason?: string;
+  biayaSamsat?: number;
 
   // Penjadwalan Jemput (Stage 2)
   tanggalJemput?: string;
@@ -253,14 +281,17 @@ export interface OperationalOrder {
   samsatStatus?: "Terjadwal Samsat" | "Menuju Samsat" | "Sedang Proses Samsat" | "Selesai" | string;
   samsatSubstatus?: string;
   samsatJourneyStartedAt?: string;
+  samsatStartedAt?: string;
   samsatArrivedAt?: string;
   samsatCompletedAt?: string;
+  samsatCycle?: number;
+  samsatCompletedCycle?: number;
   additionalProcesses?: AdditionalProcessItem[];
 
   // Penjemputan Dokumen Hasil Samsat (Bagian E)
   samsatPickupMessenger?: string;
   samsatPickupMessengerId?: string;
-  samsatPickupStatus?: "Belum Dijadwal" | "Terjadwal" | "Sedang Jemput Dokumen Samsat" | "Dokumen Samsat Diterima di Kantor" | string;
+  samsatPickupStatus?: "Belum Dijadwal" | "Terjadwal" | "Sedang Jemput Dokumen Samsat" | "Dokumen Samsat Diterima di Kantor" | "Terkendala" | string;
   samsatPickupStartedAt?: string;
   samsatPickupCompletedAt?: string;
   samsatPickupNotes?: string;
@@ -277,6 +308,8 @@ export interface OperationalOrder {
   catatanPengantaran?: string;
   isDeliveryScheduled?: boolean;
   deliveryStartedAt?: string;
+  deliveryCompletedAt?: string;
+  deliveryMessengerId?: string;
   deliveryStatus?: string;
 
   // Dokumen Telah Diterima (Stage 8)
@@ -326,7 +359,7 @@ export interface OperationalOrder {
 
   // Task Acceptance & Locking Metadata (Layer 3)
   taskAcceptance?: Record<string, {
-    status: "PENDING" | "ACCEPTED" | "DECLINED";
+    status: "PENDING" | "ACCEPTED" | "DECLINED" | "SUPERSEDED" | string;
     acceptedAt?: string;
     courierId?: string;
     courierName?: string;
@@ -336,6 +369,11 @@ export interface OperationalOrder {
     reassignedFrom?: string;
     reassignReason?: string;
     reassignedAt?: string;
+    cycle?: number;
+    spawnedAt?: string;
+    revokedAt?: string;
+    supersededByCycle?: number;
+    [key: string]: any;
   }>;
 
   // Master Pricing Snapshot & Service Method (Batch 5)
@@ -343,6 +381,11 @@ export interface OperationalOrder {
   costBreakdown?: OrderCostBreakdownItem[];
   costSnapshot?: OrderCostSnapshot;
   estimationResult?: any;
+  isCostVerified?: boolean;
+  costCompletenessStatus?: "COMPLETE" | "PARTIAL_ESTIMATE" | "VERIFIED" | string;
+  costVerifiedAt?: string;
+  costVerifiedBy?: string;
+  serviceRequirementsSnapshot?: ServiceRequirementsSnapshot;
 
   // Final Cost Reconciliation & Rekap Order
   finalCost?: number;

@@ -29,6 +29,7 @@ import {
   CheckCircle2,
   Upload,
   AlertCircle,
+  AlertTriangle,
   Copy,
   Check,
   QrCode,
@@ -244,7 +245,7 @@ export function BuatOrder({
     jenisKendaraan: "Mobil",
     tahunKendaraan: new Date().getFullYear().toString(),
     wilayahSamsatAsal: "Jakarta Timur",
-    wilayahSamsatTujuan: "Jakarta Timur",
+    wilayahSamsatTujuan: "",
 
     // 3. Informasi Pajak Kendaraan
     pkbBerlakuSd: "",
@@ -294,6 +295,9 @@ export function BuatOrder({
     fileType: "",
     attached: false,
   });
+
+  // Collapsible state for Dokumen Kendaraan (Default: expanded / true)
+  const [isVehicleDocsExpanded, setIsVehicleDocsExpanded] = useState(true);
 
   const getCombinedNopol = () => {
     const parts = [platePrefix.trim().toUpperCase(), plateNumber.trim(), plateSuffix.trim().toUpperCase()];
@@ -719,9 +723,11 @@ export function BuatOrder({
       };
     }
 
+    const isMutasiService = formData.layanan.includes("Mutasi");
     const snapshot = pricingStore.calculateOrderCost({
       serviceName: formData.layanan,
       wilayahSamsat: formData.wilayahSamsatAsal,
+      wilayahSamsatTujuan: isMutasiService ? formData.wilayahSamsatTujuan : undefined,
       metodeLayanan: formData.metodeLayanan,
       tipeJasa: "Lengkap",
       pkb,
@@ -742,6 +748,9 @@ export function BuatOrder({
       total: snapshot.totalEstimasi,
       breakdown: snapshot.breakdown,
       snapshot,
+      hasUnconfiguredTariff: Boolean(snapshot.hasUnconfiguredTariff || snapshot.completenessStatus === "PARTIAL_ESTIMATE"),
+      unconfiguredItems: snapshot.unconfiguredItems || [],
+      completenessStatus: snapshot.completenessStatus,
       isR4Annual: false,
       r4Result: undefined as EstimationResult | undefined,
       isR2Annual: false,
@@ -866,7 +875,7 @@ export function BuatOrder({
       jenisKendaraan: "Mobil",
       tahunKendaraan: new Date().getFullYear().toString(),
       wilayahSamsatAsal: "Jakarta Timur",
-      wilayahSamsatTujuan: "Jakarta Timur",
+      wilayahSamsatTujuan: "",
       pkbBerlakuSd: "",
       tahunPajak: "",
       bulanPajak: "",
@@ -1157,7 +1166,7 @@ export function BuatOrder({
         tahunKendaraan: formData.tahunKendaraan,
         nopol: fullNopol,
         wilayahSamsatAsal: formData.wilayahSamsatAsal,
-        wilayahSamsatTujuan: formData.layanan.includes("Mutasi") ? (formData.wilayahSamsatTujuan || formData.wilayahSamsatAsal) : formData.wilayahSamsatAsal,
+        wilayahSamsatTujuan: formData.layanan.includes("Mutasi") ? (formData.wilayahSamsatTujuan || "") : (formData.wilayahSamsatAsal || ""),
         pkbBerlakuSd: formData.pkbBerlakuSd,
         tahunPajak: formData.tahunPajak || (formData.pkbBerlakuSd ? formData.pkbBerlakuSd.split("-")[0] : ""),
         bulanPajak: formData.bulanPajak || (formData.pkbBerlakuSd ? (getMonthNameFromDate(formData.pkbBerlakuSd) || "") : ""),
@@ -1427,7 +1436,7 @@ export function BuatOrder({
                             ...prev,
                             layanan: value,
                             nominalSwdkllj: swdNominal,
-                            wilayahSamsatTujuan: value.includes("Mutasi") ? (prev.wilayahSamsatTujuan || prev.wilayahSamsatAsal) : prev.wilayahSamsatAsal,
+                            wilayahSamsatTujuan: value.includes("Mutasi") ? prev.wilayahSamsatTujuan : prev.wilayahSamsatAsal,
                           }));
                           clearFieldError("layanan");
                         }}
@@ -1587,7 +1596,7 @@ export function BuatOrder({
                             ...prev,
                             wilayahSamsatAsal: value,
                             nominalSwdkllj: swdNominal,
-                            wilayahSamsatTujuan: prev.wilayahSamsatTujuan || value,
+                            wilayahSamsatTujuan: prev.layanan.includes("Mutasi") ? prev.wilayahSamsatTujuan : value,
                           }));
                         }}
                         placeholder="Pilih Samsat Asal"
@@ -1602,7 +1611,7 @@ export function BuatOrder({
                           Wilayah Samsat Tujuan <span className="text-destructive">*</span>
                         </Label>
                         <SearchableSamsatSelect
-                          value={formData.wilayahSamsatTujuan || formData.wilayahSamsatAsal}
+                          value={formData.wilayahSamsatTujuan}
                           onValueChange={(value) => {
                             setFormData({ ...formData, wilayahSamsatTujuan: value });
                             clearFieldError("wilayahSamsatTujuan");
@@ -2579,21 +2588,37 @@ export function BuatOrder({
                 className="space-y-5"
               >
                 <div className="space-y-1.5 pb-2 border-b border-border/60">
-                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-1">
-                    <h4 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider flex items-center gap-1.5">
+                  <button
+                    type="button"
+                    onClick={() => setIsVehicleDocsExpanded((prev) => !prev)}
+                    aria-expanded={isVehicleDocsExpanded}
+                    aria-label={isVehicleDocsExpanded ? "Sembunyikan daftar dokumen kendaraan" : "Tampilkan daftar dokumen kendaraan"}
+                    className="w-full flex items-center justify-between text-left group cursor-pointer focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-primary rounded p-1 -m-1"
+                  >
+                    <h4 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider flex items-center gap-1.5 group-hover:text-foreground transition-colors">
                       <FileText className="w-3.5 h-3.5 text-primary" />
                       Dokumen Kendaraan yang Dilampirkan Klien
                     </h4>
-                    <span className="text-[11px] text-emerald-600 dark:text-emerald-400 font-medium">
-                      (Semua dokumen bersifat opsional)
-                    </span>
-                  </div>
-                  <p className="text-[11px] text-muted-foreground">
-                    Unggah berkas fisik atau salinan dokumen yang dibawa oleh klien (PDF, JPG, JPEG, PNG). Order tetap dapat diproses jika dokumen fisik diserahkan saat penjemputan.
-                  </p>
+                    <div className="flex items-center gap-1.5 text-xs text-muted-foreground group-hover:text-foreground transition-colors">
+                      <span className="text-[11px] font-medium hidden sm:inline">
+                        {isVehicleDocsExpanded ? "Sembunyikan" : "Tampilkan"}
+                      </span>
+                      {isVehicleDocsExpanded ? (
+                        <ChevronUp className="w-4 h-4 text-muted-foreground group-hover:text-foreground transition-colors" />
+                      ) : (
+                        <ChevronDown className="w-4 h-4 text-muted-foreground group-hover:text-foreground transition-colors" />
+                      )}
+                    </div>
+                  </button>
+                  {isVehicleDocsExpanded && (
+                    <p className="text-[11px] text-muted-foreground">
+                      Unggah berkas fisik atau salinan dokumen yang dibawa oleh klien (PDF, JPG, JPEG, PNG). Order tetap dapat diproses jika dokumen fisik diserahkan saat penjemputan.
+                    </p>
+                  )}
                 </div>
 
-                <div className="space-y-2.5">
+                {isVehicleDocsExpanded && (
+                  <div className="space-y-2.5">
                   {[
                     { key: "stnk", label: "STNK Asli" },
                     { key: "bpkb", label: "BPKB Asli / Surat Keterangan Leasing" },
@@ -2698,6 +2723,7 @@ export function BuatOrder({
                     );
                   })}
                 </div>
+                )}
 
                   <div className="pt-6 pb-2 border-b border-border/60">
                     <h4 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider flex items-center gap-1.5">
@@ -2707,11 +2733,6 @@ export function BuatOrder({
                   </div>
                 {/* 1. SKEMA & METODE PEMBAYARAN */}
                 <div className="space-y-4">
-                  <h4 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider flex items-center gap-1.5 pb-1 border-b border-border/60">
-                    <CreditCard className="w-3.5 h-3.5 text-primary" />
-                    Skema & Metode Pembayaran
-                  </h4>
-
                   {/* Scheme Selection (Decision 1) */}
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                     {/* Bayar di Awal */}
@@ -2976,7 +2997,7 @@ export function BuatOrder({
                         <div className="flex items-center justify-between">
                           <Label className="text-xs font-semibold text-foreground flex items-center gap-1.5">
                             <FileUp className="w-3.5 h-3.5 text-primary" />
-                            Bukti Pembayaran <span className="text-muted-foreground font-normal text-xs">(Opsional)</span>
+                            Bukti Pembayaran
                           </Label>
                           <span className={cn("text-[11px] font-medium", paymentProof.attached ? "text-emerald-600 dark:text-emerald-400" : "text-destructive")}>
                             {paymentProof.attached ? "Terlampir" : "Dapat dilengkapi di Verifikasi"}
@@ -3006,7 +3027,7 @@ export function BuatOrder({
                               <p className="text-[11px] text-muted-foreground">
                                 {paymentProof.attached
                                   ? `Format: ${paymentProof.fileType?.toUpperCase()} • ${paymentProof.fileSize}`
-                                  : "Unggah struk transfer bank atau bukti pembayaran loket (Opsional saat input order)"}
+                                  : "Unggah struk transfer bank atau bukti pembayaran loket"}
                               </p>
                             </div>
                           </div>
@@ -3106,7 +3127,9 @@ export function BuatOrder({
                     <div>
                       <p className="text-[11px] text-muted-foreground">Samsat Asal → Tujuan</p>
                       <p className="font-semibold text-foreground">
-                        {formData.wilayahSamsatAsal} → {formData.wilayahSamsatTujuan || formData.wilayahSamsatAsal}
+                        {formData.layanan.includes("Mutasi")
+                          ? `${formData.wilayahSamsatAsal} → ${formData.wilayahSamsatTujuan || "Belum dipilih"}`
+                          : formData.wilayahSamsatAsal}
                       </p>
                       <p className="text-[11px] text-muted-foreground">Skema: {formData.tipePembayaran}</p>
                     </div>
@@ -4119,9 +4142,23 @@ export function BuatOrder({
                                      item.category === "Jasa" ? "Jasa" :
                                      item.category === "Operasional" ? "Kurir/Ops" : "Pajak"}
                                   </span>
+                                  {item.status === "UNCONFIGURED" && (
+                                    <span className="text-[9px] px-1.5 py-0.2 rounded font-semibold bg-amber-500/15 text-amber-700 dark:text-amber-400 border border-amber-500/30">
+                                      Belum Dikonfigurasi
+                                    </span>
+                                  )}
+                                  {item.status === "ZERO_EXPLICIT" && (
+                                    <span className="text-[9px] px-1.5 py-0.2 rounded font-medium bg-slate-500/10 text-slate-600 dark:text-slate-400 border border-slate-500/20">
+                                      Gratis / Rp 0
+                                    </span>
+                                  )}
                                 </div>
                                 <span className="font-mono tabular-nums font-medium text-foreground">
-                                  Rp {item.amount.toLocaleString("id-ID")}
+                                  {item.status === "UNCONFIGURED" ? (
+                                    <span className="text-amber-600 dark:text-amber-400 italic text-[11px]">(Menunggu Konfirmasi Loket)</span>
+                                  ) : (
+                                    `Rp ${item.amount.toLocaleString("id-ID")}`
+                                  )}
                                 </span>
                               </div>
                             ))}
@@ -4167,15 +4204,34 @@ export function BuatOrder({
                       </>
                     )}
 
+                    {Boolean(cost.hasUnconfiguredTariff || cost.snapshot?.hasUnconfiguredTariff) && (
+                      <div className="p-2.5 rounded-md bg-amber-500/10 border border-amber-500/30 text-amber-900 dark:text-amber-200 text-xs space-y-1">
+                        <div className="flex items-center gap-1.5 font-bold">
+                          <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0" />
+                          <span>Perhatian: Estimasi Biaya Parsial</span>
+                        </div>
+                        <p className="text-[11px] leading-relaxed">
+                          Terdapat komponen tarif Samsat yang belum dikonfigurasi:{" "}
+                          <strong className="underline">{(cost.unconfiguredItems || cost.snapshot?.unconfiguredItems || []).join(", ")}</strong>.
+                        </p>
+                        <p className="text-[10px] text-amber-800/80 dark:text-amber-300/80 italic">
+                          Total di bawah ini merupakan <strong>estimasi sementara</strong>. Invoice final dan pelunasan akan disahkan setelah verifikasi biaya fisik di loket Samsat terkait.
+                        </p>
+                      </div>
+                    )}
+
                     <div className="border-t border-border/80 pt-2 flex justify-between items-baseline">
                       <div>
-                        <span className="text-sm font-semibold text-foreground">
-                          {cost.isR4Annual || cost.isR2Annual || cost.isExtendedEstimation ? "Total Estimasi Akhir (Pajak + Jasa):" : "Total Estimasi Awal:"}
+                        <span className="text-sm font-semibold text-foreground flex items-center gap-1.5 flex-wrap">
+                          {cost.isR4Annual || cost.isR2Annual || cost.isExtendedEstimation
+                            ? "Total Estimasi Akhir (Pajak + Jasa):"
+                            : (cost.hasUnconfiguredTariff || cost.snapshot?.hasUnconfiguredTariff ? "Total Estimasi Sementara:" : "Total Estimasi Awal:")}
+                          {Boolean(cost.hasUnconfiguredTariff || cost.snapshot?.hasUnconfiguredTariff) && (
+                            <span className="text-[10px] px-1.5 py-0.5 rounded font-bold uppercase tracking-wider bg-amber-500/20 text-amber-800 dark:text-amber-300 border border-amber-500/40">
+                              Estimasi Sementara
+                            </span>
+                          )}
                         </span>
-                        <p className="text-[11px] text-muted-foreground mt-0.5">
-                          Skema: <strong className="text-foreground">{formData.tipePembayaran}</strong> • Metode: <strong className="text-foreground">{formData.metodeLayanan}</strong>
-                          {cost.totalKustomFees > 0 && <span> • Biaya Tambahan: <strong className="text-foreground">Rp {cost.totalKustomFees.toLocaleString("id-ID")}</strong></span>}
-                        </p>
                       </div>
                       <span className="text-base font-bold text-primary font-mono tabular-nums">
                         Rp {cost.total.toLocaleString("id-ID")}
@@ -4382,11 +4438,20 @@ export function BuatOrder({
                 </span>
               </div>
               <div className="flex justify-between items-center pt-2 border-t border-border/50">
-                <span className="text-muted-foreground font-semibold">Total Estimasi</span>
+                <span className="text-muted-foreground font-semibold">
+                  {createdOrderSuccess.costCompletenessStatus === "PARTIAL_ESTIMATE" || !createdOrderSuccess.isCostVerified
+                    ? "Total Estimasi Sementara"
+                    : "Total Estimasi"}
+                </span>
                 <span className="font-mono font-bold text-emerald-600 dark:text-emerald-400 text-sm">
                   Rp {(createdOrderSuccess.totalEstimasi || 0).toLocaleString("id-ID")}
                 </span>
               </div>
+              {(createdOrderSuccess.costCompletenessStatus === "PARTIAL_ESTIMATE" || !createdOrderSuccess.isCostVerified) && (
+                <div className="p-2 rounded bg-amber-500/10 border border-amber-500/20 text-amber-800 dark:text-amber-300 text-[11px] leading-relaxed">
+                  ⚠️ <strong>Estimasi Sementara:</strong> Terdapat tarif dasar yang belum dikonfigurasi. Invoice final dapat diterbitkan setelah biaya diverifikasi kasir/admin.
+                </div>
+              )}
             </div>
           )}
 

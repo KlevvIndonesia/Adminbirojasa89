@@ -1,4 +1,5 @@
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect } from "react";
+import { useParams, useNavigate, useLocation } from "react-router";
 import { Card } from "./ui/card";
 import { Button } from "./ui/button";
 import { Input } from "./ui/input";
@@ -15,7 +16,7 @@ import { Badge } from "./ui/badge";
 import {
   Plus, Edit, Trash2, Search, Calculator, Layers, Sliders, Settings2,
   AlertTriangle, CheckCircle2, Briefcase, Truck, ArrowDownLeft, ArrowUpRight,
-  FileText, Check, AlertCircle, Tag, ShieldCheck
+  FileText, Check, AlertCircle, Tag, ShieldCheck, ShieldAlert, Loader2, Zap, ChevronDown, ChevronUp, Sparkles, Info
 } from "lucide-react";
 import { toast } from "sonner";
 import { pricingStore, usePricingStore, resolveSamsatId, resolveServiceId } from "../data/pricingStore";
@@ -27,6 +28,30 @@ import { EstimatorR4Tahunan } from "./estimation/EstimatorR4Tahunan";
 import { EstimatorR2Tahunan } from "./estimation/EstimatorR2Tahunan";
 import { EstimatorExtended } from "./estimation/EstimatorExtended";
 import { ProvinsiFilterSelect } from "./ProvinsiFilterSelect";
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Service Standard Baselines & Overrides Detector
+// ─────────────────────────────────────────────────────────────────────────────
+
+export const SERVICE_STANDARD_BASELINES: Record<string, { jasa: number; kurir: number }> = {
+  "Perpanjangan 1 Tahun": { jasa: 250000, kurir: 50000 },
+  "Perpanjangan 5 Tahun": { jasa: 500000, kurir: 50000 },
+  "Mutasi Antar Samsat": { jasa: 800000, kurir: 50000 },
+  "Mutasi Luar Daerah": { jasa: 1500000, kurir: 50000 },
+  "Balik Nama": { jasa: 1200000, kurir: 50000 },
+  "Tarik Berkas": { jasa: 600000, kurir: 50000 },
+  "Duplikat STNK": { jasa: 350000, kurir: 50000 },
+  "Lainnya": { jasa: 300000, kurir: 50000 },
+};
+
+export const isRowCustomOrOverridden = (item: any): boolean => {
+  const baseline = SERVICE_STANDARD_BASELINES[item.layanan] || { jasa: 250000, kurir: 50000 };
+  const jasa = item.biayaJasaLengkap ?? item.biayaJasa ?? 0;
+  const kurir = item.biayaAntarJemput ?? 50000;
+  const hasCustomFees = Array.isArray(item.biayaLainnya) && item.biayaLainnya.some((b: any) => b.enabled !== false && b.label && b.label.trim() !== "");
+  const isKhususActive = item.pengurusanKhususEnabled === true || item.jasaNembakEnabled === true;
+  return jasa !== baseline.jasa || kurir !== baseline.kurir || hasCustomFees || isKhususActive;
+};
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Helpers & Types
@@ -87,6 +112,37 @@ const layananTabs = [
   { value: "tarik-berkas", label: "Tarik Berkas", key: "Tarik Berkas" },
   { value: "duplikat-stnk", label: "Duplikat STNK", key: "Duplikat STNK" },
 ];
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Canonical Services Definitions (8 Canonical Services matching DB)
+// ─────────────────────────────────────────────────────────────────────────────
+
+export interface BiayaLayananServiceMeta {
+  key: string;
+  label: string;
+  dbLayanan: string;
+}
+
+export const CANONICAL_BIAYA_LAYANAN_SERVICES: BiayaLayananServiceMeta[] = [
+  { key: "perpanjangan-1-tahun", label: "Perpanjangan 1 Tahun", dbLayanan: "Perpanjangan 1 Tahun" },
+  { key: "perpanjangan-5-tahun", label: "Perpanjangan 5 Tahun", dbLayanan: "Perpanjangan 5 Tahun" },
+  { key: "mutasi-antar-samsat", label: "Mutasi Antar Samsat", dbLayanan: "Mutasi Antar Samsat" },
+  { key: "mutasi-luar-daerah", label: "Mutasi Luar Daerah", dbLayanan: "Mutasi Luar Daerah" },
+  { key: "balik-nama", label: "Balik Nama", dbLayanan: "Balik Nama" },
+  { key: "tarik-berkas", label: "Tarik Berkas", dbLayanan: "Tarik Berkas" },
+  { key: "duplikat-stnk", label: "Duplikat STNK", dbLayanan: "Duplikat STNK" },
+  { key: "lainnya", label: "Lainnya", dbLayanan: "Lainnya" },
+];
+
+export const BIAYA_LAYANAN_ALIAS_MAP: Record<string, string> = {
+  "perpanjangan-1": "perpanjangan-1-tahun",
+  "perpanjangan-5": "perpanjangan-5-tahun",
+  "mutasi-antar": "mutasi-antar-samsat",
+  "mutasi-asal": "mutasi-antar-samsat",
+  "mutasi-luar": "mutasi-luar-daerah",
+  "mutasi-antar-daerah": "mutasi-luar-daerah",
+};
 
 export const GENERAL_SECTIONS = [
   {
@@ -292,7 +348,30 @@ export function BiayaLayanan() {
   const [selectedProvinsi, setSelectedProvinsi] = useState("all");
   const [currentPage, setCurrentPage] = useState(1);
   const [itemsPerPage, setItemsPerPage] = useState(25);
-  const [activeTab, setActiveTab] = useState("perpanjangan-1");
+    const { service } = useParams<{ service?: string }>();
+  const location = useLocation();
+  const navigate = useNavigate();
+
+  const pathService = location.pathname.replace(/^\/master-data\/biaya-layanan\/?/, "").split("/")[0];
+  const rawService = service || pathService;
+  const activeServiceKey = (rawService && BIAYA_LAYANAN_ALIAS_MAP[rawService])
+    ? BIAYA_LAYANAN_ALIAS_MAP[rawService]
+    : (rawService || "perpanjangan-1-tahun");
+
+  useEffect(() => {
+    if (rawService && BIAYA_LAYANAN_ALIAS_MAP[rawService]) {
+      navigate(`/master-data/biaya-layanan/${BIAYA_LAYANAN_ALIAS_MAP[rawService]}`, { replace: true });
+    }
+  }, [rawService, navigate]);
+
+  const activeService = CANONICAL_BIAYA_LAYANAN_SERVICES.find((s) => s.key === activeServiceKey)
+    || CANONICAL_BIAYA_LAYANAN_SERVICES[0];
+
+  const activeTab = activeServiceKey;
+  const setActiveTab = (val: string) => {
+    const canonicalKey = BIAYA_LAYANAN_ALIAS_MAP[val] || val;
+    navigate(`/master-data/biaya-layanan/${canonicalKey}`);
+  };
 
   const wilayahToProvinsiMap = useMemo(() => {
     const map = new Map<string, string>();
@@ -311,6 +390,8 @@ export function BiayaLayanan() {
   const [isEditDialogOpen, setIsEditDialogOpen] = useState(false);
   const [isDeleteDialogOpen, setIsDeleteDialogOpen] = useState(false);
   const [isApplyAllDialogOpen, setIsApplyAllDialogOpen] = useState(false);
+  const [applyAllPolicy, setApplyAllPolicy] = useState<"PRESERVE_EXISTING_CUSTOM" | "OVERWRITE_ALL">("PRESERVE_EXISTING_CUSTOM");
+  const [isApplyingAll, setIsApplyingAll] = useState(false);
   const [isDiscardDialogOpen, setIsDiscardDialogOpen] = useState(false);
   const [isEstimatorOpen, setIsEstimatorOpen] = useState(false);
   const [estimatorVehicleTab, setEstimatorVehicleTab] = useState<"R4" | "R2">("R4");
@@ -362,15 +443,49 @@ export function BiayaLayanan() {
   });
   const [addSelectedComponents, setAddSelectedComponents] = useState<Record<string, boolean>>({});
 
+  // Formula Banner state (Opsi A: Interaktif & Terbuka / Tertutup)
+  const [isFormulaBannerOpen, setIsFormulaBannerOpen] = useState(true);
+  const [bannerVehicle, setBannerVehicle] = useState<"Mobil" | "Motor">("Mobil");
+  const [bannerScenario, setBannerScenario] = useState<"normal" | "denda" | "khusus" | "pemutihan">("denda");
+
+  // Filter "Hanya Tarif Khusus / Berbeda"
+  const [onlyCustomFilter, setOnlyCustomFilter] = useState(false);
+
   const getCurrentLayanan = () => {
-    return layananTabs.find((tab) => tab.value === activeTab)?.key || "";
+    return activeService.dbLayanan;
   };
 
-  // Filter data based on tab, search, and provinsi
+  // Count of offices with custom tariffs for the active service
+  const customOfficesCount = useMemo(() => {
+    const currentLayanan = getCurrentLayanan();
+    return biayaData.filter((item) => item.layanan === currentLayanan && isRowCustomOrOverridden(item)).length;
+  }, [biayaData, activeService]);
+
+  // Real-time custom tariff metrics for Apply All Dialog
+  const applyAllMetrics = useMemo(() => {
+    const currentLayanan = selectedItem?.layanan || getCurrentLayanan();
+    const rowsForService = biayaData.filter((item) => item.layanan === currentLayanan);
+    const totalOffices = rowsForService.length || 515;
+    const customCount = rowsForService.filter((item) => isRowCustomOrOverridden(item)).length;
+    const standardCount = Math.max(0, totalOffices - customCount);
+    return {
+      currentLayanan,
+      totalOffices,
+      customCount,
+      standardCount,
+    };
+  }, [selectedItem, biayaData, activeService]);
+
+  // Filter data based on tab, search, provinsi, and custom tariff filter
   const getFilteredData = () => {
     const currentLayanan = getCurrentLayanan();
     return biayaData.filter((item) => {
       if (item.layanan !== currentLayanan) return false;
+
+      // Filter Hanya Tarif Khusus / Berbeda
+      if (onlyCustomFilter && !isRowCustomOrOverridden(item)) {
+        return false;
+      }
 
       const itemProv =
         wilayahToProvinsiMap.get(item.wilayah.toLowerCase().trim()) ||
@@ -911,7 +1026,7 @@ export function BiayaLayanan() {
   };
 
   // Apply to All Samsat Handler (Tarif operasional: Jasa, Kurir, & Biaya Lainnya/Kustom)
-  const handleApplyAllConfirm = () => {
+  const handleApplyAllConfirm = async () => {
     if (!selectedItem) return;
 
     const biayaJasaLengkapNum = parseInt(samsatDraft.biayaJasaLengkap) || 0;
@@ -919,43 +1034,63 @@ export function BiayaLayanan() {
     const biayaAntarJemputNum = parseInt(samsatDraft.biayaAntarJemput) || 0;
     const swdklljNum = parseInt(samsatDraft.nominalSwdkllj) || 0;
 
-    // Apply fee settings to all Samsats with field-level merge
-    pricingStore.applyConfigToAllSamsats(
-      selectedItem.layanan,
-      {
-        biayaJasaLengkap: biayaJasaLengkapNum,
-        jasaLengkapEnabled: samsatDraft.jasaLengkapEnabled,
-        biayaJasaNembak: biayaJasaNembakNum,
-        jasaNembakEnabled: samsatDraft.jasaNembakEnabled,
-        biayaAntarJemput: biayaAntarJemputNum,
-        antarJemputEnabled: samsatDraft.antarJemputEnabled,
-        antarJemputMode: samsatDraft.antarJemputMode,
-        nominalSwdkllj: swdklljNum,
-        swdklljEnabled: samsatDraft.swdklljEnabled,
-        biayaLainnya: samsatDraft.biayaLainnya.map((b) => ({
-          id: b.id,
-          label: b.label.trim(),
-          nominal: Number(b.nominal) || 0,
-          enabled: b.enabled,
-          includesInTotal: b.enabled,
-        })),
-      },
-      {
-        applyBiayaLayanan: applyAllScope.applyBiayaLayanan,
-        applyBiayaTambahan: applyAllScope.applyBiayaTambahan,
-        applyKomponenSamsat: false,
-        applyBiayaLainnya: applyAllScope.applyBiayaLainnya,
-        applyAturanEstimasi: false,
-      }
-    );
+    setIsApplyingAll(true);
+    try {
+      // Apply fee settings to all Samsats with field-level merge and policy
+      const result = await pricingStore.applyConfigToAllSamsats(
+        selectedItem.layanan,
+        {
+          biayaJasaLengkap: biayaJasaLengkapNum,
+          jasaLengkapEnabled: samsatDraft.jasaLengkapEnabled,
+          biayaJasaNembak: biayaJasaNembakNum,
+          jasaNembakEnabled: samsatDraft.jasaNembakEnabled,
+          biayaAntarJemput: biayaAntarJemputNum,
+          antarJemputEnabled: samsatDraft.antarJemputEnabled,
+          antarJemputMode: samsatDraft.antarJemputMode,
+          nominalSwdkllj: swdklljNum,
+          swdklljEnabled: samsatDraft.swdklljEnabled,
+          biayaLainnya: samsatDraft.biayaLainnya.map((b) => ({
+            id: b.id,
+            label: b.label.trim(),
+            nominal: Number(b.nominal) || 0,
+            enabled: b.enabled,
+            includesInTotal: b.enabled,
+          })),
+        },
+        {
+          applyBiayaLayanan: applyAllScope.applyBiayaLayanan,
+          applyBiayaTambahan: applyAllScope.applyBiayaTambahan,
+          applyKomponenSamsat: false,
+          applyBiayaLainnya: applyAllScope.applyBiayaLainnya,
+          applyAturanEstimasi: false,
+        },
+        applyAllPolicy
+      );
 
-    setIsApplyAllDialogOpen(false);
-    setIsEditDialogOpen(false);
-    const copied: string[] = [];
-    if (applyAllScope.applyBiayaLayanan) copied.push("Biaya Jasa");
-    if (applyAllScope.applyBiayaTambahan) copied.push("Biaya Kurir");
-    if (applyAllScope.applyBiayaLainnya) copied.push("Biaya Kustom");
-    toast.success(`${copied.join(", ") || "Tarif operasional"} berhasil disalin ke seluruh Samsat untuk ${selectedItem.layanan}!`);
+      setIsApplyAllDialogOpen(false);
+      setIsEditDialogOpen(false);
+
+      if (applyAllPolicy === "PRESERVE_EXISTING_CUSTOM") {
+        if (result && result.preservedCount > 0) {
+          toast.success(
+            `Berhasil menerapkan tarif ke ${result.updatedCount} Samsat! (${result.preservedCount} kantor bertarif khusus tetap dipertahankan)`
+          );
+        } else {
+          toast.success(
+            `Berhasil menerapkan tarif ke ${result?.updatedCount || 515} Samsat untuk ${selectedItem.layanan}!`
+          );
+        }
+      } else {
+        toast.success(
+          `Berhasil menimpa seluruh ${result?.updatedCount || result?.totalCount || 515} Samsat untuk ${selectedItem.layanan}!`
+        );
+      }
+    } catch (err: any) {
+      console.error("[BiayaLayanan] handleApplyAllConfirm error:", err);
+      toast.error(`Gagal menerapkan tarif massal: ${err?.message || "Terjadi kesalahan sistem"}`);
+    } finally {
+      setIsApplyingAll(false);
+    }
   };
 
   // Add Dialog Submit Handler
@@ -1168,14 +1303,14 @@ export function BiayaLayanan() {
       description: "Pajak opsen daerah",
     });
 
-    // 5. Mutasi Masuk
+    // 5. Mutasi Masuk (Mengikuti Tarif Standar Nasional Sesuai Ketetapan)
     const masterItems = pricingStore.getMasterPricingItems();
     masterItems
       .filter((i) => i.category === "Mutasi Masuk")
       .forEach((comp) => {
         const isAct = !!samsatDraft.selectedComponents[comp.id];
         const isInc = samsatDraft.componentIncludesInTotal[comp.id] ?? true;
-        const price = pricingStore.getSamsatPrice(samsatId, comp.id);
+        const price = pricingStore.getNationalDefaultPrice(comp.id);
         items.push({
           id: comp.id,
           category: "Mutasi Masuk",
@@ -1187,13 +1322,13 @@ export function BiayaLayanan() {
         });
       });
 
-    // 6. Mutasi Keluar
+    // 6. Mutasi Keluar (Mengikuti Tarif Standar Nasional Sesuai Ketetapan)
     masterItems
       .filter((i) => i.category === "Mutasi Keluar")
       .forEach((comp) => {
         const isAct = !!samsatDraft.selectedComponents[comp.id];
         const isInc = samsatDraft.componentIncludesInTotal[comp.id] ?? true;
-        const price = pricingStore.getSamsatPrice(samsatId, comp.id);
+        const price = pricingStore.getNationalDefaultPrice(comp.id);
         items.push({
           id: comp.id,
           category: "Mutasi Keluar",
@@ -1686,22 +1821,26 @@ export function BiayaLayanan() {
           <div>
             <h4 className="text-sm font-semibold text-foreground flex items-center gap-2">
               <ArrowDownLeft className="w-4 h-4 text-emerald-500" />
-              Komponen Samsat — Mutasi Masuk
+              Komponen Standar — Mutasi Masuk
             </h4>
             <p className="text-xs text-muted-foreground mt-0.5">
-              Komponen biaya pendaftaran, loket, dan administrasi mutasi masuk di Samsat {samsatDraft.wilayah}.
+              Komponen biaya pendaftaran, loket, dan administrasi mutasi masuk (mengikuti tarif standar nasional seragam).
             </p>
           </div>
-          <Badge variant="outline" className="text-xs font-mono bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border-emerald-500/30 self-start sm:self-auto">
-            {activeCount} dari {masterItems.length} Aktif
-          </Badge>
+          <div className="flex items-center gap-2 self-start sm:self-auto">
+            <Badge variant="outline" className="text-[11px] font-medium bg-emerald-500/10 text-emerald-700 dark:text-emerald-300 border-emerald-500/30">
+              Harga Standar Nasional
+            </Badge>
+            <Badge variant="outline" className="text-xs font-mono bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border-emerald-500/30">
+              {activeCount} dari {masterItems.length} Aktif
+            </Badge>
+          </div>
         </div>
 
         <div className="grid grid-cols-1 md:grid-cols-2 gap-2.5">
           {masterItems.map((comp) => {
-            const price = pricingStore.getSamsatPrice(activeSamsatId, comp.id);
+            const price = pricingStore.getNationalDefaultPrice(comp.id);
             const isChecked = !!samsatDraft.selectedComponents[comp.id];
-            const isIncludesInTotal = samsatDraft.componentIncludesInTotal[comp.id] ?? true;
 
             return (
               <div
@@ -1720,9 +1859,12 @@ export function BiayaLayanan() {
                       <span className="text-[9px] px-1 py-0.2 rounded bg-muted text-muted-foreground font-mono">
                         {comp.code}
                       </span>
+                      <Badge variant="outline" className="text-[9px] px-1 py-0 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300 border-emerald-500/20">
+                        Standar Nasional
+                      </Badge>
                     </div>
                     <p className="text-xs font-mono font-medium text-foreground/80 mt-1">
-                      Tarif Samsat: Rp {price.toLocaleString("id-ID")}
+                      Harga Standar: Rp {price.toLocaleString("id-ID")}
                     </p>
                   </div>
                   <ComponentStatusControls
@@ -1748,22 +1890,26 @@ export function BiayaLayanan() {
           <div>
             <h4 className="text-sm font-semibold text-foreground flex items-center gap-2">
               <ArrowUpRight className="w-4 h-4 text-blue-500" />
-              Komponen Samsat — Mutasi Keluar
+              Komponen Standar — Mutasi Keluar
             </h4>
             <p className="text-xs text-muted-foreground mt-0.5">
-              Komponen biaya cek fisik, arsip, fiskal, dan pendaftaran mutasi keluar di Samsat {samsatDraft.wilayah}.
+              Komponen biaya cek fisik, arsip, fiskal, dan pendaftaran mutasi keluar (mengikuti tarif standar nasional seragam).
             </p>
           </div>
-          <Badge variant="outline" className="text-xs font-mono bg-blue-500/10 text-blue-600 dark:text-blue-400 border-blue-500/30 self-start sm:self-auto">
-            {activeCount} dari {masterItems.length} Aktif
-          </Badge>
+          <div className="flex items-center gap-2 self-start sm:self-auto">
+            <Badge variant="outline" className="text-[11px] font-medium bg-blue-500/10 text-blue-700 dark:text-blue-300 border-blue-500/30">
+              Harga Standar Nasional
+            </Badge>
+            <Badge variant="outline" className="text-xs font-mono bg-blue-500/10 text-blue-600 dark:text-blue-400 border-blue-500/30">
+              {activeCount} dari {masterItems.length} Aktif
+            </Badge>
+          </div>
         </div>
 
         <div className="grid grid-cols-1 md:grid-cols-2 gap-2.5">
           {masterItems.map((comp) => {
-            const price = pricingStore.getSamsatPrice(activeSamsatId, comp.id);
+            const price = pricingStore.getNationalDefaultPrice(comp.id);
             const isChecked = !!samsatDraft.selectedComponents[comp.id];
-            const isIncludesInTotal = samsatDraft.componentIncludesInTotal[comp.id] ?? true;
 
             return (
               <div
@@ -1782,9 +1928,12 @@ export function BiayaLayanan() {
                       <span className="text-[9px] px-1 py-0.2 rounded bg-muted text-muted-foreground font-mono">
                         {comp.code}
                       </span>
+                      <Badge variant="outline" className="text-[9px] px-1 py-0 bg-blue-500/10 text-blue-700 dark:text-blue-300 border-blue-500/20">
+                        Standar Nasional
+                      </Badge>
                     </div>
                     <p className="text-xs font-mono font-medium text-foreground/80 mt-1">
-                      Tarif Samsat: Rp {price.toLocaleString("id-ID")}
+                      Harga Standar: Rp {price.toLocaleString("id-ID")}
                     </p>
                   </div>
                   <ComponentStatusControls
@@ -1905,10 +2054,10 @@ export function BiayaLayanan() {
         <div>
           <h4 className="text-sm font-semibold text-foreground flex items-center gap-2">
             <CheckCircle2 className="w-4 h-4 text-emerald-500" />
-            Ringkasan Estimasi Biaya Layanan — {samsatDraft.wilayah} ({editVehicle})
+            Ringkasan Estimasi Biaya Layanan — {selectedItem?.layanan || getCurrentLayanan()} ({editVehicle})
           </h4>
           <p className="text-xs text-muted-foreground mt-0.5">
-            Pratinjau langsung seluruh komponen yang aktif serta perhitungan Grand Total estimasi biaya layanan.
+            Pratinjau langsung seluruh komponen yang aktif serta simulasi kalkulasi Grand Total estimasi (komponen Mutasi Masuk & Mutasi Keluar mengikuti tarif standar nasional).
           </p>
         </div>
 
@@ -2182,33 +2331,31 @@ export function BiayaLayanan() {
         <TableHead className="h-9 px-3.5 text-xs font-semibold text-foreground/80 w-12 text-center">No</TableHead>
         <TableHead className="h-9 px-3.5 text-xs font-semibold text-foreground/80">Wilayah Samsat</TableHead>
         <TableHead className="h-9 px-3.5 text-xs font-semibold text-foreground/80 text-right">Biaya Jasa</TableHead>
-        <TableHead className="h-9 px-3.5 text-xs font-semibold text-foreground/80 text-right">Biaya Pengurusan Khusus</TableHead>
-        <TableHead className="h-9 px-3.5 text-xs font-semibold text-foreground/80 text-right">Biaya Antar & Jemput</TableHead>
-        <TableHead className="h-9 px-3.5 text-xs font-semibold text-foreground/80 text-center">Komponen Samsat</TableHead>
-        <TableHead className="h-9 px-2 text-xs font-semibold text-foreground/80 text-center w-[95px]">Aksi</TableHead>
+        <TableHead className="h-9 px-3.5 text-xs font-semibold text-foreground/80 text-right">Biaya Kurir</TableHead>
+        <TableHead className="h-9 px-3.5 text-xs font-semibold text-foreground/80 text-right">Total Biro (Jasa + Kurir)</TableHead>
+        <TableHead className="h-9 px-2 text-xs font-semibold text-foreground/80 text-center w-[85px]">Aksi</TableHead>
       </>
     );
   };
 
   const renderTableRow = (item: any, index: number) => {
     const config = pricingStore.getServiceFeeConfig(item.layanan, item.wilayah);
-    const activeComps = (config?.components || []).filter((c) => c.enabled);
     const isLengkapActive = config?.jasaLengkap ? config.jasaLengkap.enabled : item.jasaLengkapEnabled !== false;
+    const isAntarJemputActive = config?.antarJemputEnabled !== undefined ? config.antarJemputEnabled : item.antarJemputEnabled !== false;
+
+    const biayaJasaVal = item.biayaJasaLengkap ?? item.biayaJasa ?? config?.jasaLengkap?.nominal ?? config?.biayaJasa ?? 0;
+    const biayaAntarJemputVal = item.biayaAntarJemput ?? config?.biayaAntarJemput ?? 50000;
+    const totalBiroVal = (isLengkapActive ? biayaJasaVal : 0) + (isAntarJemputActive ? biayaAntarJemputVal : 0);
+
+    const isCustom = isRowCustomOrOverridden(item);
+    const customFees = (config?.biayaLainnya || item.biayaLainnya || []).filter(
+      (b: any) => b.enabled !== false && b.label && b.label.trim() !== ""
+    );
     const isKhususActive = config?.biayaPengurusanKhusus
       ? config.biayaPengurusanKhusus.enabled
       : config?.jasaNembak
       ? config.jasaNembak.enabled
       : item.pengurusanKhususEnabled ?? (item.jasaNembakEnabled === true);
-    const isAntarJemputActive = config?.antarJemputEnabled !== undefined ? config.antarJemputEnabled : item.antarJemputEnabled !== false;
-
-    const biayaJasaVal = item.biayaJasaLengkap ?? item.biayaJasa ?? config?.jasaLengkap?.nominal ?? config?.biayaJasa ?? 0;
-    const biayaKhususVal = item.biayaPengurusanKhusus ?? item.biayaJasaNembak ?? config?.biayaPengurusanKhusus?.nominal ?? config?.jasaNembak?.nominal ?? Math.round(biayaJasaVal * 0.6);
-    const biayaAntarJemputVal = item.biayaAntarJemput ?? config?.biayaAntarJemput ?? 50000;
-
-    // Detect unique per-Samsat custom fees (Biaya Lainnya)
-    const customFees = (config?.biayaLainnya || item.biayaLainnya || []).filter(
-      (b: any) => b.enabled !== false && b.label && b.label.trim() !== ""
-    );
 
     return (
       <TableRow key={item.id} className="hover:bg-muted/30 transition-colors border-b border-border/60 last:border-0 h-10">
@@ -2216,6 +2363,16 @@ export function BiayaLayanan() {
         <TableCell className="px-3.5 py-2 text-xs font-medium text-foreground">
           <div className="flex items-center gap-1.5 flex-wrap">
             <span>{item.wilayah}</span>
+            {isCustom && (
+              <Badge
+                variant="outline"
+                className="text-[10px] px-1.5 py-0 h-4.5 bg-amber-500/10 text-amber-700 dark:text-amber-400 border-amber-500/30 gap-1 font-medium inline-flex items-center shadow-2xs"
+                title="Wilayah ini memiliki tarif atau konfigurasi yang berbeda dari Standar Layanan"
+              >
+                <Zap className="w-2.5 h-2.5 shrink-0" />
+                <span>Tarif Khusus</span>
+              </Badge>
+            )}
             {customFees.length > 0 && (
               <Badge
                 variant="outline"
@@ -2226,6 +2383,15 @@ export function BiayaLayanan() {
               >
                 <Tag className="w-2.5 h-2.5 shrink-0" />
                 <span>+{customFees.length} Biaya Khusus</span>
+              </Badge>
+            )}
+            {isKhususActive && (
+              <Badge
+                variant="outline"
+                className="text-[10px] px-1.5 py-0 h-4.5 bg-purple-500/10 text-purple-700 dark:text-purple-300 border-purple-500/30 gap-1 font-medium inline-flex items-center shadow-2xs"
+                title="Biaya Pengurusan Khusus Aktif pada Samsat ini"
+              >
+                <span>+Khusus</span>
               </Badge>
             )}
           </div>
@@ -2239,14 +2405,6 @@ export function BiayaLayanan() {
           )}
         </TableCell>
         <TableCell className="px-3.5 py-2 text-xs text-right font-mono tabular-nums font-medium text-foreground">
-          <span className={cn(!isKhususActive && "line-through text-muted-foreground/60")}>
-            Rp {biayaKhususVal.toLocaleString("id-ID")}
-          </span>
-          {!isKhususActive && (
-            <span className="ml-1.5 text-[9px] px-1 py-0.2 rounded bg-muted text-muted-foreground font-sans">Off</span>
-          )}
-        </TableCell>
-        <TableCell className="px-3.5 py-2 text-xs text-right font-mono tabular-nums font-medium text-foreground">
           <span className={cn(!isAntarJemputActive && "line-through text-muted-foreground/60")}>
             Rp {biayaAntarJemputVal.toLocaleString("id-ID")}
           </span>
@@ -2254,19 +2412,8 @@ export function BiayaLayanan() {
             <span className="ml-1.5 text-[9px] px-1 py-0.2 rounded bg-muted text-muted-foreground font-sans">Off</span>
           )}
         </TableCell>
-        <TableCell className="px-3.5 py-2 text-xs text-center">
-          <span
-            className={cn(
-              "text-[11px] px-2 py-0.5 rounded-full font-medium inline-flex items-center gap-1 cursor-default",
-              activeComps.length > 0
-                ? "bg-amber-500/10 text-amber-700 dark:text-amber-400 border border-amber-500/20"
-                : "bg-muted text-muted-foreground border border-border"
-            )}
-            title={activeComps.map((c) => pricingStore.getPricingItemById(c.pricingItemId)?.name || c.pricingItemId).join(", ")}
-          >
-            <span className={cn("w-1.5 h-1.5 rounded-full", activeComps.length > 0 ? "bg-amber-500" : "bg-muted-foreground")} />
-            {activeComps.length} Komponen Aktif
-          </span>
+        <TableCell className="px-3.5 py-2 text-xs text-right font-mono tabular-nums font-bold text-foreground">
+          Rp {totalBiroVal.toLocaleString("id-ID")}
         </TableCell>
         <TableCell className="px-2 py-1.5 text-center">
           <div className="flex items-center justify-center gap-1">
@@ -2279,18 +2426,279 @@ export function BiayaLayanan() {
             >
               <Edit className="w-3.5 h-3.5" />
             </Button>
-            <Button
-              size="sm"
-              variant="ghost"
-              className="h-7 w-7 p-0 text-muted-foreground hover:text-red-500 hover:bg-red-500/10 rounded transition-colors"
-              onClick={() => handleDeleteClick(item)}
-              aria-label="Hapus biaya"
-            >
-              <Trash2 className="w-3.5 h-3.5" />
-            </Button>
           </div>
         </TableCell>
       </TableRow>
+    );
+  };
+
+  // ─────────────────────────────────────────────────────────────────────────────
+  // Option A: Interactive Formula Banner (Collapsible with Scenario & Vehicle Switcher)
+  // ─────────────────────────────────────────────────────────────────────────────
+
+  const renderFormulaBanner = () => {
+    const currentLayanan = getCurrentLayanan();
+    const isMobil = bannerVehicle === "Mobil";
+
+    // Dynamic rates based on vehicle
+    const swdRate = isMobil ? 143000 : 35000;
+    const dendaSwdRate = isMobil ? 100000 : 32000;
+    const skpRate = isMobil ? 100000 : 50000;
+    const stnkRate = isMobil ? 200000 : 100000;
+    const tnkbRate = isMobil ? 100000 : 60000;
+    const bpkbRate = isMobil ? 375000 : 225000;
+    const pnbpMutasiRate = isMobil ? 250000 : 150000;
+
+    // Simulation numbers
+    const samplePkb = isMobil ? 2000000 : 300000;
+    let sampleDendaPkb = 0;
+    let sampleDendaSwd = 0;
+    let sampleSkp = 0;
+    let sampleKhusus = 0;
+
+    if (bannerScenario === "denda" || bannerScenario === "khusus") {
+      sampleDendaPkb = Math.ceil(((samplePkb * 0.48) / 12 * 2) / 1000) * 1000;
+      sampleDendaSwd = dendaSwdRate;
+      sampleSkp = skpRate;
+    }
+    if (bannerScenario === "khusus") {
+      sampleKhusus = isMobil ? 300000 : 150000;
+    }
+
+    const baseline = SERVICE_STANDARD_BASELINES[currentLayanan] || { jasa: 250000, kurir: 50000 };
+    const sampleJasa = baseline.jasa;
+    const sampleKurir = baseline.kurir;
+
+    // Extra components based on service
+    let extraFormulaDesc = "";
+    let sampleExtraNominal = 0;
+    const extraBreakdownPills: Array<{ label: string; amount: number }> = [];
+
+    if (currentLayanan.includes("5 Tahun")) {
+      extraFormulaDesc = `+ PNBP STNK (Rp ${stnkRate.toLocaleString("id-ID")}) + PNBP TNKB (Rp ${tnkbRate.toLocaleString("id-ID")})`;
+      sampleExtraNominal = stnkRate + tnkbRate;
+      extraBreakdownPills.push({ label: `STNK PNBP`, amount: stnkRate });
+      extraBreakdownPills.push({ label: `TNKB Plat`, amount: tnkbRate });
+    } else if (currentLayanan.includes("Balik Nama") || currentLayanan.includes("BBN")) {
+      const sampleBbn = Math.round(samplePkb * 0.6); // simulasi BBN-KB II ~ 1% NJKB
+      extraFormulaDesc = `+ BBN-KB II (1% NJKB) + PNBP BPKB Baru (Rp ${bpkbRate.toLocaleString("id-ID")}) + PNBP STNK/Plat`;
+      sampleExtraNominal = sampleBbn + bpkbRate + stnkRate + tnkbRate;
+      extraBreakdownPills.push({ label: `BBN-KB II (1% NJKB)`, amount: sampleBbn });
+      extraBreakdownPills.push({ label: `BPKB Baru PNBP`, amount: bpkbRate });
+      extraBreakdownPills.push({ label: `STNK & Plat PNBP`, amount: stnkRate + tnkbRate });
+    } else if (currentLayanan.includes("Mutasi Antar Samsat")) {
+      extraFormulaDesc = `+ Komponen Mutasi Keluar Standar + Komponen Mutasi Masuk Standar`;
+      sampleExtraNominal = 250000;
+      extraBreakdownPills.push({ label: `Komponen Mutasi Standar`, amount: 250000 });
+    } else if (currentLayanan.includes("Mutasi Luar Daerah")) {
+      extraFormulaDesc = `+ PNBP Mutasi Keluar Polri (Rp ${pnbpMutasiRate.toLocaleString("id-ID")}) + Fiskal Antar Daerah + Mutasi Masuk`;
+      sampleExtraNominal = pnbpMutasiRate + 150000;
+      extraBreakdownPills.push({ label: `PNBP Mutasi Keluar`, amount: pnbpMutasiRate });
+      extraBreakdownPills.push({ label: `Fiskal & Mutmas`, amount: 150000 });
+    } else if (currentLayanan.includes("Tarik Berkas")) {
+      extraFormulaDesc = `+ Administrasi Cabut Arsip Induk + Fiskal Samsat Asal`;
+      sampleExtraNominal = 100000;
+      extraBreakdownPills.push({ label: `Cabut Berkas & Fiskal`, amount: 100000 });
+    } else if (currentLayanan.includes("Duplikat")) {
+      extraFormulaDesc = `+ PNBP STNK Duplikat (Rp ${stnkRate.toLocaleString("id-ID")}) + Cek Fisik & Arsip Blokir`;
+      sampleExtraNominal = stnkRate + 75000;
+      extraBreakdownPills.push({ label: `PNBP Duplikat`, amount: stnkRate });
+      extraBreakdownPills.push({ label: `Cek Fisik & Blokir`, amount: 75000 });
+    }
+
+    const simulatedGrandTotal =
+      samplePkb +
+      sampleDendaPkb +
+      swdRate +
+      sampleDendaSwd +
+      sampleSkp +
+      sampleKhusus +
+      sampleExtraNominal +
+      sampleJasa +
+      sampleKurir;
+
+    return (
+      <div className="rounded-xl border border-primary/25 bg-gradient-to-b from-primary/5 via-card to-card p-3.5 sm:p-4 space-y-3 transition-all shadow-2xs">
+        {/* Banner Top Bar */}
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
+          <div className="flex items-center gap-2 flex-wrap">
+            <div className="w-7 h-7 rounded-lg bg-primary/10 text-primary flex items-center justify-center shrink-0">
+              <Calculator className="w-4 h-4" />
+            </div>
+            <div>
+              <div className="flex items-center gap-2 flex-wrap">
+                <span className="text-xs font-bold text-foreground">Formula & Logika Estimasi Biaya</span>
+                <Badge variant="outline" className="text-[10px] font-semibold bg-primary/10 text-primary border-primary/30">
+                  {currentLayanan}
+                </Badge>
+              </div>
+              <p className="text-[11px] text-muted-foreground mt-0.5">
+                Acuan rumus resmi untuk menyimulasikan perhitungan tagihan klien per wilayah.
+              </p>
+            </div>
+          </div>
+
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            onClick={() => setIsFormulaBannerOpen(!isFormulaBannerOpen)}
+            className="h-7 text-xs text-muted-foreground hover:text-foreground gap-1 self-start sm:self-auto cursor-pointer"
+          >
+            <span>{isFormulaBannerOpen ? "Sembunyikan Formula" : "Tampilkan Formula"}</span>
+            {isFormulaBannerOpen ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
+          </Button>
+        </div>
+
+        {/* Collapsible Content */}
+        {isFormulaBannerOpen && (
+          <div className="space-y-3 pt-2 border-t border-border/70">
+            {/* Controls: Vehicle Switcher & Scenario Pills */}
+            <div className="flex flex-col md:flex-row md:items-center justify-between gap-2.5 flex-wrap">
+              {/* Vehicle Pill */}
+              {supportsVehicleChoice(currentLayanan) && (
+                <div className="flex items-center gap-1 bg-muted/40 border border-border/80 p-0.5 rounded-lg shrink-0">
+                  <span className="text-[10px] font-medium text-muted-foreground px-2">Kendaraan:</span>
+                  <Button
+                    type="button"
+                    variant={bannerVehicle === "Mobil" ? "default" : "ghost"}
+                    size="sm"
+                    onClick={() => setBannerVehicle("Mobil")}
+                    className={cn("h-6 px-2.5 text-[11px] font-semibold rounded-md", bannerVehicle === "Mobil" && "shadow-xs")}
+                  >
+                    Mobil (R4)
+                  </Button>
+                  <Button
+                    type="button"
+                    variant={bannerVehicle === "Motor" ? "default" : "ghost"}
+                    size="sm"
+                    onClick={() => setBannerVehicle("Motor")}
+                    className={cn("h-6 px-2.5 text-[11px] font-semibold rounded-md", bannerVehicle === "Motor" && "shadow-xs")}
+                  >
+                    Motor (R2)
+                  </Button>
+                </div>
+              )}
+
+              {/* Scenario Pills */}
+              <div className="flex items-center gap-1.5 flex-wrap">
+                <span className="text-[10px] font-medium text-muted-foreground mr-1">Kondisi:</span>
+                <button
+                  type="button"
+                  onClick={() => setBannerScenario("normal")}
+                  className={cn(
+                    "text-[11px] px-2.5 py-1 rounded-md font-medium border transition-all cursor-pointer",
+                    bannerScenario === "normal"
+                      ? "bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 border-emerald-500/40 font-semibold shadow-2xs"
+                      : "bg-background/80 text-muted-foreground border-border hover:bg-muted/40"
+                  )}
+                >
+                  🟢 Tepat Waktu
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setBannerScenario("denda")}
+                  className={cn(
+                    "text-[11px] px-2.5 py-1 rounded-md font-medium border transition-all cursor-pointer",
+                    bannerScenario === "denda"
+                      ? "bg-amber-500/15 text-amber-700 dark:text-amber-300 border-amber-500/40 font-semibold shadow-2xs"
+                      : "bg-background/80 text-muted-foreground border-border hover:bg-muted/40"
+                  )}
+                >
+                  🟡 Terlambat (Denda)
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setBannerScenario("khusus")}
+                  className={cn(
+                    "text-[11px] px-2.5 py-1 rounded-md font-medium border transition-all cursor-pointer",
+                    bannerScenario === "khusus"
+                      ? "bg-purple-500/15 text-purple-700 dark:text-purple-300 border-purple-500/40 font-semibold shadow-2xs"
+                      : "bg-background/80 text-muted-foreground border-border hover:bg-muted/40"
+                  )}
+                >
+                  🔵 Tanpa KTP (Khusus)
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setBannerScenario("pemutihan")}
+                  className={cn(
+                    "text-[11px] px-2.5 py-1 rounded-md font-medium border transition-all cursor-pointer",
+                    bannerScenario === "pemutihan"
+                      ? "bg-blue-500/15 text-blue-700 dark:text-blue-300 border-blue-500/40 font-semibold shadow-2xs"
+                      : "bg-background/80 text-muted-foreground border-border hover:bg-muted/40"
+                  )}
+                >
+                  🟣 Program Pemutihan
+                </button>
+              </div>
+            </div>
+
+            {/* Formula Typography Display Box */}
+            <div className="p-3 rounded-lg border border-border/80 bg-background/80 space-y-1.5">
+              <div className="flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-wider text-primary">
+                <Sparkles className="w-3 h-3" />
+                <span>Rumus Aktif:</span>
+              </div>
+              <div className="font-mono text-xs font-semibold text-foreground overflow-x-auto py-0.5">
+                {bannerScenario === "normal" && (
+                  <span>
+                    Grand Total = PKB Dasar + SWDKLLJ (Rp {swdRate.toLocaleString("id-ID")}) {extraFormulaDesc} + [Biaya Jasa Biro + Kurir]
+                  </span>
+                )}
+                {bannerScenario === "denda" && (
+                  <span>
+                    Grand Total = PKB Dasar + Denda PKB + SWDKLLJ (Rp {swdRate.toLocaleString("id-ID")}) + Denda SWD (Rp {dendaSwdRate.toLocaleString("id-ID")}) + Biaya Cetak SKP (Rp {skpRate.toLocaleString("id-ID")}) {extraFormulaDesc} + [Biaya Jasa Biro + Kurir]
+                  </span>
+                )}
+                {bannerScenario === "khusus" && (
+                  <span>
+                    Grand Total = PKB Dasar + Denda PKB + SWDKLLJ + Denda SWD + Biaya Cetak SKP {extraFormulaDesc} + [Biaya Jasa + Biaya Pengurusan Khusus + Kurir]
+                  </span>
+                )}
+                {bannerScenario === "pemutihan" && (
+                  <span>
+                    Grand Total = PKB Dasar + [Denda PKB = Rp 0] + SWDKLLJ (Rp {swdRate.toLocaleString("id-ID")}) + [Denda SWD = Rp 0] {extraFormulaDesc} + [Biaya Jasa Biro + Kurir]
+                  </span>
+                )}
+              </div>
+            </div>
+
+            {/* Quick Simulation Breakdown Card */}
+            <div className="p-2.5 sm:p-3 rounded-lg border border-primary/20 bg-primary/5 flex flex-col lg:flex-row lg:items-center justify-between gap-2.5">
+              <div className="space-y-1 min-w-0">
+                <div className="flex items-center gap-2 flex-wrap">
+                  <span className="text-xs font-bold text-foreground">
+                    Contoh Simulasi Real-Time (PKB Rp {samplePkb.toLocaleString("id-ID")} • {bannerVehicle}):
+                  </span>
+                </div>
+                <div className="flex items-center gap-1.5 flex-wrap text-[11px] text-muted-foreground font-mono">
+                  <span>PKB Rp {samplePkb.toLocaleString("id-ID")}</span>
+                  {sampleDendaPkb > 0 && <span className="text-amber-600 dark:text-amber-400">+ Denda Rp {sampleDendaPkb.toLocaleString("id-ID")}</span>}
+                  <span>+ SWD Rp {swdRate.toLocaleString("id-ID")}</span>
+                  {sampleDendaSwd > 0 && <span className="text-amber-600 dark:text-amber-400">+ Denda SWD Rp {sampleDendaSwd.toLocaleString("id-ID")}</span>}
+                  {sampleSkp > 0 && <span>+ SKP Rp {sampleSkp.toLocaleString("id-ID")}</span>}
+                  {sampleKhusus > 0 && <span className="text-purple-600 dark:text-purple-400">+ Khusus Rp {sampleKhusus.toLocaleString("id-ID")}</span>}
+                  {extraBreakdownPills.map((p, idx) => (
+                    <span key={idx}>+ {p.label} Rp {p.amount.toLocaleString("id-ID")}</span>
+                  ))}
+                  <span className="font-semibold text-foreground">+ [Jasa & Kurir Acuan Rp {(sampleJasa + sampleKurir).toLocaleString("id-ID")}]</span>
+                </div>
+              </div>
+
+              <div className="shrink-0 flex items-center lg:flex-col lg:items-end justify-between border-t lg:border-t-0 border-border/60 pt-1.5 lg:pt-0">
+                <span className="text-[10px] uppercase font-bold text-muted-foreground">Simulasi Grand Total:</span>
+                <span className="text-base font-bold font-mono tabular-nums text-primary">
+                  Rp {simulatedGrandTotal.toLocaleString("id-ID")}
+                </span>
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
     );
   };
 
@@ -2356,36 +2764,10 @@ export function BiayaLayanan() {
 
   return (
     <div className="flex-1 flex flex-col min-h-full space-y-4">
-      {/* Top Action Bar */}
-      <div className="flex items-center justify-end pb-1">
-        <Button
-          variant="outline"
-          className="h-8 text-xs gap-1.5 border-primary/40 text-primary hover:bg-primary/10 shadow-xs font-medium"
-          onClick={() => setIsEstimatorOpen(true)}
-        >
-          <Calculator className="w-3.5 h-3.5 text-primary" />
-          <span>Kalkulator Estimasi</span>
-        </Button>
-      </div>
+      <Card className="p-4 sm:p-5 border border-border/80 bg-card shadow-xs flex-1 flex flex-col min-h-0 space-y-3.5">
+              {/* Formula & Logika Estimasi Interactive Banner */}
+              {renderFormulaBanner()}
 
-      <Card className="p-4 sm:p-5 border border-border/80 bg-card shadow-xs flex-1 flex flex-col min-h-0">
-        <Tabs value={activeTab} onValueChange={handleTabChange} className="flex-1 flex flex-col min-h-0 space-y-4">
-          <div className="overflow-x-auto -mx-4 px-4 sm:mx-0 sm:px-0 shrink-0">
-            <TabsList className="inline-flex w-full min-w-max lg:grid lg:w-full lg:grid-cols-7 gap-1.5 bg-secondary/30 p-1.5 rounded-lg border border-border/40">
-              {layananTabs.map((tab) => (
-                <TabsTrigger
-                  key={tab.value}
-                  value={tab.value}
-                  className="text-xs sm:text-xs font-medium whitespace-nowrap"
-                >
-                  {tab.label}
-                </TabsTrigger>
-              ))}
-            </TabsList>
-          </div>
-
-          {layananTabs.map((tab) => (
-            <TabsContent key={tab.value} value={tab.value} className="flex-1 flex flex-col min-h-0 space-y-3.5 mt-0 data-[state=inactive]:hidden">
               {/* Toolbar */}
               <div className="flex flex-col sm:flex-row gap-2.5 justify-between items-stretch sm:items-center shrink-0">
                 <div className="flex items-center gap-2 flex-wrap">
@@ -2397,6 +2779,46 @@ export function BiayaLayanan() {
                   >
                     <Sliders className="w-3.5 h-3.5" />
                     <span>Aturan Estimasi & Komponen General</span>
+                  </Button>
+
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="h-8.5 text-xs gap-1.5 border-primary/30 text-primary hover:bg-primary/10 shadow-2xs font-semibold shrink-0"
+                    onClick={() => setIsEstimatorOpen(true)}
+                  >
+                    <Calculator className="w-3.5 h-3.5" />
+                    <span>Kalkulator Estimasi</span>
+                  </Button>
+
+                  {/* Filter Tarif Khusus / Berbeda */}
+                  <Button
+                    size="sm"
+                    variant={onlyCustomFilter ? "default" : "outline"}
+                    className={`h-8.5 text-xs font-semibold gap-1.5 shadow-2xs shrink-0 transition-all ${
+                      onlyCustomFilter
+                        ? "bg-amber-600 hover:bg-amber-700 text-white border-amber-600"
+                        : "border-border text-muted-foreground hover:text-foreground hover:bg-muted/50"
+                    }`}
+                    onClick={() => {
+                      setOnlyCustomFilter(!onlyCustomFilter);
+                      setCurrentPage(1);
+                    }}
+                  >
+                    <Zap className={`w-3.5 h-3.5 ${onlyCustomFilter ? "text-amber-200" : "text-amber-500"}`} />
+                    <span>Hanya Tarif Khusus / Berbeda</span>
+                    <Badge
+                      variant="secondary"
+                      className={`text-[10px] px-1.5 py-0 h-4.5 rounded-full font-mono font-bold ${
+                        onlyCustomFilter
+                          ? "bg-amber-800 text-amber-100"
+                          : customOfficesCount > 0
+                          ? "bg-amber-100 text-amber-800 dark:bg-amber-950/60 dark:text-amber-300"
+                          : "bg-muted text-muted-foreground"
+                      }`}
+                    >
+                      {customOfficesCount}
+                    </Badge>
                   </Button>
                 </div>
                 <div className="flex flex-col sm:flex-row items-center gap-2">
@@ -2432,10 +2854,29 @@ export function BiayaLayanan() {
                       paginatedData.map((item, index) => renderTableRow(item, index))
                     ) : (
                       <TableRow className="h-full hover:bg-transparent">
-                        <TableCell colSpan={7} className="text-center py-8 align-middle p-0">
+                        <TableCell colSpan={6} className="text-center py-8 align-middle p-0">
                           <EmptyState
                             title="Tidak ada data biaya ditemukan"
-                            description="Belum ada konfigurasi tarif Samsat yang sesuai dengan filter atau kata kunci saat ini."
+                            description={
+                              onlyCustomFilter
+                                ? "Tidak ada Samsat yang memiliki tarif khusus atau konfigurasi berbeda pada layanan ini."
+                                : "Belum ada konfigurasi tarif Samsat yang sesuai dengan filter atau kata kunci saat ini."
+                            }
+                            action={
+                              onlyCustomFilter ? (
+                                <Button
+                                  size="sm"
+                                  variant="outline"
+                                  className="text-xs h-8"
+                                  onClick={() => {
+                                    setOnlyCustomFilter(false);
+                                    setCurrentPage(1);
+                                  }}
+                                >
+                                  Tampilkan Semua Wilayah
+                                </Button>
+                              ) : undefined
+                            }
                           />
                         </TableCell>
                       </TableRow>
@@ -2480,9 +2921,6 @@ export function BiayaLayanan() {
                   </div>
                 </div>
               </Card>
-            </TabsContent>
-          ))}
-        </Tabs>
       </Card>
 
       {/* Add Dialog */}
@@ -2570,7 +3008,10 @@ export function BiayaLayanan() {
               type="button"
               variant="outline"
               size="sm"
-              onClick={() => setIsApplyAllDialogOpen(true)}
+              onClick={() => {
+                setApplyAllPolicy("PRESERVE_EXISTING_CUSTOM");
+                setIsApplyAllDialogOpen(true);
+              }}
               className="h-8.5 text-xs border-primary/40 text-primary hover:bg-primary/10 gap-1.5 shadow-2xs font-semibold self-start sm:self-auto"
             >
               <Layers className="w-3.5 h-3.5" />
@@ -2610,6 +3051,10 @@ export function BiayaLayanan() {
                   <span className="text-xs text-muted-foreground">•</span>
                   <Badge variant="outline" className="text-[11px] font-medium bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border-emerald-500/30">
                     Berlaku Seragam ke Seluruh Samsat
+                  </Badge>
+                  <span className="text-xs text-muted-foreground">•</span>
+                  <Badge variant="outline" className="text-[11px] font-medium bg-blue-500/10 text-blue-700 dark:text-blue-300 border-blue-500/30">
+                    Mutasi: Tarif Standar Nasional
                   </Badge>
                 </div>
               </div>
@@ -2864,28 +3309,133 @@ export function BiayaLayanan() {
                   </div>
                 </div>
 
+                {/* Override Policy Selection Card */}
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-semibold text-foreground flex items-center gap-1.5">
+                      <ShieldCheck className="w-3.5 h-3.5 text-primary" />
+                      Kebijakan Replikasi Tarif Khusus:
+                    </span>
+                    <span className="text-[10px] text-muted-foreground">
+                      Kontrol Perlindungan Data
+                    </span>
+                  </div>
+
+                  <div className="grid grid-cols-1 gap-2">
+                    {/* Opsi 1: PRESERVE_EXISTING_CUSTOM (Direkomendasikan) */}
+                    <div
+                      onClick={() => setApplyAllPolicy("PRESERVE_EXISTING_CUSTOM")}
+                      className={cn(
+                        "p-3 rounded-lg border cursor-pointer transition-all space-y-1.5",
+                        applyAllPolicy === "PRESERVE_EXISTING_CUSTOM"
+                          ? "border-emerald-500/60 bg-emerald-500/10 shadow-2xs"
+                          : "border-border/80 bg-card/60 hover:bg-muted/40"
+                      )}
+                    >
+                      <div className="flex items-start justify-between gap-2">
+                        <label className="flex items-start gap-2 cursor-pointer">
+                          <input
+                            type="radio"
+                            name="applyAllPolicy"
+                            checked={applyAllPolicy === "PRESERVE_EXISTING_CUSTOM"}
+                            onChange={() => setApplyAllPolicy("PRESERVE_EXISTING_CUSTOM")}
+                            className="mt-0.5 text-emerald-600 focus:ring-emerald-500 cursor-pointer"
+                          />
+                          <div>
+                            <div className="text-xs font-semibold text-foreground flex items-center gap-1.5">
+                              <span>Pertahankan Tarif Khusus Kantor</span>
+                              <Badge variant="outline" className="text-[9px] px-1 py-0 bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 border-emerald-500/30">
+                                Direkomendasikan
+                              </Badge>
+                            </div>
+                            <div className="text-[11px] text-muted-foreground mt-0.5 leading-relaxed">
+                              Hanya memperbarui kantor yang menggunakan tarif standar. Kantor yang sudah memiliki tarif khusus/berbeda tetap aman dipertahankan.
+                            </div>
+                          </div>
+                        </label>
+                      </div>
+                      {applyAllPolicy === "PRESERVE_EXISTING_CUSTOM" && (
+                        <div className="pt-1.5 border-t border-emerald-500/20 flex flex-wrap items-center gap-1.5 text-[10px] text-emerald-800 dark:text-emerald-300 font-medium">
+                          <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400 shrink-0" />
+                          <span>Estimasi: <strong>{applyAllMetrics.standardCount} Samsat</strong> diperbarui, <strong>{applyAllMetrics.customCount} Samsat</strong> bertarif khusus tetap dipertahankan.</span>
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Opsi 2: OVERWRITE_ALL */}
+                    <div
+                      onClick={() => setApplyAllPolicy("OVERWRITE_ALL")}
+                      className={cn(
+                        "p-3 rounded-lg border cursor-pointer transition-all space-y-1.5",
+                        applyAllPolicy === "OVERWRITE_ALL"
+                          ? "border-amber-500/60 bg-amber-500/10 shadow-2xs"
+                          : "border-border/80 bg-card/60 hover:bg-muted/40"
+                      )}
+                    >
+                      <div className="flex items-start justify-between gap-2">
+                        <label className="flex items-start gap-2 cursor-pointer">
+                          <input
+                            type="radio"
+                            name="applyAllPolicy"
+                            checked={applyAllPolicy === "OVERWRITE_ALL"}
+                            onChange={() => setApplyAllPolicy("OVERWRITE_ALL")}
+                            className="mt-0.5 text-amber-600 focus:ring-amber-500 cursor-pointer"
+                          />
+                          <div>
+                            <div className="text-xs font-semibold text-foreground flex items-center gap-1.5">
+                              <span>Timpa Seluruh Kantor (Termasuk Tarif Khusus)</span>
+                              <Badge variant="outline" className="text-[9px] px-1 py-0 bg-amber-500/15 text-amber-700 dark:text-amber-300 border-amber-500/30">
+                                Override Total
+                              </Badge>
+                            </div>
+                            <div className="text-[11px] text-muted-foreground mt-0.5 leading-relaxed">
+                              Menyeragamkan seluruh {applyAllMetrics.totalOffices} kantor Samsat dengan nilai sumber ini tanpa pengecualian.
+                            </div>
+                          </div>
+                        </label>
+                      </div>
+                      {applyAllPolicy === "OVERWRITE_ALL" && (
+                        <div className="pt-1.5 border-t border-amber-500/20 flex flex-wrap items-center gap-1.5 text-[10px] text-amber-800 dark:text-amber-300 font-medium">
+                          <AlertTriangle className="w-3.5 h-3.5 text-amber-600 dark:text-amber-400 shrink-0" />
+                          <span>Perhatian: Seluruh <strong>{applyAllMetrics.totalOffices} Samsat</strong> akan ditimpa, termasuk <strong>{applyAllMetrics.customCount} kantor</strong> yang memiliki tarif khusus.</span>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                </div>
+
                 <div className="p-2.5 rounded-md border border-emerald-500/30 bg-emerald-500/10 text-emerald-800 dark:text-emerald-300">
                   <p className="font-medium text-xs flex items-center gap-1.5">
                     <ShieldCheck className="w-4 h-4 text-emerald-600 shrink-0" />
                     Perlindungan Biaya Kustom Wilayah:
                   </p>
                   <p className="mt-0.5 text-[11px] text-emerald-700/90 dark:text-emerald-300/90">
-                    Biaya kustom/tambahan khusus per-Samsat (seperti biaya tambahan Bogor) tetap aman dipertahankan dan tidak akan dihapus atau diubah.
+                    Biaya kustom/tambahan khusus per-Samsat (seperti biaya tambahan Bogor) tetap aman dipertahankan dan tidak akan dihapus atau diubah secara tidak disengaja.
                   </p>
                 </div>
               </div>
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter className="mt-4 gap-2">
-            <AlertDialogCancel className="h-8.5 text-xs font-medium">Batal</AlertDialogCancel>
-            <AlertDialogAction
-              disabled={!applyAllScope.applyBiayaLayanan && !applyAllScope.applyBiayaTambahan && !applyAllScope.applyBiayaLainnya}
+            <AlertDialogCancel disabled={isApplyingAll} className="h-8.5 text-xs font-medium">Batal</AlertDialogCancel>
+            <Button
+              type="button"
+              disabled={isApplyingAll || (!applyAllScope.applyBiayaLayanan && !applyAllScope.applyBiayaTambahan && !applyAllScope.applyBiayaLainnya)}
               onClick={handleApplyAllConfirm}
               className="h-8.5 text-xs bg-primary hover:bg-primary/90 text-primary-foreground shadow-xs font-semibold gap-1.5 disabled:opacity-50 disabled:cursor-not-allowed"
             >
-              <Layers className="w-3.5 h-3.5" />
-              Ya, Terapkan ke Semua Samsat
-            </AlertDialogAction>
+              {isApplyingAll ? (
+                <>
+                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                  <span>Menerapkan Replikasi...</span>
+                </>
+              ) : (
+                <>
+                  <Layers className="w-3.5 h-3.5" />
+                  <span>Ya, Terapkan ke Semua Samsat</span>
+                </>
+              )}
+            </Button>
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>

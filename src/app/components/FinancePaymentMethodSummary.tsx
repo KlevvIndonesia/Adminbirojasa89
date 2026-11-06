@@ -389,3 +389,288 @@ export function InflowSummaryCard({
     </Card>
   );
 }
+
+export interface UnifiedProfitInflowSectionProps {
+  items: any[];
+  selectedMethod: string;
+  onMethodChange: (val: string) => void;
+  startDate: string;
+  onStartDateChange: (val: string) => void;
+  endDate: string;
+  onEndDateChange: (val: string) => void;
+  selectedStatus?: string;
+  onStatusChange?: (val: string) => void;
+  statusOptions?: { value: string; label: string }[];
+  statusLabel?: string;
+  onReset: () => void;
+  title?: string;
+}
+
+export function UnifiedProfitInflowSection({
+  items,
+  selectedMethod,
+  onMethodChange,
+  startDate,
+  onStartDateChange,
+  endDate,
+  onEndDateChange,
+  selectedStatus,
+  onStatusChange,
+  statusOptions,
+  statusLabel = "Pengurusan",
+  onReset,
+  title = "Ringkasan Pemasukan per Rekening / Metode Pembayaran",
+}: UnifiedProfitInflowSectionProps) {
+  const { activePaymentMethods, activeMethods } = usePaymentMethods();
+  const paymentMethodsList = activePaymentMethods || activeMethods || [];
+
+  const isFiltered = selectedMethod !== "ALL" || startDate !== "" || endDate !== "" || (selectedStatus && selectedStatus !== "ALL");
+
+  // Aggregate verified received money
+  const summaryMap: Record<
+    string,
+    {
+      method: string;
+      rekening: string;
+      bank: string;
+      count: number;
+      totalUangMasuk: number;
+    }
+  > = {};
+
+  items.forEach((item) => {
+    // 1. If item has payment history with split/multiple payments
+    if (Array.isArray(item.riwayatPembayaran) && item.riwayatPembayaran.length > 0) {
+      item.riwayatPembayaran.forEach((p: any) => {
+        const nominal = Number(p.nominal || p.jumlah || 0);
+        if (nominal <= 0) return;
+        const cat = normalizePaymentCategory(p.metode || p.metodePembayaran || item.metodePembayaran || item.rekening);
+        const isCash = cat === "Cash";
+        const rekDisplay = isCash
+          ? "—"
+          : (p.noRekening || item.noRekening ? `${p.noRekening || item.noRekening}${p.namaRekening || item.namaRekening ? ` (${p.namaRekening || item.namaRekening})` : ""}` : (p.bank || item.bank || item.rekening || "Rekening Bank"));
+
+        if (!summaryMap[cat]) {
+          summaryMap[cat] = {
+            method: cat,
+            rekening: rekDisplay,
+            bank: p.bank || item.bank || item.rekening || cat,
+            count: 0,
+            totalUangMasuk: 0,
+          };
+        }
+        summaryMap[cat].count += 1;
+        summaryMap[cat].totalUangMasuk += nominal;
+      });
+      return;
+    }
+
+    // 2. Standard single verified payment
+    const masuk = Number(item.totalUangMasuk || item.uangMasuk || 0);
+    if (masuk <= 0) return; // Strictly verified cash inflow only
+
+    const cat = normalizePaymentCategory(item.metodePembayaran || item.rekening || item.bank);
+    const isCash = cat === "Cash";
+    const rekDisplay = isCash
+      ? "—"
+      : (item.noRekening
+          ? `${item.noRekening}${item.namaRekening ? ` (${item.namaRekening})` : ""}`
+          : (item.bank || item.rekening || "Rekening Bank"));
+
+    if (!summaryMap[cat]) {
+      summaryMap[cat] = {
+        method: cat,
+        rekening: rekDisplay,
+        bank: item.bank || item.rekening || cat,
+        count: 0,
+        totalUangMasuk: 0,
+      };
+    }
+    summaryMap[cat].count += 1;
+    summaryMap[cat].totalUangMasuk += masuk;
+  });
+
+  const summaryRows = Object.values(summaryMap);
+  const totalCount = summaryRows.reduce((acc, row) => acc + row.count, 0);
+  const totalAmount = summaryRows.reduce((acc, row) => acc + row.totalUangMasuk, 0);
+
+  return (
+    <Card className="p-3.5 sm:p-4 border border-border bg-card shadow-xs space-y-3">
+      {/* 1. Header Area: Judul, Deskripsi Singkat, & Total Uang Masuk Terfilter */}
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between pb-2.5 border-b border-border/60 gap-2">
+        <div className="flex items-center gap-2.5">
+          <div className="w-8 h-8 rounded-lg bg-emerald-500/10 flex items-center justify-center text-emerald-600 dark:text-emerald-400 shrink-0">
+            <Wallet className="w-4 h-4" />
+          </div>
+          <div>
+            <h4 className="text-sm font-semibold text-foreground flex items-center gap-2">
+              {title}
+              {selectedMethod && selectedMethod !== "ALL" && (
+                <span className="text-[11px] px-2 py-0.5 rounded-full bg-primary/10 text-primary font-normal">
+                  Metode: {selectedMethod}
+                </span>
+              )}
+            </h4>
+            <p className="text-xs text-muted-foreground">
+              Total penerimaan kas masuk terverifikasi per rekening & metode bayar
+            </p>
+          </div>
+        </div>
+        <div className="flex items-center gap-2 self-start sm:self-auto">
+          {isFiltered && (
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={onReset}
+              className="h-8 text-xs text-muted-foreground hover:text-foreground flex items-center gap-1.5 px-2.5"
+            >
+              <RotateCcw className="w-3.5 h-3.5" />
+              <span>Reset</span>
+            </Button>
+          )}
+          <div className="bg-emerald-500/5 px-3 py-1.5 rounded-lg border border-emerald-500/15 text-left sm:text-right">
+            <span className="text-[10px] text-muted-foreground block font-medium uppercase tracking-wider">Total Uang Masuk Terfilter</span>
+            <p className="text-base font-bold font-mono text-emerald-600 dark:text-emerald-400">
+              {formatRupiah(totalAmount)}
+            </p>
+          </div>
+        </div>
+      </div>
+
+      {/* 2. Filter Area: Grid 4 Kolom Ramping */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-2.5 pt-0.5">
+        <div className="space-y-1.5">
+          <label className="text-xs font-medium text-foreground/80 flex items-center gap-1.5">
+            <CreditCard className="w-3.5 h-3.5 text-muted-foreground" />
+            Metode Pembayaran
+          </label>
+          <Select value={selectedMethod} onValueChange={onMethodChange}>
+            <SelectTrigger className="h-8.5 text-xs bg-background">
+              <SelectValue placeholder="Semua Metode" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="ALL">Semua Metode Pembayaran</SelectItem>
+              {paymentMethodsList.map((pm) => (
+                <SelectItem key={pm.id} value={pm.nama_metode}>
+                  {pm.bank && pm.bank !== "Tunai" && pm.nomor_rekening
+                    ? `${pm.nama_metode} (${pm.bank} - ${pm.nomor_rekening})`
+                    : pm.nama_metode}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+
+        <div className="space-y-1.5">
+          <label className="text-xs font-medium text-foreground/80 flex items-center gap-1.5">
+            <Calendar className="w-3.5 h-3.5 text-muted-foreground" />
+            Tanggal Mulai
+          </label>
+          <Input
+            type="date"
+            value={startDate}
+            onChange={(e) => onStartDateChange(e.target.value)}
+            className="h-8.5 text-xs bg-background"
+          />
+        </div>
+
+        <div className="space-y-1.5">
+          <label className="text-xs font-medium text-foreground/80 flex items-center gap-1.5">
+            <Calendar className="w-3.5 h-3.5 text-muted-foreground" />
+            Tanggal Selesai
+          </label>
+          <Input
+            type="date"
+            value={endDate}
+            onChange={(e) => onEndDateChange(e.target.value)}
+            className="h-8.5 text-xs bg-background"
+          />
+        </div>
+
+        {statusOptions && onStatusChange && (
+          <div className="space-y-1.5">
+            <label className="text-xs font-medium text-foreground/80 flex items-center gap-1.5">
+              <Building2 className="w-3.5 h-3.5 text-muted-foreground" />
+              {statusLabel}
+            </label>
+            <Select value={selectedStatus || "ALL"} onValueChange={onStatusChange}>
+              <SelectTrigger className="h-8.5 text-xs bg-background">
+                <SelectValue placeholder={`Pilih ${statusLabel.toLowerCase()}`} />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="ALL">Semua Status</SelectItem>
+                {statusOptions.map((opt) => (
+                  <SelectItem key={opt.value} value={opt.value}>
+                    {opt.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+        )}
+      </div>
+
+      {/* 3. Data Area: Compact Summary Table */}
+      <div className="overflow-x-auto pt-1">
+        <table className="w-full text-left text-xs border-collapse">
+          <thead>
+            <tr className="border-b border-border text-muted-foreground font-semibold bg-muted/20">
+              <th className="py-2.5 px-3">Metode Pembayaran</th>
+              <th className="py-2.5 px-3">Rekening Penerima</th>
+              <th className="py-2.5 px-3 text-center">Jumlah Transaksi</th>
+              <th className="py-2.5 px-3 text-right">Total Uang Masuk</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-border/50">
+            {summaryRows.length === 0 ? (
+              <tr>
+                <td colSpan={4} className="py-4 text-center text-muted-foreground italic text-xs">
+                  Tidak ada transaksi kas masuk terverifikasi pada filter yang dipilih.
+                </td>
+              </tr>
+            ) : (
+              summaryRows.map((row) => (
+                <tr key={row.method} className="hover:bg-muted/40 transition-colors">
+                  <td className="py-2.5 px-3 font-semibold text-foreground flex items-center gap-2">
+                    {row.method === "Cash" ? (
+                      <Banknote className="w-3.5 h-3.5 text-emerald-500 shrink-0" />
+                    ) : (
+                      <CreditCard className="w-3.5 h-3.5 text-blue-500 shrink-0" />
+                    )}
+                    <span>{row.method}</span>
+                  </td>
+                  <td className="py-2.5 px-3 font-mono text-muted-foreground text-xs">
+                    {row.rekening}
+                  </td>
+                  <td className="py-2.5 px-3 text-center font-mono">
+                    <span className="inline-flex items-center px-2 py-0.5 rounded-md text-[11px] bg-secondary text-secondary-foreground font-medium">
+                      {row.count} Transaksi
+                    </span>
+                  </td>
+                  <td className="py-2.5 px-3 text-right font-mono tabular-nums font-semibold text-emerald-600 dark:text-emerald-400">
+                    {formatRupiah(row.totalUangMasuk)}
+                  </td>
+                </tr>
+              ))
+            )}
+          </tbody>
+          {summaryRows.length > 0 && (
+            <tfoot>
+              <tr className="border-t-2 border-border font-bold bg-muted/30">
+                <td className="py-2.5 px-3 text-foreground font-semibold" colSpan={2}>
+                  Total Keseluruhan Sesuai Filter
+                </td>
+                <td className="py-2.5 px-3 text-center font-mono font-semibold text-foreground">
+                  {totalCount} Transaksi
+                </td>
+                <td className="py-2.5 px-3 text-right font-mono tabular-nums font-bold text-emerald-600 dark:text-emerald-400 text-sm">
+                  {formatRupiah(totalAmount)}
+                </td>
+              </tr>
+            </tfoot>
+          )}
+        </table>
+      </div>
+    </Card>
+  );
+}

@@ -117,7 +117,7 @@ export function mapToStatusCode(status: MessengerTaskStatus, step: number): Mess
 // Task Derivation from Orders (Single Source of Truth)
 // ==========================================
 
-function deriveSingleTaskFromOrder(order: OperationalOrder): MessengerTaskItem {
+export function deriveSingleTaskFromOrder(order: OperationalOrder): MessengerTaskItem {
   const step = order.currentStep;
   let keteranganTugas: MessengerTaskType = mapStageToTaskType(step);
 
@@ -179,6 +179,8 @@ function deriveSingleTaskFromOrder(order: OperationalOrder): MessengerTaskItem {
           defaultStatus = "Selesai";
         } else if (order.samsatPickupStatus === "Sedang Jemput Dokumen Samsat") {
           defaultStatus = "Dalam Proses";
+        } else if (order.samsatPickupStatus === "Terkendala") {
+          defaultStatus = "Pending";
         } else {
           defaultStatus = "Belum Diambil";
         }
@@ -267,10 +269,23 @@ function deriveSingleTaskFromOrder(order: OperationalOrder): MessengerTaskItem {
 
   // Derive acceptance status, lock status & reassignment details
   const taskAcceptanceEntry = order.taskAcceptance?.[keteranganTugas];
-  let acceptanceStatus: "PENDING" | "ACCEPTED" | "DECLINED" | undefined = taskAcceptanceEntry?.status;
+  const rawAcceptanceStatus = taskAcceptanceEntry?.status;
+  const isSuperseded = rawAcceptanceStatus === "SUPERSEDED";
+
+  let acceptanceStatus: MessengerAcceptanceStatus | undefined =
+    rawAcceptanceStatus === "ACCEPTED" ||
+    rawAcceptanceStatus === "DECLINED" ||
+    rawAcceptanceStatus === "PENDING" ||
+    rawAcceptanceStatus === "SUPERSEDED"
+      ? (rawAcceptanceStatus as MessengerAcceptanceStatus)
+      : undefined;
   let isLocked = Boolean(taskAcceptanceEntry?.isLocked);
 
-  if (!acceptanceStatus) {
+  // STRICT TERMINAL STATE: If SUPERSEDED, lock status permanently and prevent any fallback heuristic (e.g. order.startedAt)
+  if (isSuperseded) {
+    acceptanceStatus = "SUPERSEDED";
+    isLocked = true;
+  } else if (!acceptanceStatus) {
     if (status === "Dalam Proses" || status === "Selesai" || order.startedAt) {
       acceptanceStatus = "ACCEPTED";
       isLocked = true;
@@ -284,7 +299,9 @@ function deriveSingleTaskFromOrder(order: OperationalOrder): MessengerTaskItem {
 
   // Lifecycle status derivation (7-stage state machine)
   let lifecycleStatus: any = "MENUNGGU_PENUGASAN";
-  if (!messenger || messenger === "Belum Ditugaskan" || messenger === "-") {
+  if (isSuperseded) {
+    lifecycleStatus = "DIBATALKAN";
+  } else if (!messenger || messenger === "Belum Ditugaskan" || messenger === "-") {
     lifecycleStatus = "MENUNGGU_PENUGASAN";
   } else if (status === "Selesai") {
     lifecycleStatus = "SELESAI";
@@ -371,6 +388,11 @@ export function isOperationalOrderMessengerTask(order: OperationalOrder): boolea
   if (order.currentStep === 4 || order.currentStageName === "Proses Samsat") {
     // If Samsat process is completed AND result documents are already received at office
     if (order.samsatStatus === "Selesai" && order.samsatPickupStatus === "Dokumen Samsat Diterima di Kantor") {
+      return false;
+    }
+    // If Jemput Hasil Samsat task acceptance is superseded and not yet re-spawned in active cycle
+    const jemputAcc = (order.taskAcceptance || {})["Jemput Hasil Samsat"] as any;
+    if (order.samsatStatus === "Selesai" && jemputAcc?.status === "SUPERSEDED") {
       return false;
     }
     return true;
@@ -651,6 +673,62 @@ export function deriveAllMessengerHistory(
         });
       }
     }
+
+    // 4. Jemput Hasil Samsat History (Phase 4 Dedicated)
+    const jemputHasilAcc = (order.taskAcceptance || {})["Jemput Hasil Samsat"] as any;
+    const isJemputHasilDone =
+      order.samsatPickupStatus === "Dokumen Samsat Diterima di Kantor" ||
+      jemputHasilAcc?.status === "COMPLETED" ||
+      Boolean(order.samsatPickupCompletedAt);
+
+    if (isJemputHasilDone) {
+      const cycle = jemputHasilAcc?.cycle || (order as any).samsatCycle || 1;
+      const histId = `HIST-${order.orderNo}-JEMPUT_HASIL-C${cycle}`;
+      if (!seenIds.has(histId)) {
+        seenIds.add(histId);
+        const mName =
+          jemputHasilAcc?.completedBy ||
+          order.samsatPickupMessengerNama ||
+          order.samsatPickupMessenger ||
+          jemputHasilAcc?.courierName ||
+          "Kurir Jemput Hasil";
+        const mId =
+          jemputHasilAcc?.completedById ||
+          order.samsatPickupMessengerId ||
+          jemputHasilAcc?.courierId ||
+          resolveMessengerEmployeeId(mName);
+
+        history.push({
+          id: histId,
+          orderNo: order.orderNo,
+          taskType: "Jemput Hasil Samsat",
+          messenger: mName,
+          messengerEmployeeId: mId,
+          customer: order.customer,
+          phone: order.nomorHP || "-",
+          nopol: order.nopol || "-",
+          jenisKendaraan: order.jenisKendaraan || "-",
+          layanan: order.layanan,
+          wilayah: order.wilayahSamsatAsal
+            ? order.wilayahSamsatAsal.toLowerCase().includes("samsat")
+              ? order.wilayahSamsatAsal
+              : `Samsat ${order.wilayahSamsatAsal}`
+            : "Samsat",
+          completedAt:
+            order.samsatPickupCompletedAt ||
+            jemputHasilAcc?.completedAt ||
+            (order as any).updatedAt ||
+            order.createdAt,
+          totalTagihan: tagihan,
+          terbayar,
+          statusBayar,
+          status: "Selesai",
+          keterangan: "Berkas fisik hasil Samsat telah diserahkan dan diterima di kantor",
+          photoProofUrl: (order as any).samsatPickupProof || (order as any).samsatResultProof,
+          rawOrder: order,
+        });
+      }
+    }
   }
 
   // Sort by completedAt descending (newest completed first)
@@ -698,39 +776,26 @@ export function resolveMessengerEmployeeId(messengerName?: string): string | und
 export function isTaskAssignedToMessenger(
   task: MessengerTaskItem,
   employeeId?: string,
-  userName?: string,
+  optionalUserName?: string,
   userId?: string
 ): boolean {
-  const taskMsg = (task.messenger || task.rawOrder?.assignedMessengerName || "").toLowerCase().trim();
-  const empId = task.assignedMessengerId;
-
-  // Never match unassigned tasks or walk-in orders
-  if (!taskMsg || taskMsg === "belum ditugaskan" || taskMsg === "-" || taskMsg.includes("datang langsung")) {
-    if (!empId || empId === "belum ditugaskan" || empId === "-") {
-      return false;
-    }
+  const empId = (task.assignedMessengerId || "").trim();
+  if (!empId || empId === "belum ditugaskan" || empId === "-" || empId === "EMP-MSG") {
+    return false;
   }
 
+  const cleanEmpId = (employeeId || "").trim();
+  const cleanUserId = (userId || "").trim();
+
   // 1. Direct employeeId match
-  if (employeeId && empId && empId === employeeId) {
+  if (cleanEmpId && empId.toLowerCase() === cleanEmpId.toLowerCase()) {
     return true;
   }
   // 2. Direct userId match
-  if (userId && empId && empId === userId) {
+  if (cleanUserId && empId.toLowerCase() === cleanUserId.toLowerCase()) {
     return true;
   }
-  // 3. Messenger name match (case-insensitive substring/equality)
-  if (userName && taskMsg && taskMsg !== "belum ditugaskan" && taskMsg !== "-") {
-    const uName = userName.toLowerCase().trim();
-    if (taskMsg === uName || taskMsg.includes(uName) || uName.includes(taskMsg)) {
-      return true;
-    }
-    // Also check resolved ID from name
-    const resolvedEmpId = resolveMessengerEmployeeId(taskMsg);
-    if (resolvedEmpId && (resolvedEmpId === employeeId || resolvedEmpId === userId)) {
-      return true;
-    }
-  }
+
   return false;
 }
 
@@ -738,6 +803,10 @@ export function isTaskAssignedToMessenger(
  * Checks whether a task is unassigned and open for any messenger to take
  */
 export function isTaskAvailableUnassigned(task: MessengerTaskItem): boolean {
+  // Cycle isolation: If task acceptance is superseded, it is invalidated and not available in pool
+  const acc = (task.rawOrder?.taskAcceptance || {})[task.keteranganTugas] as any;
+  if (acc?.status === "SUPERSEDED" || task.acceptanceStatus === "SUPERSEDED") return false;
+
   const taskMsg = (task.messenger || task.rawOrder?.assignedMessengerName || "").toLowerCase().trim();
   const empId = task.assignedMessengerId;
   const isMsgEmpty = !taskMsg || taskMsg === "belum ditugaskan" || taskMsg === "-";
@@ -784,15 +853,16 @@ export function getMessengerTasksForEmployee(
     userName = optionalUserName;
   }
 
-  // Fallback resolution from userName if employeeId is missing
-  if (!employeeId && userName) {
-    employeeId = resolveMessengerEmployeeId(userName);
-  }
-
-  if (!employeeId && !userName && !userId) return [];
+  const hasCanonicalId = Boolean((employeeId && employeeId.trim()) || (userId && userId.trim()));
+  if (!hasCanonicalId) return [];
 
   const allTasks = deriveMessengerTasksFromOrders(activeOrders);
   return allTasks.filter((task) => {
+    // 0. Task marked SUPERSEDED is permanently invalidated
+    if (task.acceptanceStatus === "SUPERSEDED") return false;
+    const taskAcc = (task.rawOrder?.taskAcceptance || {})[task.keteranganTugas] as any;
+    if (taskAcc?.status === "SUPERSEDED") return false;
+
     // 1. Task MUST be strictly assigned to this messenger
     if (!isTaskAssignedToMessenger(task, employeeId, userName, userId)) {
       return false;
@@ -865,7 +935,14 @@ export function getActiveTasksForEmployee(
   optionalUserName?: string
 ): MessengerTaskItem[] {
   const all = getMessengerTasksForEmployee(activeOrders, userOrEmployeeId, optionalUserName);
-  return all.filter((t) => t.acceptanceStatus !== "PENDING" && t.status !== "Selesai" && t.statusCode !== "COMPLETED");
+  return all.filter(
+    (t) =>
+      t.acceptanceStatus !== "PENDING" &&
+      t.acceptanceStatus !== "SUPERSEDED" &&
+      t.status !== "Selesai" &&
+      t.status !== "Dibatalkan" &&
+      t.statusCode !== "COMPLETED"
+  );
 }
 
 /**
@@ -927,28 +1004,80 @@ export function getMessengerTaskHistoryForEmployee(
     employeeId = userOrEmployeeId;
   }
 
-  if (!employeeId && userName) {
-    employeeId = resolveMessengerEmployeeId(userName);
-  }
-
-  if (!employeeId && !userName && !userId) return [];
+  const hasCanonicalId = Boolean((employeeId && employeeId.trim()) || (userId && userId.trim()));
+  if (!hasCanonicalId) return [];
 
   const historyItems: MessengerTaskItem[] = [];
+  const seenTaskIds = new Set<string>();
 
-  // Check stage 8 in active orders
+  // 1. Check completed Jemput Hasil Samsat across all active stages (Step 4, 5, 6, 7, etc.)
+  // So courier can see completed Jemput Hasil in history without waiting for Stage 8 or archiving!
+  for (const stage of Object.keys(activeOrders) as StageName[]) {
+    for (const order of activeOrders[stage] || []) {
+      const jemputHasilAcc = (order.taskAcceptance || {})["Jemput Hasil Samsat"] as any;
+      const isJemputHasilDone =
+        order.samsatPickupStatus === "Dokumen Samsat Diterima di Kantor" ||
+        jemputHasilAcc?.status === "COMPLETED" ||
+        Boolean(order.samsatPickupCompletedAt);
+
+      if (isJemputHasilDone) {
+        const courierId = jemputHasilAcc?.completedById || order.samsatPickupMessengerId || jemputHasilAcc?.courierId;
+        const courierName =
+          jemputHasilAcc?.completedBy ||
+          order.samsatPickupMessengerNama ||
+          order.samsatPickupMessenger ||
+          jemputHasilAcc?.courierName;
+
+        const isAssigned =
+          (employeeId && courierId && employeeId.trim().toLowerCase() === courierId.trim().toLowerCase()) ||
+          (userId && courierId && userId.trim().toLowerCase() === courierId.trim().toLowerCase()) ||
+          (!employeeId && !userId && userName && courierName && userName.trim().toLowerCase() === courierName.trim().toLowerCase());
+
+        if (isAssigned) {
+          const cycle = jemputHasilAcc?.cycle || (order as any).samsatCycle || 1;
+          const taskId = `HIST-${order.orderNo}-JEMPUT_HASIL-C${cycle}`;
+          if (!seenTaskIds.has(taskId)) {
+            seenTaskIds.add(taskId);
+            const task = deriveSingleTaskFromOrder(order);
+            historyItems.push({
+              ...task,
+              id: taskId,
+              keteranganTugas: "Jemput Hasil Samsat",
+              status: "Selesai",
+              statusCode: "COMPLETED",
+              completedAt:
+                order.samsatPickupCompletedAt ||
+                jemputHasilAcc?.completedAt ||
+                (order as any).updatedAt ||
+                order.createdAt,
+              keterangan: "Berkas fisik hasil Samsat telah diserahkan dan diterima di kantor",
+            });
+          }
+        }
+      }
+    }
+  }
+
+  // 2. Check stage 8 in active orders
   const stage8Orders = activeOrders["Dokumen Telah Diterima"] || [];
   for (const order of stage8Orders) {
     const task = deriveSingleTaskFromOrder(order);
     if (isTaskAssignedToMessenger(task, employeeId, userName, userId)) {
-      historyItems.push(task);
+      if (!seenTaskIds.has(String(task.id))) {
+        seenTaskIds.add(String(task.id));
+        historyItems.push(task);
+      }
     }
   }
 
-  // Check archived orders
+  // 3. Check archived orders
   for (const order of archivedOrders) {
     const task = deriveSingleTaskFromOrder(order);
     if (isTaskAssignedToMessenger(task, employeeId, userName, userId)) {
-      historyItems.push(task);
+      if (!seenTaskIds.has(String(task.id))) {
+        seenTaskIds.add(String(task.id));
+        historyItems.push(task);
+      }
     }
   }
 
@@ -1015,49 +1144,99 @@ function toAuditRole(role: string): "administrator" | "finance" | "admin" | "mes
   return "admin";
 }
 
-function checkTaskOwnership(order: OperationalOrder, user: UserContext): { allowed: boolean; error?: string } {
+export function checkTaskOwnership(
+  order: OperationalOrder,
+  user: UserContext,
+  taskType?: MessengerTaskType
+): { allowed: boolean; error?: string } {
   // Admin and SVP have global operational supervision
   if (user.role === "admin" || user.role === "administrator" || user.role === "svp") {
     return { allowed: true };
   }
 
-  const task = deriveSingleTaskFromOrder(order);
-
-  // If already assigned to this user, allow
-  if (isTaskAssignedToMessenger(task, user.employeeId, user.userName, user.userId)) {
-    return { allowed: true };
+  // Messenger must have verifiable identity
+  const empId = typeof user.employeeId === "string" ? user.employeeId.trim() : "";
+  const uId = typeof user.userId === "string" ? user.userId.trim() : "";
+  if ((!empId && !uId) || empId === "EMP-MSG" || uId === "EMP-MSG" || empId === "Belum Ditugaskan" || empId === "-") {
+    return {
+      allowed: false,
+      error: "Identitas kurir tidak valid atau tidak terverifikasi.",
+    };
   }
 
-  // Also check if user matches any stage messenger on the rawOrder
-  const uName = (user.userName || "").toLowerCase().trim();
-  const empId = user.employeeId;
-  const uId = user.userId;
-  const matches = (id?: string, name?: string) => {
-    if (id && (id === empId || id === uId)) return true;
-    if (name && name !== "Belum Ditugaskan" && name !== "-") {
-      const n = name.toLowerCase().trim();
-      if (n === uName || n.includes(uName) || uName.includes(n)) return true;
-    }
-    return false;
+  const task = deriveSingleTaskFromOrder(order);
+  const targetType = taskType || task.keteranganTugas;
+
+  // Strictly match by canonical ID (employee ID or user ID), never by display name alone (DEFECT-P2-02, Phase 3.1)
+  const matchesId = (id?: string): boolean => {
+    if (!id || id === "Belum Ditugaskan" || id === "-" || id === "EMP-MSG") return false;
+    const clean = id.trim();
+    return Boolean((empId && clean === empId) || (uId && clean === uId));
   };
 
-  if (
-    matches(order.assignedMessengerId, order.messenger) ||
-    matches(order.samsatMessengerId, order.samsatMessenger) ||
-    matches(order.samsatPickupMessengerId, order.samsatPickupMessenger) ||
-    matches((order as any).deliveryMessengerId, order.messengerPengantar)
-  ) {
+  let isAssignedToUser = false;
+  let isPoolTask = false;
+
+  if (targetType === "Jemput Dokumen") {
+    const acc = order.taskAcceptance?.["Jemput Dokumen"];
+    isAssignedToUser =
+      matchesId(order.assignedMessengerId) ||
+      Boolean(acc?.isLocked && matchesId(acc.courierId));
+    isPoolTask = Boolean(
+      !order.assignedMessengerId ||
+      order.assignedMessengerId === "Belum Ditugaskan" ||
+      !acc?.isLocked
+    );
+  } else if (targetType === "Pengantaran Dokumen") {
+    const acc = order.taskAcceptance?.["Pengantaran Dokumen"];
+    isAssignedToUser =
+      matchesId((order as any).deliveryMessengerId) ||
+      Boolean(acc?.isLocked && matchesId(acc.courierId));
+    isPoolTask = Boolean(
+      !(order as any).deliveryMessengerId ||
+      (order as any).deliveryMessengerId === "Belum Ditugaskan" ||
+      !acc?.isLocked
+    );
+  } else if (targetType === "Proses Samsat") {
+    const acc = order.taskAcceptance?.["Proses Samsat"];
+    isAssignedToUser =
+      matchesId(order.samsatMessengerId) ||
+      Boolean(acc?.isLocked && matchesId(acc.courierId));
+    isPoolTask = Boolean(
+      !order.samsatMessengerId ||
+      order.samsatMessengerId === "Belum Ditugaskan" ||
+      !acc?.isLocked
+    );
+  } else if (targetType === "Jemput Hasil Samsat") {
+    const acc = order.taskAcceptance?.["Jemput Hasil Samsat"];
+    isAssignedToUser =
+      matchesId(order.samsatPickupMessengerId) ||
+      Boolean(acc?.isLocked && matchesId(acc.courierId));
+    isPoolTask = Boolean(
+      !order.samsatPickupMessengerId ||
+      order.samsatPickupMessengerId === "Belum Ditugaskan" ||
+      !acc?.isLocked
+    );
+  } else {
+    isAssignedToUser = matchesId(task.assignedMessengerId);
+    isPoolTask = isTaskAvailableUnassigned(task);
+  }
+
+  if (isAssignedToUser) {
     return { allowed: true };
   }
 
-  // If unassigned and open to be taken, allow
-  if (isTaskAvailableUnassigned(task)) {
-    return { allowed: true };
+  // Scope D: If unassigned, task is in the pool and is READ-ONLY to messengers!
+  if (isPoolTask) {
+    return {
+      allowed: false,
+      error: `Tugas ${targetType} pada order ${order.orderNo} masih berada di Daftar Tugas (Pool) dan belum diambil. Ambil tugas terlebih dahulu sebelum melakukan pembaruan.`,
+    };
   }
 
   return {
     allowed: false,
-    error: `Akses ditolak: Tugas ini ditugaskan kepada messenger lain (${task.messenger || "Petugas lain"}). Anda tidak memiliki izin untuk memodifikasi tugas ini.`,
+    error: `Akses ditolak: Tugas ${targetType} pada order ${order.orderNo} bukan penugasan aktif Anda.`,
   };
 }
 
@@ -1065,103 +1244,447 @@ function checkTaskOwnership(order: OperationalOrder, user: UserContext): { allow
  * Start task (Action: Mulai Tugas)
  * Transitions status to IN_PROGRESS, assigns to messenger if unassigned, and records startedAt timestamp
  */
+/**
+ * Start Pickup Task Action (Scope A)
+ */
+export function startPickupTaskAction(
+  orderNo: string,
+  user: UserContext
+): { success: boolean; error?: string } {
+  const order = orderStore.getOrderByNo(orderNo);
+  if (!order) return { success: false, error: `Order ${orderNo} tidak ditemukan` };
+
+  if ((order as any).isCancelled || order.currentStageName === "Dibatalkan" || (order as any).status === "Dibatalkan") {
+    return { success: false, error: `Order ${orderNo} sudah dibatalkan.` };
+  }
+  if (order.currentStep !== 2 && order.currentStageName !== "Penjadwalan") {
+    return {
+      success: false,
+      error: `Penjemputan berkas hanya dapat dimulai pada tahap Penjadwalan (Step 2), saat ini berada di Step ${order.currentStep}.`,
+    };
+  }
+
+  const authCheck = checkTaskOwnership(order, user, "Jemput Dokumen");
+  if (!authCheck.allowed) return { success: false, error: authCheck.error };
+
+  if (order.pickupCompleted || order.messengerTaskStatus === "Dokumen Sudah Tersedia" || order.messengerTaskStatus === "Selesai") {
+    return { success: false, error: `Penjemputan berkas untuk order ${orderNo} sudah selesai.` };
+  }
+
+  // Idempotency: Already started
+  if (order.messengerTaskStatus === "Sedang Dijemput" || order.messengerTaskStatus === "Dalam Proses") {
+    return { success: true };
+  }
+
+  const nowIso = new Date().toISOString();
+  const timelineEvent: MessengerTimelineEvent = {
+    id: `tl-pickup-start-${Date.now()}`,
+    timestamp: nowIso,
+    title: "Mulai Penjemputan Dokumen",
+    note: `Kurir ${user.userName} memulai proses penjemputan berkas fisik dari klien.`,
+    author: user.userName,
+    type: "STATUS_CHANGE",
+  };
+
+  const existingTimeline = order.messengerTimeline || [];
+  const success = orderStore.updateOrder(orderNo, {
+    startedAt: order.startedAt || nowIso,
+    messengerTaskStatus: "Sedang Dijemput",
+    messengerTimeline: [timelineEvent, ...existingTimeline],
+  });
+
+  if (typeof fetch !== "undefined") {
+    const token = typeof localStorage !== "undefined" ? localStorage.getItem("auth_token") : null;
+    fetch(`${APP_CONFIG.apiBaseUrl}/orders/${encodeURIComponent(orderNo)}/pickup/start`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+    }).catch(() => {});
+  }
+
+  return { success, error: success ? undefined : "Gagal memulai penjemputan berkas" };
+}
+
+/**
+ * Complete Pickup Task Action (Scope B)
+ */
+export function completePickupTaskAction(
+  orderNo: string,
+  payload: {
+    pickupChecklist?: Record<string, boolean>;
+    photoProofUrl?: string;
+  },
+  user: UserContext
+): { success: boolean; error?: string } {
+  const order = orderStore.getOrderByNo(orderNo);
+  if (!order) return { success: false, error: `Order ${orderNo} tidak ditemukan` };
+
+  if ((order as any).isCancelled || order.currentStageName === "Dibatalkan" || (order as any).status === "Dibatalkan") {
+    return { success: false, error: `Order ${orderNo} sudah dibatalkan.` };
+  }
+  if (order.currentStep !== 2 && order.currentStageName !== "Penjadwalan") {
+    return {
+      success: false,
+      error: `Penjemputan berkas hanya dapat diselesaikan pada tahap Penjadwalan (Step 2), saat ini berada di Step ${order.currentStep}.`,
+    };
+  }
+
+  const authCheck = checkTaskOwnership(order, user, "Jemput Dokumen");
+  if (!authCheck.allowed) return { success: false, error: authCheck.error };
+
+  const isStarted = order.messengerTaskStatus === "Sedang Dijemput" || order.messengerTaskStatus === "Dalam Proses" || Boolean(order.startedAt);
+  if (!isStarted) {
+    return { success: false, error: "Penjemputan berkas belum dimulai. Tekan 'Mulai Tugas' terlebih dahulu." };
+  }
+
+  if (order.pickupCompleted && order.messengerTaskStatus === "Dokumen Sudah Tersedia") {
+    return { success: true };
+  }
+
+  const checklist = payload.pickupChecklist || order.pickupChecklist;
+  if (checklist && order.clientDocuments && Object.keys(order.clientDocuments).length > 0) {
+    for (const [docKey, doc] of Object.entries(order.clientDocuments)) {
+      if (doc.isOptional !== true && !checklist[docKey]) {
+        return { success: false, error: `Dokumen wajib '${doc.name || docKey}' belum dicentang.` };
+      }
+    }
+  }
+
+  const nowIso = new Date().toISOString();
+  const timelineEvent: MessengerTimelineEvent = {
+    id: `tl-pickup-comp-${Date.now()}`,
+    timestamp: nowIso,
+    title: "Penjemputan Dokumen Selesai",
+    note: `Dokumen fisik berhasil diambil oleh kurir ${user.userName}. Berkas siap diverifikasi kantor.`,
+    author: user.userName,
+    type: "STATUS_CHANGE",
+  };
+
+  const existingTimeline = order.messengerTimeline || [];
+  const success = orderStore.updateOrder(orderNo, {
+    pickupCompleted: true,
+    pickupCompletedAt: nowIso,
+    completedAt: nowIso,
+    messengerTaskStatus: "Dokumen Sudah Tersedia",
+    pickupChecklist: checklist || order.pickupChecklist,
+    pickupProof: {
+      photoProofUrl: payload.photoProofUrl || order.pickupProof?.photoProofUrl,
+      pickupChecklist: checklist || order.pickupChecklist,
+      completedAt: nowIso,
+    },
+    messengerTimeline: [timelineEvent, ...existingTimeline],
+  });
+
+  if (typeof fetch !== "undefined") {
+    const token = typeof localStorage !== "undefined" ? localStorage.getItem("auth_token") : null;
+    fetch(`${APP_CONFIG.apiBaseUrl}/orders/${encodeURIComponent(orderNo)}/pickup/complete`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+      body: JSON.stringify(payload),
+    }).catch(() => {});
+  }
+
+  return { success, error: success ? undefined : "Gagal menyelesaikan penjemputan berkas" };
+}
+
+/**
+ * Release Pickup Task to Pool (Scope C)
+ */
+export function releasePickupTaskAction(
+  orderNo: string,
+  user: UserContext,
+  notes?: string
+): { success: boolean; error?: string } {
+  const order = orderStore.getOrderByNo(orderNo);
+  if (!order) return { success: false, error: `Order ${orderNo} tidak ditemukan` };
+
+  const authCheck = checkTaskOwnership(order, user, "Jemput Dokumen");
+  if (!authCheck.allowed) return { success: false, error: authCheck.error };
+
+  const nowIso = new Date().toISOString();
+  const timelineEvent: MessengerTimelineEvent = {
+    id: `tl-rel-pickup-${Date.now()}`,
+    timestamp: nowIso,
+    title: "Tugas Penjemputan Diserahkan ke Tim",
+    note: notes || `Kurir ${user.userName} menyimpan progres dan mengembalikan tugas penjemputan ke pool untuk dilanjutkan rekan kurir.`,
+    author: user.userName,
+    type: "STATUS_CHANGE",
+  };
+
+  const updatedAcceptance = {
+    ...(order.taskAcceptance || {}),
+    ["Jemput Dokumen"]: {
+      status: "PENDING" as const,
+      isLocked: false,
+    },
+  };
+
+  const success = orderStore.updateOrder(orderNo, {
+    messenger: "Belum Ditugaskan",
+    assignedMessengerName: "Belum Ditugaskan",
+    assignedMessengerId: undefined,
+    taskAcceptance: updatedAcceptance,
+    messengerTimeline: [timelineEvent, ...(order.messengerTimeline || [])],
+  });
+
+  if (typeof fetch !== "undefined") {
+    const token = typeof localStorage !== "undefined" ? localStorage.getItem("auth_token") : null;
+    fetch(`${APP_CONFIG.apiBaseUrl}/orders/${encodeURIComponent(orderNo)}/pickup/release`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+      body: JSON.stringify({ notes }),
+    }).catch(() => {});
+  }
+
+  return { success, error: success ? undefined : "Gagal melepaskan tugas penjemputan" };
+}
+
+/**
+ * Start Delivery Task Action (Scope A)
+ */
+export function startDeliveryTaskAction(
+  orderNo: string,
+  user: UserContext
+): { success: boolean; error?: string } {
+  const order = orderStore.getOrderByNo(orderNo);
+  if (!order) return { success: false, error: `Order ${orderNo} tidak ditemukan` };
+
+  if ((order as any).isCancelled || order.currentStageName === "Dibatalkan" || (order as any).status === "Dibatalkan") {
+    return { success: false, error: `Order ${orderNo} sudah dibatalkan.` };
+  }
+  if (order.currentStep !== 7 && order.currentStageName !== "Pengantaran") {
+    return {
+      success: false,
+      error: `Pengantaran berkas hanya dapat dimulai pada tahap Pengantaran (Step 7), saat ini berada di Step ${order.currentStep}.`,
+    };
+  }
+
+  const authCheck = checkTaskOwnership(order, user, "Pengantaran Dokumen");
+  if (!authCheck.allowed) return { success: false, error: authCheck.error };
+
+  if (order.deliveryStatus === "Dokumen Diserahkan" || order.isReceived) {
+    return { success: false, error: `Pengantaran berkas untuk order ${orderNo} sudah selesai.` };
+  }
+
+  // Idempotency: Already started
+  if (order.deliveryStatus === "Sedang Diantar") {
+    return { success: true };
+  }
+
+  const nowIso = new Date().toISOString();
+  const timelineEvent: MessengerTimelineEvent = {
+    id: `tl-deliv-start-${Date.now()}`,
+    timestamp: nowIso,
+    title: "Mulai Pengantaran Dokumen",
+    note: `Kurir ${user.userName} memulai proses pengantaran dokumen ke klien.`,
+    author: user.userName,
+    type: "STATUS_CHANGE",
+  };
+
+  const existingTimeline = order.messengerTimeline || [];
+  const success = orderStore.updateOrder(orderNo, {
+    deliveryStartedAt: (order as any).deliveryStartedAt || nowIso,
+    deliveryStatus: "Sedang Diantar",
+    messengerTaskStatus: "Dalam Proses",
+    messengerTimeline: [timelineEvent, ...existingTimeline],
+  });
+
+  if (typeof fetch !== "undefined") {
+    const token = typeof localStorage !== "undefined" ? localStorage.getItem("auth_token") : null;
+    fetch(`${APP_CONFIG.apiBaseUrl}/orders/${encodeURIComponent(orderNo)}/delivery/start`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+    }).catch(() => {});
+  }
+
+  return { success, error: success ? undefined : "Gagal memulai pengantaran dokumen" };
+}
+
+/**
+ * Complete Delivery Task Action (Scope B)
+ */
+export function completeDeliveryTaskAction(
+  orderNo: string,
+  payload: {
+    recipientName: string;
+    relationship: string;
+    photoProofUrl?: string;
+    fileName?: string;
+    fileType?: "image" | "pdf";
+    fileSize?: number;
+    notes?: string;
+  },
+  user: UserContext
+): { success: boolean; error?: string } {
+  const order = orderStore.getOrderByNo(orderNo);
+  if (!order) return { success: false, error: `Order ${orderNo} tidak ditemukan` };
+
+  if ((order as any).isCancelled || order.currentStageName === "Dibatalkan" || (order as any).status === "Dibatalkan") {
+    return { success: false, error: `Order ${orderNo} sudah dibatalkan.` };
+  }
+  if (order.currentStep !== 7 && order.currentStageName !== "Pengantaran") {
+    return {
+      success: false,
+      error: `Pengantaran berkas hanya dapat diselesaikan pada tahap Pengantaran (Step 7), saat ini berada di Step ${order.currentStep}.`,
+    };
+  }
+
+  const authCheck = checkTaskOwnership(order, user, "Pengantaran Dokumen");
+  if (!authCheck.allowed) return { success: false, error: authCheck.error };
+
+  const isStarted = order.deliveryStatus === "Sedang Diantar" || order.messengerTaskStatus === "Dalam Proses" || Boolean((order as any).deliveryStartedAt);
+  if (!isStarted) {
+    return { success: false, error: "Pengantaran berkas belum dimulai. Tekan 'Mulai Tugas' terlebih dahulu." };
+  }
+
+  if (order.deliveryStatus === "Dokumen Diserahkan" && order.isReceived) {
+    return { success: true };
+  }
+
+  if (!payload || !payload.recipientName || !payload.recipientName.trim()) {
+    return { success: false, error: "Nama penerima dokumen wajib diisi pada bukti serah terima." };
+  }
+  if (!payload.relationship || !payload.relationship.trim()) {
+    return { success: false, error: "Hubungan penerima dengan customer wajib diisi." };
+  }
+
+  const nowIso = new Date().toISOString();
+  const dateStr = nowIso.split("T")[0];
+  const cleanRecipient = payload.recipientName.trim();
+  const cleanRelationship = payload.relationship.trim();
+
+  const timelineEvent: MessengerTimelineEvent = {
+    id: `tl-deliv-comp-${Date.now()}`,
+    timestamp: nowIso,
+    title: "Serah Terima Dokumen Selesai",
+    note: `Dokumen diserahkan kepada ${cleanRecipient} (${cleanRelationship}).`,
+    author: user.userName,
+    type: "DELIVERY",
+  };
+
+  const existingTimeline = order.messengerTimeline || [];
+  const success = orderStore.updateOrder(orderNo, {
+    deliveryStatus: "Dokumen Diserahkan",
+    isReceived: true,
+    receiverName: cleanRecipient,
+    tanggalDiterima: dateStr,
+    completedAt: nowIso,
+    messengerTaskStatus: "Selesai",
+    deliveryHandover: {
+      recipientName: cleanRecipient,
+      relationship: cleanRelationship,
+      photoProofUrl: payload.photoProofUrl,
+      fileName: payload.fileName,
+      fileType: payload.fileType || "image",
+      fileSize: payload.fileSize || 0,
+      notes: payload.notes,
+      completedAt: nowIso,
+    },
+    messengerTimeline: [timelineEvent, ...existingTimeline],
+  });
+
+  if (typeof fetch !== "undefined") {
+    const token = typeof localStorage !== "undefined" ? localStorage.getItem("auth_token") : null;
+    fetch(`${APP_CONFIG.apiBaseUrl}/orders/${encodeURIComponent(orderNo)}/delivery/complete`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+      body: JSON.stringify(payload),
+    }).catch(() => {});
+  }
+
+  return { success, error: success ? undefined : "Gagal menyelesaikan serah terima dokumen" };
+}
+
+/**
+ * Release Delivery Task to Pool (Scope C)
+ */
+export function releaseDeliveryTaskAction(
+  orderNo: string,
+  user: UserContext,
+  notes?: string
+): { success: boolean; error?: string } {
+  const order = orderStore.getOrderByNo(orderNo);
+  if (!order) return { success: false, error: `Order ${orderNo} tidak ditemukan` };
+
+  const authCheck = checkTaskOwnership(order, user, "Pengantaran Dokumen");
+  if (!authCheck.allowed) return { success: false, error: authCheck.error };
+
+  const nowIso = new Date().toISOString();
+  const timelineEvent: MessengerTimelineEvent = {
+    id: `tl-rel-deliv-${Date.now()}`,
+    timestamp: nowIso,
+    title: "Tugas Pengantaran Diserahkan ke Tim",
+    note: notes || `Kurir ${user.userName} menyimpan progres dan mengembalikan tugas pengantaran ke pool untuk dilanjutkan rekan kurir.`,
+    author: user.userName,
+    type: "STATUS_CHANGE",
+  };
+
+  const updatedAcceptance = {
+    ...(order.taskAcceptance || {}),
+    ["Pengantaran Dokumen"]: {
+      status: "PENDING" as const,
+      isLocked: false,
+    },
+  };
+
+  const success = orderStore.updateOrder(orderNo, {
+    messengerPengantar: "Belum Ditugaskan",
+    deliveryMessengerId: undefined,
+    taskAcceptance: updatedAcceptance,
+    messengerTimeline: [timelineEvent, ...(order.messengerTimeline || [])],
+  } as any);
+
+  if (typeof fetch !== "undefined") {
+    const token = typeof localStorage !== "undefined" ? localStorage.getItem("auth_token") : null;
+    fetch(`${APP_CONFIG.apiBaseUrl}/orders/${encodeURIComponent(orderNo)}/delivery/release`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+      body: JSON.stringify({ notes }),
+    }).catch(() => {});
+  }
+
+  return { success, error: success ? undefined : "Gagal melepaskan tugas pengantaran" };
+}
+
+/**
+ * Start task (Action: Mulai Tugas)
+ * Cleanly routes to the workflow-specific start action.
+ */
 export function startMessengerTask(orderNo: string, user: UserContext): { success: boolean; error?: string } {
   const order = orderStore.getOrderByNo(orderNo);
   if (!order) {
     return { success: false, error: `Order ${orderNo} tidak ditemukan` };
   }
 
-  const authCheck = checkTaskOwnership(order, user);
-  if (!authCheck.allowed) {
-    return { success: false, error: authCheck.error };
-  }
-
   const task = deriveSingleTaskFromOrder(order);
-  const wasUnassigned = isTaskAvailableUnassigned(task);
-
-  const nowIso = new Date().toISOString();
-  const dateStr = nowIso.split("T")[0];
-  const timelineEvent: MessengerTimelineEvent = {
-    id: `tl-${Date.now()}`,
-    timestamp: nowIso,
-    title: wasUnassigned ? `Ambil & Mulai ${task.keteranganTugas}` : `Mulai ${task.keteranganTugas}`,
-    note: wasUnassigned
-      ? `Tugas ${task.keteranganTugas} (${order.layanan}) diambil dan dimulai oleh ${user.userName}`
-      : `Tugas ${task.keteranganTugas} (${order.layanan}) dimulai oleh ${user.userName}`,
-    author: user.userName,
-    type: "STATUS_CHANGE",
-  };
-
-  const existingTimeline = order.messengerTimeline || [];
-  const resolvedEmpId = user.employeeId || resolveMessengerEmployeeId(user.userName) || user.userId || "EMP-MSG-001";
-
-  // Lock task upon starting
-  const updatedAcceptance = {
-    ...(order.taskAcceptance || {}),
-    [task.keteranganTugas]: {
-      status: "ACCEPTED" as const,
-      acceptedAt: (order.taskAcceptance?.[task.keteranganTugas]?.acceptedAt) || nowIso,
-      courierId: resolvedEmpId,
-      courierName: user.userName,
-      isLocked: true,
-    },
-  };
-
-  const updates: Partial<OperationalOrder> = {
-    startedAt: order.startedAt || nowIso,
-    taskAcceptance: updatedAcceptance,
-    messengerTimeline: [timelineEvent, ...existingTimeline],
-  };
-
-  if (order.currentStep <= 3) {
-    updates.messengerTaskStatus = "Sedang Dijemput";
-    if (wasUnassigned) {
-      updates.messenger = user.userName;
-      updates.assignedMessengerName = user.userName;
-      updates.assignedMessengerId = resolvedEmpId;
-      updates.isScheduled = true;
-      if (!order.tanggalJemput) updates.tanggalJemput = dateStr;
-    }
-  } else if (order.currentStep === 4) {
-    if (order.samsatStatus === "Selesai") {
-      // Jemput hasil Samsat
-      updates.samsatPickupStatus = "Sedang Jemput Dokumen Samsat";
-      updates.samsatPickupStartedAt = nowIso;
-      if (wasUnassigned) {
-        updates.samsatPickupMessenger = user.userName;
-        updates.samsatPickupMessengerId = resolvedEmpId;
-      }
-    } else {
-      // Kerjakan Tugas Samsat -> Menuju Samsat
-      updates.samsatStatus = "Menuju Samsat";
-      updates.samsatJourneyStartedAt = nowIso;
-      if (wasUnassigned) {
-        updates.samsatMessenger = user.userName;
-        updates.samsatMessengerId = resolvedEmpId;
-        updates.isSamsatScheduled = true;
-        if (!order.tanggalProsesSamsat) updates.tanggalProsesSamsat = dateStr;
-      }
-    }
-  } else if (order.currentStep === 7) {
-    updates.deliveryStatus = "Sedang Diantar";
-    updates.deliveryStartedAt = nowIso;
-    if (wasUnassigned) {
-      updates.messengerPengantar = user.userName;
-      (updates as any).deliveryMessengerId = resolvedEmpId;
-      updates.isDeliveryScheduled = true;
-      if (!order.tanggalPengantaran) updates.tanggalPengantaran = dateStr;
-    }
-  } else {
-    updates.messengerTaskStatus = "Dalam Proses";
-    if (wasUnassigned) {
-      updates.messenger = user.userName;
-      updates.assignedMessengerName = user.userName;
-      updates.assignedMessengerId = resolvedEmpId;
-    }
+  if (task.keteranganTugas === "Jemput Dokumen") {
+    return startPickupTaskAction(orderNo, user);
+  } else if (task.keteranganTugas === "Proses Samsat") {
+    return startSamsatProcessAction(orderNo, user);
+  } else if (task.keteranganTugas === "Pengantaran Dokumen") {
+    return startDeliveryTaskAction(orderNo, user);
+  } else if (task.keteranganTugas === "Jemput Hasil Samsat") {
+    return startSamsatResultPickup(orderNo, user);
   }
 
-  const success = orderStore.updateOrder(orderNo, updates);
-  return { success, error: success ? undefined : "Gagal memperbarui order di store" };
+  return { success: false, error: `Jenis tugas ${task.keteranganTugas} tidak mendukung aksi mulai tugas` };
 }
 
 function getAuthHeader(): Record<string, string> {
@@ -1192,19 +1715,23 @@ export async function acceptMessengerTaskAction(
   if (!order) return { success: false, error: `Order ${orderNo} tidak ditemukan` };
 
   const nowIso = new Date().toISOString();
-  const resolvedEmpId = user.employeeId || resolveMessengerEmployeeId(user.userName) || user.userId || "EMP-MSG-001";
+  const rawEmpId = typeof user.employeeId === "string" ? user.employeeId.trim() : "";
+  const rawUserId = typeof user.userId === "string" ? user.userId.trim() : "";
+  const resolvedEmpId = rawEmpId || rawUserId;
+  if (!resolvedEmpId || resolvedEmpId === "EMP-MSG" || resolvedEmpId === "Belum Ditugaskan" || resolvedEmpId === "-") {
+    return { success: false, error: "Identitas kurir tidak valid atau tidak terverifikasi." };
+  }
 
   // Double-accept race condition protection
   const existingAcceptance = (order.taskAcceptance || {})[taskType];
   if (
     existingAcceptance?.isLocked &&
     existingAcceptance.courierId &&
-    existingAcceptance.courierId !== resolvedEmpId &&
-    existingAcceptance.courierName !== user.userName
+    existingAcceptance.courierId !== resolvedEmpId
   ) {
     return {
       success: false,
-      error: `Tugas ini sudah diterima dan terkunci oleh kurir lain (${existingAcceptance.courierName}).`,
+      error: `Tugas ini sudah diterima dan terkunci oleh kurir lain (${existingAcceptance.courierName || existingAcceptance.courierId}).`,
     };
   }
 
@@ -1303,7 +1830,12 @@ export async function declineMessengerTaskAction(
   }
 
   const nowIso = new Date().toISOString();
-  const resolvedEmpId = user.employeeId || resolveMessengerEmployeeId(user.userName) || user.userId || "EMP-MSG-001";
+  const rawEmpId = typeof user.employeeId === "string" ? user.employeeId.trim() : "";
+  const rawUserId = typeof user.userId === "string" ? user.userId.trim() : "";
+  const resolvedEmpId = rawEmpId || rawUserId;
+  if (!resolvedEmpId || resolvedEmpId === "EMP-MSG" || resolvedEmpId === "Belum Ditugaskan" || resolvedEmpId === "-") {
+    return { success: false, error: "Identitas kurir tidak valid atau tidak terverifikasi." };
+  }
 
   // Backend API call
   try {
@@ -1660,32 +2192,234 @@ export function completeSamsatResultPickup(
   notes: string | { photoProofUrl?: string; notes?: string } | undefined,
   user: UserContext
 ): { success: boolean; error?: string } {
-  const notesStr = typeof notes === "object" ? notes?.notes : notes;
+  return completeSamsatPickupTaskAction(orderNo, user);
+}
+
+/**
+ * PHASE 4: Report Kendala on Jemput Hasil Samsat
+ * - Gated to assigned messenger or Admin
+ * - Sets structured status to Terkendala
+ * - Strictly NO free-text order.catatanKendala pollution
+ */
+export function reportSamsatPickupKendalaAction(
+  orderNo: string,
+  user: UserContext
+): { success: boolean; error?: string } {
   const order = orderStore.getOrderByNo(orderNo);
   if (!order) return { success: false, error: `Order ${orderNo} tidak ditemukan` };
-  const authCheck = checkTaskOwnership(order, user);
+
+  const authCheck = checkTaskOwnership(order, user, "Jemput Hasil Samsat");
   if (!authCheck.allowed) return { success: false, error: authCheck.error };
+
+  if (order.samsatPickupStatus === "Dokumen Samsat Diterima di Kantor") {
+    return { success: false, error: "Tugas penjemputan hasil Samsat sudah selesai diserahkan ke kantor." };
+  }
+
+  // Idempotency: Already Terkendala
+  if (order.samsatPickupStatus === "Terkendala") {
+    return { success: true };
+  }
 
   const nowIso = new Date().toISOString();
   const timelineEvent: MessengerTimelineEvent = {
-    id: `tl-${Date.now()}`,
+    id: `tl-kendala-pickup-${Date.now()}`,
     timestamp: nowIso,
-    title: "Dokumen Samsat Diserahkan ke Kantor",
-    note: notesStr ? `Catatan: ${notesStr}` : `Dokumen hasil pengurusan Samsat telah diserahkan oleh ${user.userName} ke kantor.`,
+    title: "Kendala Jemput Hasil Samsat",
+    note: "Kurir melaporkan kendala pada penjemputan berkas hasil Samsat. Menunggu instruksi atau recovery dari Admin/Supervisor.",
     author: user.userName,
     type: "STATUS_CHANGE",
   };
-  const existingTimeline = order.messengerTimeline || [];
+
+  const pickupTaskAcc = (order.taskAcceptance || {})["Jemput Hasil Samsat"] || {};
+  const currentCycle = (order as any).samsatCycle || 1;
+
+  const success = orderStore.updateOrder(orderNo, {
+    samsatPickupStatus: "Terkendala",
+    taskAcceptance: {
+      ...(order.taskAcceptance || {}),
+      ["Jemput Hasil Samsat"]: {
+        ...pickupTaskAcc,
+        hasKendala: true,
+        kendalaAt: nowIso,
+        cycle: currentCycle,
+      },
+    },
+    messengerTimeline: [timelineEvent, ...(order.messengerTimeline || [])],
+  } as any);
+
+  if (typeof fetch !== "undefined") {
+    const token = typeof localStorage !== "undefined" ? localStorage.getItem("auth_token") : null;
+    fetch(`${APP_CONFIG.apiBaseUrl}/orders/${encodeURIComponent(orderNo)}/samsat-pickup/kendala`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+    }).catch(() => {});
+  }
+
+  return { success, error: success ? undefined : "Gagal melaporkan kendala penjemputan hasil Samsat" };
+}
+
+/**
+ * PHASE 4: Recover Kendala on Jemput Hasil Samsat
+ * - Gated STRICTLY to Admin / SVP
+ * - Single authoritative HTTP request to backend
+ * - Prevents double request & timeline duplication
+ */
+export async function recoverSamsatPickupKendalaAction(
+  orderNo: string,
+  user: UserContext
+): Promise<{ success: boolean; error?: string }> {
+  const order = orderStore.getOrderByNo(orderNo);
+  if (!order) return { success: false, error: `Order ${orderNo} tidak ditemukan` };
+
+  const role = (user.role || "").toLowerCase();
+  const isAdmin = role === "administrator" || role === "admin" || role === "svp";
+  if (!isAdmin) {
+    return { success: false, error: "Hanya Admin atau Supervisor yang berwenang memulihkan status Kendala." };
+  }
+
+  // Idempotency: Already recovered
+  if (order.samsatPickupStatus === "Sedang Jemput Dokumen Samsat") {
+    return { success: true };
+  }
+  if (order.samsatPickupStatus !== "Terkendala") {
+    return { success: false, error: `Order ${orderNo} tidak dalam status Terkendala.` };
+  }
+
+  // Single authoritative Backend API call
+  let backendOrder: OperationalOrder | null = null;
+  const authHeaders = getAuthHeader();
+  if (authHeaders.Authorization) {
+    try {
+      const res = await fetch(`${APP_CONFIG.apiBaseUrl}/orders/${encodeURIComponent(orderNo)}/samsat-pickup/recover`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          ...authHeaders,
+        },
+      });
+      if (!res.ok) {
+        const errData = await res.json().catch(() => ({}));
+        return {
+          success: false,
+          error: errData.error || errData.message || `Gagal memulihkan kendala (HTTP ${res.status})`,
+        };
+      }
+      const data = await res.json().catch(() => ({}));
+      if (data?.data) {
+        backendOrder = data.data;
+      }
+    } catch (apiErr: any) {
+      console.warn("Backend API call failed for recoverSamsatPickupKendala:", apiErr);
+      return { success: false, error: apiErr.message || "Gagal menghubungi server untuk memulihkan kendala." };
+    }
+  }
+
+  // Update orderStore with authoritative server state (preserves server-generated timeline)
+  if (backendOrder) {
+    orderStore.updateOrder(orderNo, backendOrder);
+    return { success: true };
+  }
+
+  // Standalone / fallback mode without live backend connection (e.g. unit tests)
+  const nowIso = new Date().toISOString();
+  const timelineEvent: MessengerTimelineEvent = {
+    id: `tl-recover-pickup-${Date.now()}`,
+    timestamp: nowIso,
+    title: "Kendala Jemput Hasil Dipulihkan",
+    note: "Status kendala penjemputan berkas hasil Samsat telah diselesaikan dan dipulihkan oleh Admin/Supervisor. Penjemputan dilanjutkan.",
+    author: user.userName,
+    type: "STATUS_CHANGE",
+  };
+
+  const pickupTaskAcc = (order.taskAcceptance || {})["Jemput Hasil Samsat"] || {};
+  const success = orderStore.updateOrder(orderNo, {
+    samsatPickupStatus: "Sedang Jemput Dokumen Samsat",
+    taskAcceptance: {
+      ...(order.taskAcceptance || {}),
+      ["Jemput Hasil Samsat"]: {
+        ...pickupTaskAcc,
+        hasKendala: false,
+        recoveredAt: nowIso,
+        recoveredBy: user.userName,
+      },
+    },
+    messengerTimeline: [timelineEvent, ...(order.messengerTimeline || [])],
+  } as any);
+
+  return { success, error: success ? undefined : "Gagal memulihkan kendala penjemputan hasil Samsat" };
+}
+
+/**
+ * PHASE 4: Complete Jemput Hasil Samsat (Dokumen Diserahkan ke Kantor)
+ * - Gated to assigned messenger or Admin
+ * - Validates that task is not Terkendala
+ * - Does NOT advance order to Step 5
+ */
+export function completeSamsatPickupTaskAction(
+  orderNo: string,
+  user: UserContext
+): { success: boolean; error?: string } {
+  const order = orderStore.getOrderByNo(orderNo);
+  if (!order) return { success: false, error: `Order ${orderNo} tidak ditemukan` };
+
+  const authCheck = checkTaskOwnership(order, user, "Jemput Hasil Samsat");
+  if (!authCheck.allowed) return { success: false, error: authCheck.error };
+
+  if (order.samsatPickupStatus === "Terkendala") {
+    return { success: false, error: "Tugas masih dalam kondisi Terkendala. Harap selesaikan kendala melalui Admin sebelum menyerahkan dokumen." };
+  }
+
+  // Idempotency: Already completed
+  if (order.samsatPickupStatus === "Dokumen Samsat Diterima di Kantor") {
+    return { success: true };
+  }
+
+  const nowIso = new Date().toISOString();
+  const timelineEvent: MessengerTimelineEvent = {
+    id: `tl-pickup-done-office-${Date.now()}`,
+    timestamp: nowIso,
+    title: "Dokumen Hasil Samsat Diterima di Kantor",
+    note: `Berkas hasil proses Samsat telah diserahkan oleh kurir ${user.userName} dan diterima di kantor.`,
+    author: user.userName,
+    type: "STATUS_CHANGE",
+  };
+
+  const pickupTaskAcc = (order.taskAcceptance || {})["Jemput Hasil Samsat"] || {};
+  const currentCycle = (order as any).samsatCycle || 1;
 
   const success = orderStore.updateOrder(orderNo, {
     samsatPickupStatus: "Dokumen Samsat Diterima di Kantor",
     samsatPickupCompletedAt: nowIso,
-    samsatPickupNotes: notesStr?.trim() || undefined,
-    messengerTaskNotes: notesStr?.trim() || order.messengerTaskNotes,
-    messengerTimeline: [timelineEvent, ...existingTimeline],
-  });
+    taskAcceptance: {
+      ...(order.taskAcceptance || {}),
+      ["Jemput Hasil Samsat"]: {
+        ...pickupTaskAcc,
+        status: "COMPLETED",
+        completedAt: nowIso,
+        completedBy: user.userName,
+        completedById: user.employeeId || user.userId,
+        isLocked: true,
+        cycle: currentCycle,
+      },
+    },
+    messengerTimeline: [timelineEvent, ...(order.messengerTimeline || [])],
+  } as any);
 
-  return { success, error: success ? undefined : "Gagal memperbarui status penjemputan hasil Samsat" };
+  if (typeof fetch !== "undefined") {
+    const token = typeof localStorage !== "undefined" ? localStorage.getItem("auth_token") : null;
+    fetch(`${APP_CONFIG.apiBaseUrl}/orders/${encodeURIComponent(orderNo)}/samsat-pickup/complete`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+    }).catch(() => {});
+  }
+
+  return { success, error: success ? undefined : "Gagal menyerahkan berkas hasil Samsat ke kantor" };
 }
 
 /**
@@ -1738,7 +2472,12 @@ export function updateMessengerTaskStatus(
 
   const task = deriveSingleTaskFromOrder(order);
   const wasUnassigned = isTaskAvailableUnassigned(task);
-  const resolvedEmpId = user.employeeId || resolveMessengerEmployeeId(user.userName) || user.userId || "EMP-MSG-001";
+  const rawEmpId = typeof user.employeeId === "string" ? user.employeeId.trim() : "";
+  const rawUserId = typeof user.userId === "string" ? user.userId.trim() : "";
+  const resolvedEmpId = rawEmpId || rawUserId;
+  if (!resolvedEmpId || resolvedEmpId === "EMP-MSG" || resolvedEmpId === "Belum Ditugaskan" || resolvedEmpId === "-") {
+    return { success: false, error: "Identitas kurir tidak valid atau tidak terverifikasi." };
+  }
 
   const nowIso = new Date().toISOString();
   const timelineEvent: MessengerTimelineEvent = {
@@ -1954,6 +2693,19 @@ export function updateMessengerComponent(
     return { success: false, error: authCheck.error };
   }
 
+  // Pre-start component mutation guard (RISK-P2-01)
+  if (
+    user.role === "messenger" &&
+    order.samsatStatus !== "Sedang Proses Samsat" &&
+    order.samsatStatus !== "Menuju Samsat" &&
+    order.samsatStatus !== "Di Lokasi Samsat"
+  ) {
+    return {
+      success: false,
+      error: "Komponen Samsat tidak dapat dimodifikasi sebelum proses Samsat resmi dimulai.",
+    };
+  }
+
   // Validate waiting reason on component
   if (updates.status === "WAITING" && (!updates.waitingReason || !updates.waitingReason.trim())) {
     return {
@@ -2059,6 +2811,19 @@ export function uploadMessengerEvidence(
   const authCheck = checkTaskOwnership(order, user);
   if (!authCheck.allowed) {
     return { success: false, error: authCheck.error };
+  }
+
+  // Pre-start component mutation guard (RISK-P2-01)
+  if (
+    user.role === "messenger" &&
+    order.samsatStatus !== "Sedang Proses Samsat" &&
+    order.samsatStatus !== "Menuju Samsat" &&
+    order.samsatStatus !== "Di Lokasi Samsat"
+  ) {
+    return {
+      success: false,
+      error: "Komponen Samsat tidak dapat dihapus sebelum proses Samsat resmi dimulai.",
+    };
   }
 
   const currentMap = { ...(order.messengerComponentProgress || {}) };
@@ -2257,8 +3022,8 @@ export function getMasterSamsatComponents(samsatIdOrWilayah?: string): Available
       id: item.id,
       name: item.name,
       category: item.category,
-      basePrice: price,
-      defaultNominal: price,
+      basePrice: price ?? undefined,
+      defaultNominal: price ?? undefined,
     };
   });
 }
@@ -2270,8 +3035,8 @@ export const AVAILABLE_SAMSAT_COMPONENTS: AvailableSamsatComponent[] = pricingSt
     id: item.id,
     name: item.name,
     category: item.category,
-    basePrice: pricingStore.getSamsatPrice("samsat-cibinong", item.id),
-    defaultNominal: pricingStore.getSamsatPrice("samsat-cibinong", item.id),
+    basePrice: pricingStore.getSamsatPrice("samsat-cibinong", item.id) ?? undefined,
+    defaultNominal: pricingStore.getSamsatPrice("samsat-cibinong", item.id) ?? undefined,
   }));
 
 /**
@@ -2299,6 +3064,19 @@ export function addSamsatComponentToOrder(
   const authCheck = checkTaskOwnership(order, user);
   if (!authCheck.allowed) {
     return { success: false, error: authCheck.error };
+  }
+
+  // Pre-start component mutation guard (RISK-P2-01)
+  if (
+    user.role === "messenger" &&
+    order.samsatStatus !== "Sedang Proses Samsat" &&
+    order.samsatStatus !== "Menuju Samsat" &&
+    order.samsatStatus !== "Di Lokasi Samsat"
+  ) {
+    return {
+      success: false,
+      error: "Komponen Samsat tidak dapat ditambahkan sebelum proses Samsat resmi dimulai.",
+    };
   }
 
   const cleanName = component.name.trim();
@@ -2338,7 +3116,7 @@ export function addSamsatComponentToOrder(
     if (matchedMaster) {
       resolvedName = matchedMaster.name;
       category = matchedMaster.category;
-      masterPrice = pricingStore.getSamsatPrice(samsatId, matchedMaster.id);
+      masterPrice = pricingStore.getSamsatPrice(samsatId, matchedMaster.id) ?? 0;
     }
   }
 
@@ -2415,6 +3193,19 @@ export function updateMessengerComponentPrice(
   const authCheck = checkTaskOwnership(order, user);
   if (!authCheck.allowed) {
     return { success: false, error: authCheck.error };
+  }
+
+  // Pre-start component mutation guard (RISK-P2-01)
+  if (
+    user.role === "messenger" &&
+    order.samsatStatus !== "Sedang Proses Samsat" &&
+    order.samsatStatus !== "Menuju Samsat" &&
+    order.samsatStatus !== "Di Lokasi Samsat"
+  ) {
+    return {
+      success: false,
+      error: "Harga komponen Samsat tidak dapat diubah sebelum proses Samsat resmi dimulai.",
+    };
   }
 
   if (newActualPrice < 0 || isNaN(newActualPrice)) {
@@ -2636,6 +3427,180 @@ export function completeMessengerPickup(
 }
 
 /**
+ * Authoritative Samsat Component Completion Validation (Scope 2)
+ * Synchronized with backend validateSamsatCompletion.
+ */
+export function validateSamsatComponents(order: OperationalOrder): {
+  allowed: boolean;
+  code?: string;
+  error?: string;
+  totalComponents: number;
+  completedComponents: number;
+  incompleteComponents: string[];
+} {
+  const serviceId = (order as any).service_id || (order as any).serviceId || "";
+  const layanan = (order.layanan || "").toLowerCase().trim();
+
+  const isExemptService =
+    serviceId === "svc-lainnya" ||
+    serviceId.toUpperCase() === "LAINNYA" ||
+    layanan === "lainnya" ||
+    (order as any).kategoriLayanan === "LAINNYA";
+
+  const componentMap = new Map<string, { id: string; name: string; status: string }>();
+
+  if (Array.isArray(order.samsatProcesses)) {
+    for (const p of order.samsatProcesses) {
+      if (!p || !p.name) continue;
+      const id = String(p.id || p.name).trim();
+      const rawStatus = (p.status || "").trim();
+      let normalizedStatus = "NOT_STARTED";
+      if (rawStatus === "Selesai" || rawStatus === "COMPLETED") {
+        normalizedStatus = "COMPLETED";
+      } else if (rawStatus === "Dalam Proses" || rawStatus === "IN_PROGRESS") {
+        normalizedStatus = "IN_PROGRESS";
+      } else if (rawStatus === "Menunggu" || rawStatus === "WAITING") {
+        normalizedStatus = "WAITING";
+      } else if (rawStatus === "NOT_REQUIRED" || rawStatus === "Tidak Diperlukan") {
+        normalizedStatus = "NOT_STARTED";
+      }
+      componentMap.set(id, { id, name: p.name, status: normalizedStatus });
+    }
+  }
+
+  if (order.messengerComponentProgress && typeof order.messengerComponentProgress === "object") {
+    for (const [id, comp] of Object.entries(order.messengerComponentProgress)) {
+      if (!comp || !comp.name) continue;
+      const rawStatus = (comp.status || "").trim();
+      let normalizedStatus = "NOT_STARTED";
+      if (rawStatus === "COMPLETED" || rawStatus === "Selesai") {
+        normalizedStatus = "COMPLETED";
+      } else if (rawStatus === "IN_PROGRESS" || rawStatus === "Dalam Proses") {
+        normalizedStatus = "IN_PROGRESS";
+      } else if (rawStatus === "WAITING" || rawStatus === "Menunggu") {
+        normalizedStatus = "WAITING";
+      }
+      const compKey = String(comp.componentId || id).trim();
+      componentMap.set(compKey, {
+        id: compKey,
+        name: comp.name,
+        status: normalizedStatus,
+      });
+    }
+  }
+
+  const allComponents = Array.from(componentMap.values());
+
+  if (allComponents.length === 0) {
+    if (isExemptService) {
+      return { allowed: true, totalComponents: 0, completedComponents: 0, incompleteComponents: [] };
+    }
+    return {
+      allowed: false,
+      code: "SAMSAT_COMPONENTS_REQUIRED",
+      error: `Layanan '${order.layanan || serviceId}' mewajibkan komponen loket Samsat. Daftar komponen tidak boleh kosong.`,
+      totalComponents: 0,
+      completedComponents: 0,
+      incompleteComponents: ["(Semua Komponen Wajib Belum Ada)"],
+    };
+  }
+
+  const incomplete = allComponents.filter((c) => c.status !== "COMPLETED");
+  if (incomplete.length > 0) {
+    const incompleteNames = incomplete.map((c) => `${c.name} (${c.status})`).join(", ");
+    return {
+      allowed: false,
+      code: "SAMSAT_COMPONENTS_INCOMPLETE",
+      error: `Terdapat ${incomplete.length} komponen loket Samsat yang belum selesai: ${incompleteNames}. Seluruh komponen wajib selesai (COMPLETED) sebelum menyelesaikan Samsat.`,
+      totalComponents: allComponents.length,
+      completedComponents: allComponents.length - incomplete.length,
+      incompleteComponents: incomplete.map((c) => c.name),
+    };
+  }
+
+  return {
+    allowed: true,
+    totalComponents: allComponents.length,
+    completedComponents: allComponents.length,
+    incompleteComponents: [],
+  };
+}
+
+/**
+ * Messenger Starts Samsat Process Action (Scope 1)
+ */
+export function startSamsatProcessAction(
+  orderNo: string,
+  user: UserContext
+): { success: boolean; error?: string } {
+  const order = orderStore.getOrderByNo(orderNo);
+  if (!order) return { success: false, error: `Order ${orderNo} tidak ditemukan` };
+
+  // Task A: Lifecycle Guard
+  if ((order as any).isCancelled || order.currentStageName === "Dibatalkan" || (order as any).status === "Dibatalkan") {
+    return { success: false, error: `Order ${orderNo} sudah dibatalkan.` };
+  }
+  const isSamsatStage = order.currentStep === 4 || order.currentStageName === "Proses Samsat";
+  if (!isSamsatStage) {
+    return {
+      success: false,
+      error: `Order ${orderNo} berada pada tahap '${order.currentStageName}' (Step ${order.currentStep}), bukan pada tahap Proses Samsat.`,
+    };
+  }
+
+  const authCheck = checkTaskOwnership(order, user);
+  if (!authCheck.allowed) return { success: false, error: authCheck.error };
+
+  const currentCycle = (order as any).samsatCycle || 1;
+  if (order.samsatStatus === "Selesai" && (order as any).samsatCompletedCycle === currentCycle) {
+    return {
+      success: false,
+      error: `Proses Samsat siklus ${currentCycle} untuk order ${orderNo} sudah selesai. Gunakan alur rollback jika perlu pembetulan loket.`,
+    };
+  }
+
+  // Idempotency check: Already started
+  if (
+    order.samsatStatus === "Sedang Proses Samsat" ||
+    order.samsatStatus === "Menuju Samsat" ||
+    order.samsatStatus === "Di Lokasi Samsat"
+  ) {
+    return { success: true };
+  }
+
+  const nowIso = new Date().toISOString();
+  const timelineEvent: MessengerTimelineEvent = {
+    id: `tl-start-${Date.now()}`,
+    timestamp: nowIso,
+    title: "Mulai Proses Samsat",
+    note: `Petugas ${user.userName} memulai proses pengurusan berkas di loket Samsat.`,
+    author: user.userName,
+    type: "STATUS_CHANGE",
+  };
+
+  const existingTimeline = order.messengerTimeline || [];
+  const success = orderStore.updateOrder(orderNo, {
+    samsatStatus: "Sedang Proses Samsat",
+    samsatStartedAt: order.samsatStartedAt || nowIso,
+    samsatJourneyStartedAt: order.samsatJourneyStartedAt || nowIso,
+    messengerTimeline: [timelineEvent, ...existingTimeline],
+  });
+
+  if (typeof fetch !== "undefined") {
+    const token = typeof localStorage !== "undefined" ? localStorage.getItem("auth_token") : null;
+    fetch(`${APP_CONFIG.apiBaseUrl}/orders/${encodeURIComponent(orderNo)}/samsat/start`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+    }).catch(() => {});
+  }
+
+  return { success, error: success ? undefined : "Gagal memulai proses Samsat" };
+}
+
+/**
  * Complete Samsat Process (Kirim Hasil)
  * Transitions Samsat stage when all components are completed
  */
@@ -2649,33 +3614,46 @@ export function completeSamsatProcess(
     return { success: false, error: `Order ${orderNo} tidak ditemukan` };
   }
 
+  // Task A: Lifecycle Guard
+  if ((order as any).isCancelled || order.currentStageName === "Dibatalkan" || (order as any).status === "Dibatalkan") {
+    return { success: false, error: `Order ${orderNo} sudah dibatalkan.` };
+  }
+  const isSamsatStage = order.currentStep === 4 || order.currentStageName === "Proses Samsat";
+  if (!isSamsatStage) {
+    return {
+      success: false,
+      error: `Order ${orderNo} berada pada tahap '${order.currentStageName}' (Step ${order.currentStep}), bukan pada tahap Proses Samsat.`,
+    };
+  }
+
   const authCheck = checkTaskOwnership(order, user);
   if (!authCheck.allowed) {
     return { success: false, error: authCheck.error };
   }
 
+  // Authoritative Component Validation (Scope 2)
+  const valResult = validateSamsatComponents(order);
+  if (!valResult.allowed) {
+    return { success: false, error: valResult.error };
+  }
+
+  const currentCycle = (order as any).samsatCycle || 1;
+
+  // Idempotency: Already completed in current cycle
+  if (order.samsatStatus === "Selesai" && (order as any).samsatCompletedCycle === currentCycle) {
+    return { success: true };
+  }
+
   const nowIso = new Date().toISOString();
-  const timelineEvent: MessengerTimelineEvent = {
-    id: `tl-${Date.now()}`,
-    timestamp: nowIso,
-    title: "Proses Samsat Selesai (Kirim Hasil)",
-    note: note || "Seluruh tahapan komponen pengurusan di loket Samsat telah selesai diproses.",
-    author: user.userName,
-    type: "STATUS_CHANGE",
-  };
-
-  const existingTimeline = order.messengerTimeline || [];
-
-  // Check if auto spawn already exists to prevent duplication (Requirement #8)
-  const isAlreadySpawned = Boolean(
-    order.taskAcceptance?.["Jemput Hasil Samsat"] ||
-    existingTimeline.some((e) => e.title?.includes("Tugas Otomatis: Jemput Hasil Samsat"))
+  const currentPickupTask = (order.taskAcceptance || {})["Jemput Hasil Samsat"];
+  const isSpawnedForCurrentCycle = Boolean(
+    currentPickupTask && (currentPickupTask as any).cycle === currentCycle
   );
 
   const timelineEventsToPrepend: MessengerTimelineEvent[] = [];
-  if (!isAlreadySpawned) {
+  if (!isSpawnedForCurrentCycle) {
     timelineEventsToPrepend.push({
-      id: `tl-spawn-${Date.now()}`,
+      id: `tl-spawn-pickup-c${currentCycle}-${Date.now()}`,
       timestamp: nowIso,
       title: "Tugas Otomatis: Jemput Hasil Samsat",
       note: "Sistem otomatis membuat tugas penjemputan berkas hasil Samsat ke kantor (tersedia bagi kurir).",
@@ -2683,25 +3661,53 @@ export function completeSamsatProcess(
       type: "STATUS_CHANGE",
     });
   }
-  timelineEventsToPrepend.push(timelineEvent);
+
+  timelineEventsToPrepend.push({
+    id: `tl-samsat-done-c${currentCycle}-${Date.now()}`,
+    timestamp: nowIso,
+    title: "Proses Samsat Selesai (Kirim Hasil)",
+    note: note || "Seluruh tahapan komponen pengurusan di loket Samsat telah selesai diproses.",
+    author: user.userName,
+    type: "STATUS_CHANGE",
+  });
+
+  const existingTimeline = order.messengerTimeline || [];
 
   const updatedAcceptance = {
     ...(order.taskAcceptance || {}),
     ["Jemput Hasil Samsat"]: {
       status: "PENDING" as const,
       isLocked: false,
+      spawnedAt: nowIso,
+      cycle: currentCycle,
     },
   };
 
-  // Update samsat status to "Selesai" and setup samsatPickupStatus without premature advanceOrder
+  // Update in-memory orderStore
   const success = orderStore.updateOrder(orderNo, {
     samsatStatus: "Selesai",
     samsatCompletedAt: nowIso,
-    samsatPickupStatus: "Belum Dijadwal",
+    samsatCompletedCycle: currentCycle,
+    samsatPickupStatus: order.samsatPickupStatus && order.samsatPickupStatus !== "Belum Dijadwal"
+      ? order.samsatPickupStatus
+      : "Belum Dijadwal",
     taskAcceptance: updatedAcceptance,
     messengerTaskNotes: note?.trim() || order.messengerTaskNotes,
     messengerTimeline: [...timelineEventsToPrepend, ...existingTimeline],
   });
+
+  // Call Express backend endpoint asynchronously for complete synchronization
+  if (typeof fetch !== "undefined") {
+    const token = typeof localStorage !== "undefined" ? localStorage.getItem("auth_token") : null;
+    fetch(`${APP_CONFIG.apiBaseUrl}/orders/${encodeURIComponent(orderNo)}/samsat/complete`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+      body: JSON.stringify({ note: note?.trim() }),
+    }).catch(() => {});
+  }
 
   if (success) {
     try {
@@ -2712,7 +3718,7 @@ export function completeSamsatProcess(
         action: "UPDATE",
         module: "Proses Samsat",
         details: `Pengurusan Samsat untuk order ${orderNo} dinyatakan selesai oleh ${user.userName}`,
-        metadata: { orderNo },
+        metadata: { orderNo, cycle: currentCycle },
       });
     } catch {}
   }
@@ -2731,6 +3737,11 @@ export function releaseSamsatTaskAction(
 ): { success: boolean; error?: string } {
   const order = orderStore.getOrderByNo(orderNo);
   if (!order) return { success: false, error: "Order tidak ditemukan" };
+
+  const authCheck = checkTaskOwnership(order, user);
+  if (!authCheck.allowed) {
+    return { success: false, error: authCheck.error };
+  }
 
   const nowIso = new Date().toISOString();
   const timelineEvent: MessengerTimelineEvent = {
@@ -2753,7 +3764,7 @@ export function releaseSamsatTaskAction(
   const success = orderStore.updateOrder(orderNo, {
     samsatMessenger: "Belum Ditugaskan",
     samsatMessengerNama: "Belum Ditugaskan",
-    samsatMessengerId: "Belum Ditugaskan",
+    samsatMessengerId: undefined,
     taskAcceptance: updatedAcceptance,
     messengerTimeline: [timelineEvent, ...(order.messengerTimeline || [])],
   });

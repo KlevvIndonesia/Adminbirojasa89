@@ -236,6 +236,7 @@ export async function previewDocument(
     res.setHeader("Content-Length", doc.sizeBytes);
     res.setHeader("Accept-Ranges", "bytes");
     res.setHeader("X-Content-Type-Options", "nosniff");
+    res.setHeader("Referrer-Policy", "no-referrer");
     res.setHeader("Cache-Control", "private, no-cache, no-store, must-revalidate");
 
     stream.pipe(res);
@@ -261,6 +262,7 @@ export async function downloadDocument(
     );
     res.setHeader("Content-Length", doc.sizeBytes);
     res.setHeader("X-Content-Type-Options", "nosniff");
+    res.setHeader("Referrer-Policy", "no-referrer");
     res.setHeader("Cache-Control", "private, no-cache, no-store, must-revalidate");
     res.setHeader("Content-Security-Policy", "default-src 'none'; sandbox;");
 

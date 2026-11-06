@@ -94,7 +94,7 @@ export function getHargaDasarItem(key: string, samsatWilayah?: string): number {
   if (pricingItemId) {
     const samsatId = samsatWilayah ? resolveSamsatId(samsatWilayah) : "samsat-jakarta-timur";
     const storePrice = pricingStore.getSamsatPrice(samsatId, pricingItemId);
-    if (storePrice !== undefined && storePrice > 0) {
+    if (storePrice !== null && storePrice !== undefined && typeof storePrice === "number" && !isNaN(storePrice) && storePrice >= 0) {
       return storePrice;
     }
   }

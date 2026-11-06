@@ -1,11 +1,12 @@
 import React, { useRef } from "react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "./ui/dialog";
 import { Button } from "./ui/button";
-import { Printer, Download, MessageCircle, FileCheck, CheckCircle2 } from "lucide-react";
+import { Printer, Download, MessageCircle, FileCheck, CheckCircle2, AlertTriangle } from "lucide-react";
 import { toast } from "sonner";
 import { LOGO_SUN89_BASE64 } from "../assets/logoSun89Base64";
 import { formatRupiah, formatDateDDMMYYYY, angkaKeTerbilang } from "../utils/financeFormatters";
 import { printA5Document } from "../utils/printA5Iframe";
+import { validateDocumentFinancialData } from "../../domain/finance/types";
 
 export interface KwitansiData {
   orderNo?: string;
@@ -49,11 +50,17 @@ export function KwitansiA5Dialog({ open, onOpenChange, data }: KwitansiA5DialogP
   const invoiceNo = data["No Invoice"] || data.invoice || data.invoiceNo || (orderNo ? `INV/${orderNo.replace(/^ORD-/, "")}` : "INV-001");
   const kwitansiNo = data.kwitansiNo || `KW/${orderNo.replace(/^ORD-/, "")}/${data.paymentId || "01"}`;
 
+
+
+
+
+  const val = validateDocumentFinancialData(data);
   const nominal = Number(data.nominal ?? data.amount ?? data.lunasAmount ?? 0);
-  const totalTagihan = Number(data.totalTagihan ?? data["Total Tagihan Konsumen"] ?? (nominal + Number(data.sisaTagihan ?? 0)));
-  const totalDibayar = Number(data.totalDibayar ?? data.dibayar ?? data["Uang Masuk dari Konsumen"] ?? nominal);
-  const sisaTagihan = Number(data.sisaTagihan ?? data.kekurangan ?? data.sisa ?? Math.max(0, totalTagihan - totalDibayar));
-  const isLunas = sisaTagihan <= 0;
+
+  const totalTagihan = val.total;
+  const totalDibayar = val.dibayar;
+  const sisaTagihan = val.sisa;
+  const isLunas = val.isLunas;
 
   const metode = data.metodePembayaran || data.metode || data.paymentMethod || "Transfer BCA";
   const phone = data.nomorHP || data.noHp || data["No HP / WhatsApp"] || data.phone || "";
@@ -66,16 +73,28 @@ export function KwitansiA5Dialog({ open, onOpenChange, data }: KwitansiA5DialogP
   const kwitansiFileName = `${cleanOrder} - ${cleanCustomer} - ${cleanNopol} (Kwitansi)`;
 
   const handlePrint = () => {
+    if (!val.isValidToPrint) {
+      toast.error(val.validationErrorMessage || "Kwitansi tidak dapat dicetak karena data pembayaran tidak valid atau rincian belum lengkap.");
+      return;
+    }
     printA5Document(printAreaRef.current, kwitansiFileName);
     toast.success("Kwitansi siap dicetak!");
   };
 
   const handleDownload = () => {
+    if (!val.isValidToPrint) {
+      toast.error(val.validationErrorMessage || "Kwitansi tidak dapat diunduh karena data pembayaran tidak valid.");
+      return;
+    }
     printA5Document(printAreaRef.current, kwitansiFileName);
     toast.info("Pilih 'Save as PDF' di dialog cetak browser (nama file terisi otomatis).");
   };
 
   const handleSendWhatsApp = () => {
+    if (!val.isValidToPrint) {
+      toast.error(val.validationErrorMessage || "Tidak dapat mengirim kwitansi melalui WhatsApp karena data pembayaran belum valid.");
+      return;
+    }
     if (!phone || !phone.trim() || phone === "-") {
       toast.warning("Nomor WhatsApp konsumen tidak tersedia.");
       return;
@@ -86,7 +105,13 @@ export function KwitansiA5Dialog({ open, onOpenChange, data }: KwitansiA5DialogP
     } else if (cleanPhone.startsWith("8")) {
       cleanPhone = "62" + cleanPhone;
     }
-    const messageText = `Halo Bpk/Ibu ${customer},\n\nTerima kasih, pembayaran pengurusan dokumen kendaraan Anda telah kami terima dengan rincian sbb:\n\n• *Nomor Kwitansi* : ${kwitansiNo}\n• *Nomor Order*    : ${orderNo}\n• *Nomor Polisi*   : ${String(nopol).toUpperCase()}\n• *Jenis Layanan*  : ${layanan}\n• *Setoran Diterima*: *${formatRupiah(nominal)}* (${metode})\n• *Total Masuk*    : ${formatRupiah(totalDibayar)}\n• *Sisa Tagihan*   : *${isLunas ? "LUNAS (Rp 0)" : formatRupiah(sisaTagihan)}*\n\nStatus Pembayaran: *${isLunas ? "LUNAS (100%)" : "KURANG BAYAR"}*\n\nSalam,\n*Biro Jasa SUN89*`;
+    const statusText = !val.isValidToPrint
+      ? "DATA TIDAK VALID / BELUM LENGKAP"
+      : (isLunas ? "LUNAS (100%)" : "KURANG BAYAR");
+    const sisaText = !val.isValidToPrint
+      ? "Belum Dikonfigurasi"
+      : (isLunas ? "LUNAS (Rp 0)" : formatRupiah(sisaTagihan));
+    const messageText = `Halo Bpk/Ibu ${customer},\n\nTerima kasih, pembayaran pengurusan dokumen kendaraan Anda telah kami terima dengan rincian sbb:\n\n• *Nomor Kwitansi* : ${kwitansiNo}\n• *Nomor Order*    : ${orderNo}\n• *Nomor Polisi*   : ${String(nopol).toUpperCase()}\n• *Jenis Layanan*  : ${layanan}\n• *Setoran Diterima*: *${formatRupiah(nominal)}* (${metode})\n• *Total Masuk*    : ${formatRupiah(totalDibayar)}\n• *Sisa Tagihan*   : *${sisaText}*\n\nStatus Pembayaran: *${statusText}*\n\nSalam,\n*Biro Jasa SUN89*`;
     const waUrl = `https://wa.me/${cleanPhone}?text=${encodeURIComponent(messageText)}`;
     window.open(waUrl, "_blank");
     toast.success(`Membuka WhatsApp untuk mengirim kwitansi ke ${customer}`);
@@ -194,7 +219,7 @@ export function KwitansiA5Dialog({ open, onOpenChange, data }: KwitansiA5DialogP
                   <div>
                     <p className="text-[9px] text-slate-500 uppercase font-semibold">Sisa Tagihan</p>
                     <p className={`text-xs font-bold font-mono mt-0.5 ${isLunas ? "text-emerald-700 font-black" : "text-rose-600"}`}>
-                      {isLunas ? "LUNAS (Rp 0)" : formatRupiah(sisaTagihan)}
+                      {!val.isValidToPrint ? "Belum Dikonfigurasi" : (isLunas ? "LUNAS (Rp 0)" : formatRupiah(sisaTagihan))}
                     </p>
                   </div>
                 </div>
@@ -206,12 +231,18 @@ export function KwitansiA5Dialog({ open, onOpenChange, data }: KwitansiA5DialogP
               {/* Stamp & Notice */}
               <div className="space-y-1">
                 <div className={`inline-flex items-center gap-1.5 px-3 py-1 rounded border-2 font-black text-xs uppercase tracking-wider ${
-                  isLunas 
-                    ? "border-emerald-600 text-emerald-700 bg-emerald-50"
-                    : "border-amber-500 text-amber-700 bg-amber-50"
+                  !val.isValidToPrint
+                    ? "border-rose-500 text-rose-700 bg-rose-50"
+                    : (isLunas 
+                      ? "border-emerald-600 text-emerald-700 bg-emerald-50"
+                      : "border-amber-500 text-amber-700 bg-amber-50")
                 }`}>
                   <CheckCircle2 className="w-3.5 h-3.5" />
-                  <span>{isLunas ? "LUNAS RESMI" : "DITERIMA SEBAGIAN"}</span>
+                  <span>
+                    {!val.isValidToPrint
+                      ? "DATA TIDAK VALID"
+                      : (isLunas ? "LUNAS RESMI" : "DITERIMA SEBAGIAN")}
+                  </span>
                 </div>
                 <p className="text-[8px] text-slate-400 italic">
                   * Pembayaran sah apabila disertai stempel resmi Biro Jasa SUN89.
@@ -255,6 +286,7 @@ export function KwitansiA5Dialog({ open, onOpenChange, data }: KwitansiA5DialogP
               variant="outline"
               size="sm"
               onClick={handleSendWhatsApp}
+              disabled={!val.isValidToPrint}
               className="text-xs gap-1.5 text-emerald-600 dark:text-emerald-400 border-emerald-500/40 hover:bg-emerald-500/10 font-semibold"
             >
               <MessageCircle className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400" />
@@ -266,6 +298,7 @@ export function KwitansiA5Dialog({ open, onOpenChange, data }: KwitansiA5DialogP
               variant="outline"
               size="sm"
               onClick={handleDownload}
+              disabled={!val.isValidToPrint}
               className="text-xs gap-1.5 font-medium"
             >
               <Download className="w-3.5 h-3.5" />
@@ -276,6 +309,7 @@ export function KwitansiA5Dialog({ open, onOpenChange, data }: KwitansiA5DialogP
               type="button"
               size="sm"
               onClick={handlePrint}
+              disabled={!val.isValidToPrint}
               className="text-xs gap-1.5 bg-primary text-primary-foreground font-semibold shadow-xs"
             >
               <Printer className="w-3.5 h-3.5" />

@@ -175,9 +175,11 @@ export function validateOrderUpdatePayload(req: Request, res: Response, next: Ne
 
 /**
  * Validates Order Stage Advance / Rollback Payload
+ * Protects server-controlled immutable lifecycle & identity fields while
+ * delegating stage-specific transition rules to orderService.
  */
 export function validateStageTransitionPayload(req: Request, res: Response, next: NextFunction): void {
-  const { targetStage } = req.body || {};
+  const { targetStage, updates } = req.body || {};
 
   if (!targetStage || typeof targetStage !== "string" || !STAGES.includes(targetStage as StageName)) {
     res.status(400).json({
@@ -191,12 +193,176 @@ export function validateStageTransitionPayload(req: Request, res: Response, next
     return;
   }
 
+  if (updates !== undefined && updates !== null) {
+    if (typeof updates !== "object" || Array.isArray(updates)) {
+      res.status(400).json({
+        success: false,
+        error: {
+          code: "VALIDATION_ERROR",
+          message: "Field 'updates' harus berupa JSON object.",
+        },
+        timestamp: new Date().toISOString(),
+      });
+      return;
+    }
+
+    // Strictly forbid client manipulation of server-controlled lifecycle, step identity, and cost verification
+    const forbiddenLifecycleKeys = [
+      "orderNo", "order_no",
+      "id",
+      "createdAt", "created_at",
+      "updatedAt", "updated_at",
+      "isArchived", "is_archived",
+      "isCancelled", "is_cancelled",
+      "cancelledAt", "cancelled_at",
+      "cancelledBy", "cancelled_by",
+      "cancellationReason", "cancellation_reason",
+      "currentStep", "current_step", "step", "tahap",
+      "currentStageName", "current_stage_name", "stage",
+      // Actor identity protection (Patch C): actor attribution is strictly server-controlled
+      "actorEmployeeId", "actor_employee_id", "diubah_oleh_employee_id", "actorId", "actor_id", "employeeId", "employee_id",
+      // Cost verification protection: strictly reserved for /verify-cost endpoint
+      "isCostVerified", "is_cost_verified",
+      "costCompletenessStatus", "cost_completeness_status",
+      "costVerifiedAt", "cost_verified_at",
+      "costVerifiedBy", "cost_verified_by",
+      "costSnapshot", "cost_snapshot",
+      // Service Requirements Snapshot protection (Patch D)
+      "serviceRequirementsSnapshot", "service_requirements_snapshot",
+      "requirementsSnapshot", "requirements_snapshot",
+    ];
+
+    for (const key of forbiddenLifecycleKeys) {
+      if (key in updates && (updates as Record<string, any>)[key] !== undefined) {
+        res.status(403).json({
+          success: false,
+          error: {
+            code: "PROTECTED_FIELD_VIOLATION",
+            message: `Properti '${key}' dilindungi sistem dan tidak boleh diatur secara langsung. Tahapan dan nomor urut dikelola server.`,
+          },
+          timestamp: new Date().toISOString(),
+        });
+        return;
+      }
+    }
+  }
+
   next();
 }
 
 /**
  * Validates Finance Invoice Payment Payload
  */
+/**
+ * Validates Order Cost Verification Payload
+ * POST /api/orders/:orderNo/verify-cost
+ */
+export function validateOrderCostVerificationPayload(req: Request, res: Response, next: NextFunction): void {
+  const body = req.body;
+  if (!body || typeof body !== "object" || Array.isArray(body)) {
+    res.status(400).json({
+      success: false,
+      error: { code: "VALIDATION_ERROR", message: "Request body harus berupa JSON object." },
+      timestamp: new Date().toISOString(),
+    });
+    return;
+  }
+
+  // Reject client-forged server metadata properties
+  const forbiddenKeys = [
+    "isCostVerified", "is_cost_verified",
+    "costCompletenessStatus", "cost_completeness_status",
+    "costVerifiedAt", "cost_verified_at",
+    "costVerifiedBy", "cost_verified_by"
+  ];
+  for (const k of forbiddenKeys) {
+    if (k in body && body[k] !== undefined) {
+      res.status(403).json({
+        success: false,
+        error: {
+          code: "FORBIDDEN_PROPERTY",
+          message: `Properti '${k}' tidak boleh dimanipulasi oleh client. Identitas dan waktu verifikasi ditetapkan oleh server.`
+        },
+        timestamp: new Date().toISOString(),
+      });
+      return;
+    }
+  }
+
+  const { finalBiayaSamsat, finalTotalBiaya, notes } = body;
+
+  // Validate finalBiayaSamsat if provided
+  if (finalBiayaSamsat !== undefined && finalBiayaSamsat !== null) {
+    const num = Number(finalBiayaSamsat);
+    if (!Number.isFinite(num) || num < 0 || isNaN(num)) {
+      res.status(400).json({
+        success: false,
+        error: { code: "INVALID_COST_PAYLOAD", message: "finalBiayaSamsat harus berupa angka positif atau nol yang valid." },
+        timestamp: new Date().toISOString(),
+      });
+      return;
+    }
+    body.finalBiayaSamsat = num;
+  }
+
+  // Validate finalTotalBiaya if provided
+  if (finalTotalBiaya !== undefined && finalTotalBiaya !== null) {
+    const num = Number(finalTotalBiaya);
+    if (!Number.isFinite(num) || num < 0 || isNaN(num)) {
+      res.status(400).json({
+        success: false,
+        error: { code: "INVALID_COST_PAYLOAD", message: "finalTotalBiaya harus berupa angka positif atau nol yang valid." },
+        timestamp: new Date().toISOString(),
+      });
+      return;
+    }
+    body.finalTotalBiaya = num;
+  }
+
+  // Cross-validation: If both provided, finalTotalBiaya cannot be less than finalBiayaSamsat
+  if (
+    body.finalBiayaSamsat !== undefined &&
+    body.finalBiayaSamsat !== null &&
+    body.finalTotalBiaya !== undefined &&
+    body.finalTotalBiaya !== null
+  ) {
+    if (body.finalTotalBiaya < body.finalBiayaSamsat) {
+      res.status(400).json({
+        success: false,
+        error: {
+          code: "INCONSISTENT_COST_PAYLOAD",
+          message: `finalTotalBiaya (${body.finalTotalBiaya}) tidak boleh lebih kecil dari biaya Samsat (${body.finalBiayaSamsat}).`
+        },
+        timestamp: new Date().toISOString(),
+      });
+      return;
+    }
+  }
+
+  // Validate notes if provided
+  if (notes !== undefined && notes !== null) {
+    if (typeof notes !== "string") {
+      res.status(400).json({
+        success: false,
+        error: { code: "INVALID_NOTES", message: "Catatan (notes) harus berupa teks string." },
+        timestamp: new Date().toISOString(),
+      });
+      return;
+    }
+    if (notes.length > 1000) {
+      res.status(400).json({
+        success: false,
+        error: { code: "NOTES_TOO_LONG", message: "Catatan (notes) maksimal 1000 karakter." },
+        timestamp: new Date().toISOString(),
+      });
+      return;
+    }
+    body.notes = notes.trim();
+  }
+
+  next();
+}
+
 export function validateInvoicePaymentPayload(req: Request, res: Response, next: NextFunction): void {
   try {
     normalizeInvoicePaymentPayload(req.body);

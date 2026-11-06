@@ -234,8 +234,8 @@ test("Operational 5: Complete 15-step isolated backup, restore and disaster reco
 
     // 2. Create known application data (order)
     originDb.prepare(`
-      INSERT INTO orders (order_no, customer, nomor_hp, layanan, nopol, current_step, current_stage_name, payment_status, total_biaya, is_archived, data_json)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO orders (order_no, customer, nomor_hp, layanan, nopol, current_step, current_stage_name, payment_status, total_biaya, is_archived, data_json, samsat_tujuan_id)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
     `).run(
       orderNo,
       "Budi Santoso DR",

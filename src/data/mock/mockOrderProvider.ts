@@ -19,8 +19,11 @@ export interface IOrderDataProvider {
   addOrderAsync?(order: OperationalOrder): Promise<OperationalOrder>;
   updateOrder(orderNo: string, updates: Partial<OperationalOrder>): boolean;
   advanceOrder(orderNo: string, targetStage: StageName, updates: Partial<OperationalOrder>): boolean;
+  advanceOrderAsync?(orderNo: string, targetStage: StageName, updates?: Partial<OperationalOrder>): Promise<OperationalOrder | false>;
   rollbackOrder(orderNo: string, targetStage: StageName, updates: Partial<OperationalOrder>): boolean;
+  rollbackOrderAsync?(orderNo: string, targetStage: StageName, updates?: Partial<OperationalOrder>): Promise<OperationalOrder | false>;
   archiveOrder(orderNo: string): boolean;
+  archiveOrderAsync?(orderNo: string): Promise<boolean>;
   deleteArchivedOrder?(orderNo: string): boolean;
   deleteOrder?(orderNo: string): boolean | Promise<boolean>;
   clearArchivedOrders?(): boolean;
@@ -170,12 +173,22 @@ export class MockOrderProvider implements IOrderDataProvider {
     return true;
   }
 
+  public async advanceOrderAsync(orderNo: string, targetStage: StageName, updates: Partial<OperationalOrder> = {}): Promise<OperationalOrder | false> {
+    const ok = this.advanceOrder(orderNo, targetStage, updates);
+    return ok ? (this.getOrderByNo(orderNo) || false) : false;
+  }
+
   public rollbackOrder(
     orderNo: string,
     targetStage: StageName,
     updates: Partial<OperationalOrder>
   ): boolean {
     return this.advanceOrder(orderNo, targetStage, updates);
+  }
+
+  public async rollbackOrderAsync(orderNo: string, targetStage: StageName, updates: Partial<OperationalOrder> = {}): Promise<OperationalOrder | false> {
+    const ok = this.rollbackOrder(orderNo, targetStage, updates);
+    return ok ? (this.getOrderByNo(orderNo) || false) : false;
   }
 
   public archiveOrder(orderNo: string): boolean {
@@ -199,6 +212,10 @@ export class MockOrderProvider implements IOrderDataProvider {
     });
     this.notify();
     return true;
+  }
+
+  public async archiveOrderAsync(orderNo: string): Promise<boolean> {
+    return this.archiveOrder(orderNo);
   }
 
   public deleteArchivedOrder(orderNo: string): boolean {

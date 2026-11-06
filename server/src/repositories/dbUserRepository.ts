@@ -14,6 +14,7 @@ export interface UserEntity {
   nama: string;
   jabatan: string;
   status: "Aktif" | "Nonaktif";
+  employee_id?: string;
   created_at: string;
   updated_at: string;
 }

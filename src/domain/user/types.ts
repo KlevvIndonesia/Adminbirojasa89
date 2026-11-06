@@ -12,7 +12,15 @@ export interface SystemUser {
   email: string;
   status: "Aktif" | "Nonaktif" | string;
   telepon?: string;
+  phone?: string;
   avatar?: string;
+  wilayah?: string;
+  alamat?: string;
+  employeeId?: string;
+  tanggalLahir?: string;
+  gajiPokok?: number;
+  tanggalBergabung?: string;
+  jenisKelamin?: string;
   lastLogin?: string;
   createdAt?: string;
 }

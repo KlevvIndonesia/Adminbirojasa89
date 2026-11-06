@@ -8,7 +8,7 @@ import type { OperationalOrder } from "../order/types";
 export type MessengerTaskType = "Jemput Dokumen" | "Proses Samsat" | "Jemput Hasil Samsat" | "Pengantaran Dokumen";
 
 // Canonical Task Acceptance Status (Tugas Baru -> Diterima / Ditolak)
-export type MessengerAcceptanceStatus = "PENDING" | "ACCEPTED" | "DECLINED";
+export type MessengerAcceptanceStatus = "PENDING" | "ACCEPTED" | "DECLINED" | "SUPERSEDED";
 
 // Canonical Task Lifecycle Status
 export type TaskLifecycleStatus =
@@ -140,7 +140,7 @@ export interface MessengerTimelineEvent {
   title: string;
   note?: string;
   author: string;
-  type?: "STATUS_CHANGE" | "COMPONENT_UPDATE" | "EVIDENCE_UPLOAD" | "DELIVERY" | "ASSIGNMENT" | "REIMBURSEMENT";
+  type?: "STATUS_CHANGE" | "COMPONENT_UPDATE" | "EVIDENCE_UPLOAD" | "DELIVERY" | "ASSIGNMENT" | "REIMBURSEMENT" | "PROGRESS_UPDATE";
 }
 
 // ==========================================
@@ -172,6 +172,7 @@ export interface ReimbursementItemDetail {
 export interface ReimbursementRequest {
   id: string;
   employeeId: string;
+  messengerId?: string;
   messengerName: string;
   orderNo?: string;
   category: ReimbursementCategory;

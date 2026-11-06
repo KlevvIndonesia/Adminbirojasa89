@@ -1103,138 +1103,143 @@ export function MessengerHistory() {
           </Card>
 
           {/* Completed Tasks Table */}
-          <div className="rounded-xl border border-border/80 bg-card overflow-x-auto shadow-xs">
-            <Table className="w-full min-w-[950px]">
-              <TableHeader className="bg-muted/40 border-b border-border/80">
-                <TableRow className="hover:bg-transparent">
-                  <TableHead className="w-12 h-9 px-3 text-xs font-semibold text-muted-foreground text-center">No</TableHead>
-                  <TableHead className="h-9 px-3 text-xs font-semibold text-muted-foreground">Nomor Order</TableHead>
-                  <TableHead className="h-9 px-3 text-xs font-semibold text-muted-foreground">Customer & Kendaraan</TableHead>
-                  <TableHead className="h-9 px-3 text-xs font-semibold text-muted-foreground">Jenis Pekerjaan</TableHead>
-                  <TableHead className="h-9 px-3 text-xs font-semibold text-muted-foreground">Lokasi / Samsat</TableHead>
-                  <TableHead className="h-9 px-3 text-xs font-semibold text-muted-foreground">Waktu Selesai</TableHead>
-                  <TableHead className="h-9 px-3 text-xs font-semibold text-muted-foreground text-right">Tagihan Order</TableHead>
-                  <TableHead className="h-9 px-3 text-xs font-semibold text-muted-foreground text-center">Biaya Operasional</TableHead>
-                  <TableHead className="h-9 px-3 text-xs font-semibold text-muted-foreground text-center w-[90px]">Aksi</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {paginatedTasks.length > 0 ? (
-                  paginatedTasks.map((task, idx) => {
-                    const taskReimbs = reimbursements.filter((r) => r.orderNo === task.orderNo);
-                    const totalDiajukan = taskReimbs.reduce((acc, r) => acc + r.amount, 0);
-                    const totalPaid = taskReimbs
-                      .filter((r) => r.status === "Dibayar")
-                      .reduce((acc, r) => acc + (r.approvedAmount || r.amount), 0);
-
-                    return (
-                      <TableRow key={task.id} className="hover:bg-muted/30 transition-colors border-b border-border/60 last:border-0 h-12">
-                        <TableCell className="w-12 text-muted-foreground text-center font-mono text-xs">
-                          {(taskPage - 1) * itemsPerPage + idx + 1}
-                        </TableCell>
-                        <TableCell className="font-mono text-primary font-semibold text-xs">
-                          {task.orderNo}
-                        </TableCell>
-                        <TableCell className="text-xs">
-                          <span className="font-semibold text-foreground block">{task.customer}</span>
-                          <div className="flex items-center gap-1.5 mt-0.5">
-                            <span className="font-mono text-[11px] font-bold bg-muted px-1.5 py-0.2 rounded text-foreground">
-                              {task.nopol}
-                            </span>
-                            <span className="text-[10px] text-muted-foreground">• {task.jenisKendaraan}</span>
-                          </div>
-                        </TableCell>
-                        <TableCell className="text-xs">
-                          <Badge
-                            variant="outline"
-                            className={`text-[10px] py-0 px-2 font-medium gap-1 ${
-                              task.taskType === "Jemput Dokumen"
-                                ? "border-blue-500/30 bg-blue-500/10 text-blue-600 dark:text-blue-400"
-                                : task.taskType === "Proses Samsat"
-                                ? "border-purple-500/30 bg-purple-500/10 text-purple-600 dark:text-purple-400"
-                                : "border-emerald-500/30 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400"
-                            }`}
-                          >
-                            {task.taskType === "Jemput Dokumen" && <PackageOpen className="w-3 h-3" />}
-                            {task.taskType === "Proses Samsat" && <Building2 className="w-3 h-3" />}
-                            {task.taskType === "Pengantaran Dokumen" && <Truck className="w-3 h-3" />}
-                            {task.taskType}
-                          </Badge>
-                          <span className="text-[10px] text-muted-foreground block mt-0.5 truncate max-w-[140px]" title={task.layanan}>
-                            {task.layanan}
-                          </span>
-                        </TableCell>
-                        <TableCell className="text-xs text-muted-foreground">
-                          <span className="flex items-center gap-1 text-foreground">
-                            <MapPin className="w-3 h-3 text-muted-foreground shrink-0" />
-                            {task.wilayah}
-                          </span>
-                        </TableCell>
-                        <TableCell className="font-mono text-xs text-foreground">
-                          {formatIsoDateTime(task.completedAt)}
-                        </TableCell>
-                        <TableCell className="text-right text-xs">
-                          <span className="font-mono font-bold text-foreground block">
-                            {formatRupiah(task.totalTagihan)}
-                          </span>
-                          <span className="text-[10px] text-emerald-600 dark:text-emerald-400 font-medium">
-                            {task.statusBayar || "Lunas"}
-                          </span>
-                        </TableCell>
-                        <TableCell className="text-center text-xs">
-                          {taskReimbs.length > 0 ? (
-                            <div>
-                              <span className="font-mono font-semibold text-foreground block">
-                                {formatRupiah(totalDiajukan)}
-                              </span>
-                              <span className="text-[10px] text-muted-foreground block">
-                                {taskReimbs.length} pengajuan ({formatRupiah(totalPaid)} cair)
-                              </span>
-                            </div>
-                          ) : (
-                            <span className="text-[11px] text-muted-foreground italic">
-                              Tidak ada pengajuan
-                            </span>
-                          )}
-                        </TableCell>
-                        <TableCell className="text-center">
-                          <Button
-                            size="sm"
-                            variant="outline"
-                            onClick={() => handleOpenTaskDetail(task)}
-                            className="h-8 px-2.5 text-xs gap-1 hover:border-primary hover:text-primary transition-colors"
-                          >
-                            <Eye className="w-3.5 h-3.5" />
-                            Detail
-                          </Button>
-                        </TableCell>
-                      </TableRow>
-                    );
-                  })
-                ) : (
-                  <TableRow>
-                    <TableCell colSpan={9} className="h-44 text-center">
-                      <EmptyState
-                        icon={CheckCircle2}
-                        title="Belum Ada Tugas Selesai"
-                        description="Belum ada riwayat tugas selesai yang sesuai dengan kriteria filter yang Anda pilih."
-                      />
-                    </TableCell>
+          <div className="rounded-xl border border-border/80 bg-card overflow-hidden shadow-xs flex-1 flex flex-col min-h-0">
+            <div className="w-full flex-1 flex flex-col min-h-0">
+              <Table 
+                containerClassName="overflow-y-auto overflow-x-auto max-h-[calc(100vh-320px)] sm:max-h-[calc(100vh-340px)] min-h-[160px]"
+                className="w-full min-w-[950px]"
+              >
+                <TableHeader className="sticky top-0 z-10 bg-card border-b border-border/80 shadow-2xs">
+                  <TableRow className="hover:bg-transparent">
+                    <TableHead className="w-12 h-9 px-3 text-xs font-semibold text-muted-foreground text-center bg-card">No</TableHead>
+                    <TableHead className="h-9 px-3 text-xs font-semibold text-muted-foreground bg-card">Nomor Order</TableHead>
+                    <TableHead className="h-9 px-3 text-xs font-semibold text-muted-foreground bg-card">Customer & Kendaraan</TableHead>
+                    <TableHead className="h-9 px-3 text-xs font-semibold text-muted-foreground bg-card">Jenis Pekerjaan</TableHead>
+                    <TableHead className="h-9 px-3 text-xs font-semibold text-muted-foreground bg-card">Lokasi / Samsat</TableHead>
+                    <TableHead className="h-9 px-3 text-xs font-semibold text-muted-foreground bg-card">Waktu Selesai</TableHead>
+                    <TableHead className="h-9 px-3 text-xs font-semibold text-muted-foreground text-right bg-card">Tagihan Order</TableHead>
+                    <TableHead className="h-9 px-3 text-xs font-semibold text-muted-foreground text-center bg-card">Biaya Operasional</TableHead>
+                    <TableHead className="h-9 px-3 text-xs font-semibold text-muted-foreground text-center w-[90px] bg-card">Aksi</TableHead>
                   </TableRow>
-                )}
-              </TableBody>
-            </Table>
-          </div>
+                </TableHeader>
+                <TableBody>
+                  {paginatedTasks.length > 0 ? (
+                    paginatedTasks.map((task, idx) => {
+                      const taskReimbs = reimbursements.filter((r) => r.orderNo === task.orderNo);
+                      const totalDiajukan = taskReimbs.reduce((acc, r) => acc + r.amount, 0);
+                      const totalPaid = taskReimbs
+                        .filter((r) => r.status === "Dibayar")
+                        .reduce((acc, r) => acc + (r.approvedAmount || r.amount), 0);
 
-          {/* Task Pagination */}
-          {filteredMessengerTasks.length > itemsPerPage && (
-            <TablePagination
-              currentPage={taskPage}
-              totalItems={filteredMessengerTasks.length}
-              itemsPerPage={itemsPerPage}
-              onPageChange={setTaskPage}
-            />
-          )}
+                      return (
+                        <TableRow key={task.id} className="hover:bg-muted/30 transition-colors border-b border-border/60 last:border-0 h-12">
+                          <TableCell className="w-12 text-muted-foreground text-center font-mono text-xs">
+                            {(taskPage - 1) * itemsPerPage + idx + 1}
+                          </TableCell>
+                          <TableCell className="font-mono text-primary font-semibold text-xs">
+                            {task.orderNo}
+                          </TableCell>
+                          <TableCell className="text-xs">
+                            <span className="font-semibold text-foreground block">{task.customer}</span>
+                            <div className="flex items-center gap-1.5 mt-0.5">
+                              <span className="font-mono text-[11px] font-bold bg-muted px-1.5 py-0.2 rounded text-foreground">
+                                {task.nopol}
+                              </span>
+                              <span className="text-[10px] text-muted-foreground">• {task.jenisKendaraan}</span>
+                            </div>
+                          </TableCell>
+                          <TableCell className="text-xs">
+                            <Badge
+                              variant="outline"
+                              className={`text-[10px] py-0 px-2 font-medium gap-1 ${
+                                task.taskType === "Jemput Dokumen"
+                                  ? "border-blue-500/30 bg-blue-500/10 text-blue-600 dark:text-blue-400"
+                                  : task.taskType === "Proses Samsat"
+                                  ? "border-purple-500/30 bg-purple-500/10 text-purple-600 dark:text-purple-400"
+                                  : "border-emerald-500/30 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400"
+                              }`}
+                            >
+                              {task.taskType === "Jemput Dokumen" && <PackageOpen className="w-3 h-3" />}
+                              {task.taskType === "Proses Samsat" && <Building2 className="w-3 h-3" />}
+                              {task.taskType === "Pengantaran Dokumen" && <Truck className="w-3 h-3" />}
+                              {task.taskType}
+                            </Badge>
+                            <span className="text-[10px] text-muted-foreground block mt-0.5 truncate max-w-[140px]" title={task.layanan}>
+                              {task.layanan}
+                            </span>
+                          </TableCell>
+                          <TableCell className="text-xs text-muted-foreground">
+                            <span className="flex items-center gap-1 text-foreground">
+                              <MapPin className="w-3 h-3 text-muted-foreground shrink-0" />
+                              {task.wilayah}
+                            </span>
+                          </TableCell>
+                          <TableCell className="font-mono text-xs text-foreground">
+                            {formatIsoDateTime(task.completedAt)}
+                          </TableCell>
+                          <TableCell className="text-right text-xs">
+                            <span className="font-mono font-bold text-foreground block">
+                              {formatRupiah(task.totalTagihan)}
+                            </span>
+                            <span className="text-[10px] text-emerald-600 dark:text-emerald-400 font-medium">
+                              {task.statusBayar || "Lunas"}
+                            </span>
+                          </TableCell>
+                          <TableCell className="text-center text-xs">
+                            {taskReimbs.length > 0 ? (
+                              <div>
+                                <span className="font-mono font-semibold text-foreground block">
+                                  {formatRupiah(totalDiajukan)}
+                                </span>
+                                <span className="text-[10px] text-muted-foreground block">
+                                  {taskReimbs.length} pengajuan ({formatRupiah(totalPaid)} cair)
+                                </span>
+                              </div>
+                            ) : (
+                              <span className="text-[11px] text-muted-foreground italic">
+                                Tidak ada pengajuan
+                              </span>
+                            )}
+                          </TableCell>
+                          <TableCell className="text-center">
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              onClick={() => handleOpenTaskDetail(task)}
+                              className="h-8 px-2.5 text-xs gap-1 hover:border-primary hover:text-primary transition-colors"
+                            >
+                              <Eye className="w-3.5 h-3.5" />
+                              Detail
+                            </Button>
+                          </TableCell>
+                        </TableRow>
+                      );
+                    })
+                  ) : (
+                    <TableRow>
+                      <TableCell colSpan={9} className="h-44 text-center">
+                        <EmptyState
+                          icon={CheckCircle2}
+                          title="Belum Ada Tugas Selesai"
+                          description="Belum ada riwayat tugas selesai yang sesuai dengan kriteria filter yang Anda pilih."
+                        />
+                      </TableCell>
+                    </TableRow>
+                  )}
+                </TableBody>
+              </Table>
+            </div>
+
+            {/* Task Pagination */}
+            <div className="border-t border-border/80 p-3 bg-card shrink-0 mt-auto">
+              <TablePagination
+                currentPage={taskPage}
+                totalItems={filteredMessengerTasks.length}
+                itemsPerPage={itemsPerPage}
+                onPageChange={setTaskPage}
+              />
+            </div>
+          </div>
         </motion.div>
       )}
 

@@ -52,18 +52,10 @@ import {
 import { toast } from "sonner";
 import { usePaymentMethods, PaymentMethod } from "../data/paymentMethodStore";
 
-const BANK_OPTIONS = [
-  "BCA",
-  "Mandiri",
-  "BRI",
-  "BNI",
-  "CIMB Niaga",
-  "BSI",
-  "Permata",
+const METODE_PEMBAYARAN_OPTIONS = [
+  "Transfer Bank",
   "Tunai",
-  "QRIS",
-  "Lainnya",
-];
+] as const;
 
 export function MetodePembayaranMaster() {
   const { methods, isLoading, error, isStale, refresh, addMethod, updateMethod, deleteMethod } = usePaymentMethods();
@@ -78,8 +70,8 @@ export function MetodePembayaranMaster() {
   const [discardTargetType, setDiscardTargetType] = useState<"edit" | "add" | null>(null);
 
   const [formData, setFormData] = useState({
-    nama_metode: "",
-    bank: "BCA",
+    nama_metode: "Transfer Bank",
+    bank: "",
     nama_rekening: "",
     nomor_rekening: "",
     status: "Aktif" as "Aktif" | "Nonaktif",
@@ -118,15 +110,30 @@ export function MetodePembayaranMaster() {
     setDiscardTargetType(null);
   };
 
-  const isCash =
-    formData.bank.toLowerCase().includes("tunai") ||
-    formData.bank.toLowerCase() === "cash" ||
-    formData.nama_metode.toLowerCase() === "cash";
+  const isCash = formData.nama_metode === "Tunai";
+
+  const handleMetodeChange = (val: string) => {
+    if (val === "Tunai") {
+      setFormData((prev) => ({
+        ...prev,
+        nama_metode: "Tunai",
+        bank: "Tunai",
+        nama_rekening: "",
+        nomor_rekening: "",
+      }));
+    } else {
+      setFormData((prev) => ({
+        ...prev,
+        nama_metode: "Transfer Bank",
+        bank: prev.bank === "Tunai" ? "" : prev.bank,
+      }));
+    }
+  };
 
   const handleOpenAdd = () => {
     const defaultData = {
-      nama_metode: "",
-      bank: "BCA",
+      nama_metode: "Transfer Bank",
+      bank: "",
       nama_rekening: "",
       nomor_rekening: "",
       status: "Aktif" as "Aktif" | "Nonaktif",
@@ -138,11 +145,19 @@ export function MetodePembayaranMaster() {
 
   const handleOpenEdit = (item: PaymentMethod) => {
     setSelectedItem(item);
+    let mappedMetode = item.nama_metode;
+    const isItemCash =
+      mappedMetode.toLowerCase().includes("tunai") ||
+      mappedMetode.toLowerCase().includes("cash") ||
+      (item.bank && (item.bank.toLowerCase().includes("tunai") || item.bank.toLowerCase().includes("cash")));
+
+    mappedMetode = isItemCash ? "Tunai" : "Transfer Bank";
+
     const initialData = {
-      nama_metode: item.nama_metode,
-      bank: item.bank,
-      nama_rekening: item.nama_rekening || "",
-      nomor_rekening: item.nomor_rekening || "",
+      nama_metode: mappedMetode,
+      bank: isItemCash ? "Tunai" : (item.bank || ""),
+      nama_rekening: isItemCash ? "" : (item.nama_rekening || ""),
+      nomor_rekening: isItemCash ? "" : (item.nomor_rekening || ""),
       status: item.status,
     };
     setFormData(initialData);
@@ -170,23 +185,50 @@ export function MetodePembayaranMaster() {
   const handleAddSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!formData.nama_metode.trim()) {
-      toast.error("Nama metode pembayaran wajib diisi!");
+      toast.error("Metode pembayaran wajib dipilih!");
       return;
     }
-    if (!isCash && formData.bank !== "QRIS" && !formData.nomor_rekening.trim()) {
+
+    if (formData.nama_metode === "Tunai") {
+      try {
+        await addMethod({
+          nama_metode: "Tunai",
+          bank: "Tunai",
+          nama_rekening: "",
+          nomor_rekening: "",
+          status: formData.status,
+        });
+        toast.success("Metode pembayaran 'Tunai' berhasil ditambahkan!");
+        setIsAddOpen(false);
+      } catch (err: any) {
+        toast.error(err.message || "Gagal menambahkan metode pembayaran.");
+      }
+      return;
+    }
+
+    // Transfer Bank validation
+    if (!formData.bank.trim()) {
+      toast.error("Bank / Penyedia wajib diisi untuk transfer bank!");
+      return;
+    }
+    if (!formData.nama_rekening.trim()) {
+      toast.error("Nama pemilik rekening wajib diisi untuk transfer bank!");
+      return;
+    }
+    if (!formData.nomor_rekening.trim()) {
       toast.error("Nomor rekening wajib diisi untuk transfer bank!");
       return;
     }
 
     try {
       await addMethod({
-        nama_metode: formData.nama_metode.trim(),
+        nama_metode: "Transfer Bank",
         bank: formData.bank.trim(),
-        nama_rekening: isCash ? "" : formData.nama_rekening.trim(),
-        nomor_rekening: isCash ? "" : formData.nomor_rekening.trim(),
+        nama_rekening: formData.nama_rekening.trim(),
+        nomor_rekening: formData.nomor_rekening.trim(),
         status: formData.status,
       });
-      toast.success(`Metode pembayaran '${formData.nama_metode}' berhasil ditambahkan!`);
+      toast.success(`Metode pembayaran 'Transfer Bank (${formData.bank.trim()})' berhasil ditambahkan!`);
       setIsAddOpen(false);
     } catch (err: any) {
       toast.error(err.message || "Gagal menambahkan metode pembayaran.");
@@ -196,20 +238,53 @@ export function MetodePembayaranMaster() {
   const handleEditSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!selectedItem) return;
+
     if (!formData.nama_metode.trim()) {
-      toast.error("Nama metode pembayaran wajib diisi!");
+      toast.error("Metode pembayaran wajib dipilih!");
+      return;
+    }
+
+    if (formData.nama_metode === "Tunai") {
+      try {
+        await updateMethod(selectedItem.id, {
+          nama_metode: "Tunai",
+          bank: "Tunai",
+          nama_rekening: "",
+          nomor_rekening: "",
+          status: formData.status,
+        });
+        toast.success("Metode pembayaran 'Tunai' berhasil diperbarui!");
+        setIsEditOpen(false);
+        setSelectedItem(null);
+      } catch (err: any) {
+        toast.error(err.message || "Gagal memperbarui metode pembayaran.");
+      }
+      return;
+    }
+
+    // Transfer Bank validation
+    if (!formData.bank.trim()) {
+      toast.error("Bank / Penyedia wajib diisi untuk transfer bank!");
+      return;
+    }
+    if (!formData.nama_rekening.trim()) {
+      toast.error("Nama pemilik rekening wajib diisi untuk transfer bank!");
+      return;
+    }
+    if (!formData.nomor_rekening.trim()) {
+      toast.error("Nomor rekening wajib diisi untuk transfer bank!");
       return;
     }
 
     try {
       await updateMethod(selectedItem.id, {
-        nama_metode: formData.nama_metode.trim(),
+        nama_metode: "Transfer Bank",
         bank: formData.bank.trim(),
-        nama_rekening: isCash ? "" : formData.nama_rekening.trim(),
-        nomor_rekening: isCash ? "" : formData.nomor_rekening.trim(),
+        nama_rekening: formData.nama_rekening.trim(),
+        nomor_rekening: formData.nomor_rekening.trim(),
         status: formData.status,
       });
-      toast.success(`Metode pembayaran '${formData.nama_metode}' berhasil diperbarui!`);
+      toast.success(`Metode pembayaran 'Transfer Bank (${formData.bank.trim()})' berhasil diperbarui!`);
       setIsEditOpen(false);
       setSelectedItem(null);
     } catch (err: any) {
@@ -252,29 +327,49 @@ export function MetodePembayaranMaster() {
       key: "bank",
       label: "Bank / Saluran",
       filterable: true,
-      filterType: "select",
-      filterOptions: BANK_OPTIONS,
-      render: (val: string) => (
-        <span className="inline-flex items-center px-2 py-0.5 rounded text-[11px] font-medium bg-muted border border-border text-foreground">
-          {val}
-        </span>
-      ),
+      filterType: "text",
+      render: (val: string, item: PaymentMethod) => {
+        const isCashItem =
+          item?.nama_metode?.toLowerCase().includes("tunai") ||
+          item?.nama_metode?.toLowerCase().includes("cash") ||
+          val?.toLowerCase() === "tunai" ||
+          val?.toLowerCase() === "cash";
+        return (
+          <span className="inline-flex items-center px-2 py-0.5 rounded text-[11px] font-medium bg-muted border border-border text-foreground">
+            {isCashItem ? "Tunai (Kas Kantor)" : val}
+          </span>
+        );
+      },
     },
     {
       key: "nama_rekening",
       label: "Nama Pemilik Rekening",
-      render: (val: string) => (
-        <span className="text-xs text-foreground">{val || "-"}</span>
-      ),
+      render: (val: string, item: PaymentMethod) => {
+        const isCashItem =
+          item?.nama_metode?.toLowerCase().includes("tunai") ||
+          item?.nama_metode?.toLowerCase().includes("cash");
+        return (
+          <span className="text-xs text-foreground">
+            {isCashItem ? "-" : (val || "-")}
+          </span>
+        );
+      },
     },
     {
       key: "nomor_rekening",
       label: "Nomor Rekening",
-      render: (val: string) => (
-        <span className="font-mono text-xs font-semibold text-primary">
-          {val || "-"}
-        </span>
-      ),
+      render: (val: string, item: PaymentMethod) => {
+        const isCashItem =
+          item?.nama_metode?.toLowerCase().includes("tunai") ||
+          item?.nama_metode?.toLowerCase().includes("cash");
+        return isCashItem ? (
+          <span className="text-xs text-muted-foreground">-</span>
+        ) : (
+          <span className="font-mono text-xs font-semibold text-primary">
+            {val || "-"}
+          </span>
+        );
+      },
     },
     {
       key: "status",
@@ -400,41 +495,61 @@ export function MetodePembayaranMaster() {
             <div className="space-y-3 p-3.5 rounded-xl border border-border/70 bg-card shadow-2xs">
               <h4 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider flex items-center gap-1.5 pb-2 border-b border-border/60">
                 <CreditCard className="w-3.5 h-3.5 text-primary" />
-                1. Data Metode Pembayaran
+                Data Metode Pembayaran
               </h4>
               <div className="space-y-1.5">
                 <Label className="text-xs font-semibold text-foreground/90">
-                  Nama Metode Pembayaran <span className="text-destructive">*</span>
+                  Metode Pembayaran <span className="text-destructive">*</span>
                 </Label>
-                <Input
-                  required
-                  placeholder="Contoh: Transfer Bank BCA / Cash di Loket"
+                <Select
                   value={formData.nama_metode}
-                  onChange={(e) => setFormData({ ...formData, nama_metode: e.target.value })}
-                  className="bg-input-background border-border h-9 text-xs font-normal"
-                />
+                  onValueChange={handleMetodeChange}
+                >
+                  <SelectTrigger className="bg-input-background border-border h-9 text-xs font-normal">
+                    <SelectValue placeholder="Pilih metode pembayaran" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {METODE_PEMBAYARAN_OPTIONS.map((opt) => (
+                      <SelectItem key={opt} value={opt} className="text-xs">
+                        {opt}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
               </div>
 
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                <div className="space-y-1.5">
-                  <Label className="text-xs font-semibold text-foreground/90">Bank / Penyedia <span className="text-destructive">*</span></Label>
-                  <Select
-                    value={formData.bank}
-                    onValueChange={(val) => setFormData({ ...formData, bank: val })}
-                  >
-                    <SelectTrigger className="bg-input-background border-border h-9 text-xs font-normal">
-                      <SelectValue placeholder="Pilih bank" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {BANK_OPTIONS.map((opt) => (
-                        <SelectItem key={opt} value={opt} className="text-xs">
-                          {opt}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </div>
+              {!isCash ? (
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div className="space-y-1.5">
+                    <Label className="text-xs font-semibold text-foreground/90">
+                      Bank / Penyedia <span className="text-destructive">*</span>
+                    </Label>
+                    <Input
+                      required
+                      placeholder="Contoh: BCA / Mandiri / BRI"
+                      value={formData.bank}
+                      onChange={(e) => setFormData({ ...formData, bank: e.target.value })}
+                      className="bg-input-background border-border h-9 text-xs font-normal"
+                    />
+                  </div>
 
+                  <div className="space-y-1.5">
+                    <Label className="text-xs font-semibold text-foreground/90">Status Awal</Label>
+                    <Select
+                      value={formData.status}
+                      onValueChange={(val: any) => setFormData({ ...formData, status: val })}
+                    >
+                      <SelectTrigger className="bg-input-background border-border h-9 text-xs font-normal">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="Aktif" className="text-xs">Aktif</SelectItem>
+                        <SelectItem value="Nonaktif" className="text-xs">Nonaktif</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                </div>
+              ) : (
                 <div className="space-y-1.5">
                   <Label className="text-xs font-semibold text-foreground/90">Status Awal</Label>
                   <Select
@@ -450,21 +565,22 @@ export function MetodePembayaranMaster() {
                     </SelectContent>
                   </Select>
                 </div>
-              </div>
+              )}
             </div>
 
-            <div className="space-y-3 p-3.5 rounded-xl border border-border/70 bg-card shadow-2xs">
-              <h4 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider flex items-center gap-1.5 pb-2 border-b border-border/60">
-                <Building className="w-3.5 h-3.5 text-primary" />
-                2. Informasi Rekening Bank
-              </h4>
-              {!isCash ? (
+            {!isCash && (
+              <div className="space-y-3 p-3.5 rounded-xl border border-border/70 bg-card shadow-2xs">
+                <h4 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider flex items-center gap-1.5 pb-2 border-b border-border/60">
+                  <Building className="w-3.5 h-3.5 text-primary" />
+                  Informasi Rekening Bank
+                </h4>
                 <div className="space-y-3">
                   <div className="space-y-1.5">
                     <Label className="text-xs font-semibold text-foreground/90">
-                      Nama Pemilik Rekening (a.n.)
+                      Nama Pemilik Rekening (a.n.) <span className="text-destructive">*</span>
                     </Label>
                     <Input
+                      required
                       placeholder="Contoh: PT Biro Jasa SUN89 Abadi"
                       value={formData.nama_rekening}
                       onChange={(e) => setFormData({ ...formData, nama_rekening: e.target.value })}
@@ -477,7 +593,7 @@ export function MetodePembayaranMaster() {
                       Nomor Rekening <span className="text-destructive">*</span>
                     </Label>
                     <Input
-                      required={!isCash && formData.bank !== "QRIS"}
+                      required
                       placeholder="Contoh: 772-019-2831"
                       value={formData.nomor_rekening}
                       onChange={(e) => setFormData({ ...formData, nomor_rekening: e.target.value })}
@@ -485,13 +601,8 @@ export function MetodePembayaranMaster() {
                     />
                   </div>
                 </div>
-              ) : (
-                <div className="p-3 rounded-lg bg-muted/40 border border-border text-xs text-muted-foreground flex items-center gap-2">
-                  <AlertCircle className="w-4 h-4 text-emerald-600 shrink-0" />
-                  <span>Metode Tunai/Cash tidak memerlukan nomor rekening bank.</span>
-                </div>
-              )}
-            </div>
+              </div>
+            )}
 
             <DialogFooter className="pt-2 gap-2 border-t border-border/60">
               <Button
@@ -528,40 +639,61 @@ export function MetodePembayaranMaster() {
             <div className="space-y-3 p-3.5 rounded-xl border border-border/70 bg-card shadow-2xs">
               <h4 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider flex items-center gap-1.5 pb-2 border-b border-border/60">
                 <CreditCard className="w-3.5 h-3.5 text-primary" />
-                1. Data Metode Pembayaran
+                Data Metode Pembayaran
               </h4>
               <div className="space-y-1.5">
                 <Label className="text-xs font-semibold text-foreground/90">
-                  Nama Metode Pembayaran <span className="text-destructive">*</span>
+                  Metode Pembayaran <span className="text-destructive">*</span>
                 </Label>
-                <Input
-                  required
+                <Select
                   value={formData.nama_metode}
-                  onChange={(e) => setFormData({ ...formData, nama_metode: e.target.value })}
-                  className="bg-input-background border-border h-9 text-xs font-normal"
-                />
+                  onValueChange={handleMetodeChange}
+                >
+                  <SelectTrigger className="bg-input-background border-border h-9 text-xs font-normal">
+                    <SelectValue placeholder="Pilih metode pembayaran" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {METODE_PEMBAYARAN_OPTIONS.map((opt) => (
+                      <SelectItem key={opt} value={opt} className="text-xs">
+                        {opt}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
               </div>
 
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                <div className="space-y-1.5">
-                  <Label className="text-xs font-semibold text-foreground/90">Bank / Penyedia <span className="text-destructive">*</span></Label>
-                  <Select
-                    value={formData.bank}
-                    onValueChange={(val) => setFormData({ ...formData, bank: val })}
-                  >
-                    <SelectTrigger className="bg-input-background border-border h-9 text-xs font-normal">
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {BANK_OPTIONS.map((opt) => (
-                        <SelectItem key={opt} value={opt} className="text-xs">
-                          {opt}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </div>
+              {!isCash ? (
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div className="space-y-1.5">
+                    <Label className="text-xs font-semibold text-foreground/90">
+                      Bank / Penyedia <span className="text-destructive">*</span>
+                    </Label>
+                    <Input
+                      required
+                      placeholder="Contoh: BCA / Mandiri / BRI"
+                      value={formData.bank}
+                      onChange={(e) => setFormData({ ...formData, bank: e.target.value })}
+                      className="bg-input-background border-border h-9 text-xs font-normal"
+                    />
+                  </div>
 
+                  <div className="space-y-1.5">
+                    <Label className="text-xs font-semibold text-foreground/90">Status Operasional</Label>
+                    <Select
+                      value={formData.status}
+                      onValueChange={(val: any) => setFormData({ ...formData, status: val })}
+                    >
+                      <SelectTrigger className="bg-input-background border-border h-9 text-xs font-normal">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="Aktif" className="text-xs">Aktif</SelectItem>
+                        <SelectItem value="Nonaktif" className="text-xs">Nonaktif</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                </div>
+              ) : (
                 <div className="space-y-1.5">
                   <Label className="text-xs font-semibold text-foreground/90">Status Operasional</Label>
                   <Select
@@ -577,19 +709,23 @@ export function MetodePembayaranMaster() {
                     </SelectContent>
                   </Select>
                 </div>
-              </div>
+              )}
             </div>
 
-            <div className="space-y-3 p-3.5 rounded-xl border border-border/70 bg-card shadow-2xs">
-              <h4 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider flex items-center gap-1.5 pb-2 border-b border-border/60">
-                <Building className="w-3.5 h-3.5 text-primary" />
-                2. Informasi Rekening Bank
-              </h4>
-              {!isCash ? (
+            {!isCash && (
+              <div className="space-y-3 p-3.5 rounded-xl border border-border/70 bg-card shadow-2xs">
+                <h4 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider flex items-center gap-1.5 pb-2 border-b border-border/60">
+                  <Building className="w-3.5 h-3.5 text-primary" />
+                  Informasi Rekening Bank
+                </h4>
                 <div className="space-y-3">
                   <div className="space-y-1.5">
-                    <Label className="text-xs font-semibold text-foreground/90">Nama Pemilik Rekening</Label>
+                    <Label className="text-xs font-semibold text-foreground/90">
+                      Nama Pemilik Rekening (a.n.) <span className="text-destructive">*</span>
+                    </Label>
                     <Input
+                      required
+                      placeholder="Contoh: PT Biro Jasa SUN89 Abadi"
                       value={formData.nama_rekening}
                       onChange={(e) => setFormData({ ...formData, nama_rekening: e.target.value })}
                       className="bg-input-background border-border h-9 text-xs font-normal"
@@ -597,21 +733,20 @@ export function MetodePembayaranMaster() {
                   </div>
 
                   <div className="space-y-1.5">
-                    <Label className="text-xs font-semibold text-foreground/90">Nomor Rekening</Label>
+                    <Label className="text-xs font-semibold text-foreground/90">
+                      Nomor Rekening <span className="text-destructive">*</span>
+                    </Label>
                     <Input
+                      required
+                      placeholder="Contoh: 772-019-2831"
                       value={formData.nomor_rekening}
                       onChange={(e) => setFormData({ ...formData, nomor_rekening: e.target.value })}
                       className="bg-input-background border-border h-9 text-xs font-mono font-normal"
                     />
                   </div>
                 </div>
-              ) : (
-                <div className="p-3 rounded-lg bg-muted/40 border border-border text-xs text-muted-foreground flex items-center gap-2">
-                  <AlertCircle className="w-4 h-4 text-emerald-600 shrink-0" />
-                  <span>Metode Tunai/Cash tidak memerlukan nomor rekening bank.</span>
-                </div>
-              )}
-            </div>
+              </div>
+            )}
 
             <DialogFooter className="pt-2 gap-2 border-t border-border/60">
               <Button

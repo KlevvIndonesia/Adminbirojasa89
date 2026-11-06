@@ -1,12 +1,15 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useMemo } from "react";
 import { useParams, useNavigate, useLocation } from "react-router";
 import { Card } from "./ui/card";
 import { EnhancedTableWithDialogs, Column } from "./EnhancedTableWithDialogs";
 import { FinanceAddPage } from "./FinanceAddPage";
 import { FinanceDetailPage } from "./FinanceDetailPage";
 import { InvoiceA5Dialog } from "./InvoiceA5Dialog";
+import { FinanceSummary } from "./finance/FinanceSummary";
 import { toast } from "sonner";
 import { AlertTriangle, Loader2, ChevronDown, Check } from "lucide-react";
+import { formatRupiah } from "../utils/financeFormatters";
+import { computeDataPenjualanTotals } from "../../domain/finance/dataPenjualanTotals";
 import { Button } from "./ui/button";
 import { cn } from "./ui/utils";
 import {
@@ -118,13 +121,6 @@ export function DataPenjualan() {
       }
     }
   }, [rawCategory, navigate]);
-
-  const handleTabChange = (val: string) => {
-    if (val === activeTab && location.pathname === `/finance/data-penjualan/${val}`) {
-      return;
-    }
-    navigate(`/finance/data-penjualan/${val}`);
-  };
 
   const [isAdding, setIsAdding] = useState(false);
   const [editingItem, setEditingItem] = useState<{
@@ -252,6 +248,24 @@ export function DataPenjualan() {
   const currentMeta = getActiveTabMeta();
   const tabData = currentMeta.data;
 
+  const [filteredPenjualanData, setFilteredPenjualanData] = useState<any[] | null>(null);
+
+  useEffect(() => {
+    setFilteredPenjualanData(null);
+  }, [activeTab]);
+
+  const handleFilteredDataChange = useCallback((filtered: any[]) => {
+    setFilteredPenjualanData((prev) => {
+      if (!prev && filtered.length === tabData.length && filtered.every((item, i) => item?.id === tabData[i]?.id)) {
+        return null;
+      }
+      return filtered;
+    });
+  }, [tabData]);
+
+  const activeFilteredData = filteredPenjualanData ?? tabData;
+  const totals = computeDataPenjualanTotals(activeFilteredData, activeTab);
+
   // Handle Add Submit
   const handleAddSubmit = useCallback((rows: any[]) => {
     try {
@@ -339,8 +353,8 @@ export function DataPenjualan() {
 
   return (
     <div className="flex-1 flex flex-col min-h-0 space-y-4">
-      {/* Table Card (Clean Layout with No Redundant Tab Bar) */}
-      <Card className="p-4 sm:p-5 border border-border bg-card shadow-xs flex-1 flex flex-col min-h-0">
+      {/* Table Card (Maximized Viewport Height with sticky header & internal row scroll) */}
+      <Card className="p-3.5 sm:p-4 border border-border bg-card shadow-xs md:h-[calc(100vh-140px)] min-h-[500px] flex flex-col shrink-0">
         {isLoadingData && tabData.length === 0 ? (
           <div className="flex flex-col items-center justify-center p-12 text-muted-foreground gap-2 flex-1">
             <Loader2 className="w-6 h-6 animate-spin text-primary" />
@@ -360,9 +374,47 @@ export function DataPenjualan() {
             onDelete={handleInitiateDelete}
             searchPlaceholder={currentMeta.searchPlaceholder}
             editFields={currentMeta.fields}
+            onFilteredDataChange={handleFilteredDataChange}
           />
         )}
       </Card>
+
+      {/* Standardized Neutral Financial Summary in Normal Document Flow Below Table */}
+      <div className="pt-2 pb-8 shrink-0">
+        <FinanceSummary
+          items={[
+            {
+              id: "uang-masuk",
+              label: "Total Uang Masuk",
+              value: totals.totalUangMasuk,
+              type: "inflow",
+              subtitle: `${totals.validPaymentCount} dari ${totals.transactionCount} transaksi`,
+            },
+            {
+              id: "uang-keluar",
+              label: "Total Uang Keluar",
+              value: totals.totalUangKeluar,
+              type: "outflow",
+              subtitle: `${totals.validExpenseCount} dari ${totals.transactionCount} transaksi`,
+            },
+            {
+              id: "total-tagihan",
+              label: "Total Tagihan",
+              value: totals.totalTagihan,
+              type: "neutral",
+              subtitle: `${totals.validTagihanCount} dari ${totals.transactionCount} tagihan`,
+            },
+            {
+              id: "cashback-pending",
+              label: "Cashback Terpending",
+              value: totals.totalCashbackTerpending,
+              type: totals.totalCashbackTerpending > 0 ? "outflow" : "neutral",
+              subtitle: `${totals.validCashbackCount} dari ${totals.transactionCount} transaksi`,
+            },
+          ]}
+          columnsCount={4}
+        />
+      </div>
 
       {/* Invoice A5 Print Dialog */}
       <InvoiceA5Dialog

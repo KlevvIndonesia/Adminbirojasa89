@@ -1,3 +1,4 @@
+import { serviceStore } from "./serviceStore";
 /**
  * Single Source of Truth for Operational Orders & Order History
  * Admin SUN89 — Biro Jasa Management System
@@ -440,6 +441,29 @@ class OrderStore {
       costBreakdown: data.costBreakdown || data.costSnapshot?.breakdown || [],
       costSnapshot: data.costSnapshot,
       estimationResult: data.estimationResult,
+      // Service Requirements Snapshot (Patch D)
+      serviceRequirementsSnapshot: (() => {
+        if ((data as any).serviceRequirementsSnapshot) return (data as any).serviceRequirementsSnapshot;
+        const svcId = (data as any).service_id || (data as any).serviceId || data.layanan;
+        if (svcId) {
+          const detail = serviceStore.getServiceRequirementsDetail(String(svcId));
+          if (detail.status === "OK" || detail.status === "CUSTOM_SERVICE") {
+            return {
+              schemaVersion: 1,
+              sourceServiceId: detail.serviceId || String(svcId),
+              sourceServiceName: detail.serviceName || data.layanan,
+              sourceRequirementsVersion: 1,
+              capturedAt: new Date().toISOString(),
+              requirements: detail.requirements.map((r: string, idx: number) => ({
+                id: r.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || `req-${idx}`,
+                label: r,
+                required: true,
+              })),
+            };
+          }
+        }
+        return undefined;
+      })(),
 
       samsatProcesses: processes,
       currentSamsatProcess: processes[0]?.name || "Antrean Samsat",
@@ -738,6 +762,80 @@ class OrderStore {
 
     this.notify();
     return true;
+  }
+
+  // 2b. Asynchronous Transisi stage with authoritative backend response
+  public async advanceOrderAsync(
+    orderNo: string,
+    targetStage: StageName,
+    updates: Partial<OperationalOrder> = {}
+  ): Promise<OperationalOrder | false> {
+    const currentOrder = this.repository.getByOrderNo(orderNo);
+    const currentStageFound = currentOrder?.currentStageName || "";
+
+    const nowIso = new Date().toISOString();
+    const effectiveUpdates: Partial<OperationalOrder> = { ...updates };
+    if ((targetStage === "Verifikasi Dokumen" || targetStage === "Proses Samsat") && !currentOrder?.tanggalMasukBerkas && !updates.tanggalMasukBerkas) {
+      effectiveUpdates.tanggalMasukBerkas = nowIso;
+    }
+    if ((targetStage === "Proses Samsat" || targetStage === "Verifikasi Ulang" || targetStage === "Supervisi" || targetStage === "Pengantaran" || targetStage === "Dokumen Telah Diterima") && !currentOrder?.tanggalProsesSamsat && !updates.tanggalProsesSamsat) {
+      effectiveUpdates.tanggalProsesSamsat = nowIso;
+    }
+    if (updates.tanggalPengeluaranSamsat) {
+      effectiveUpdates.tanggalPengeluaranSamsat = updates.tanggalPengeluaranSamsat;
+    }
+
+    const updatedOrder = await (this.repository as any).advanceOrderAsync(orderNo, targetStage, effectiveUpdates);
+    if (!updatedOrder) return false;
+
+    // If transitioning into Dokumen Telah Diterima (Stage 8), update collection timing to JATUH_TEMPO
+    if (targetStage === "Dokumen Telah Diterima" && updatedOrder?.payment?.invoiceNo) {
+      try {
+        financeStore.updateInvoiceFromOrder(orderNo, {
+          totalTagihan: updatedOrder.payment.totalBiaya,
+          collectionStatus: updatedOrder.payment.kurang > 0 ? "JATUH_TEMPO" : "LUNAS",
+        });
+      } catch {
+        // safe fallback
+      }
+    }
+
+    try {
+      auditLog.log({
+        userId: "usr-admin",
+        userName: updates.verifiedBy || "Admin",
+        userRole: "admin",
+        action: "UPDATE",
+        module: "Order Tracking",
+        details: `Order ${orderNo} berpindah dari tahapan ${currentStageFound} ke ${targetStage}`,
+        metadata: { orderNo, fromStage: currentStageFound, toStage: targetStage },
+      });
+    } catch {
+      // safe fallback
+    }
+
+    this.notify();
+    return updatedOrder;
+  }
+
+  public async rollbackOrderAsync(
+    orderNo: string,
+    targetStage: StageName,
+    updates: Partial<OperationalOrder> = {}
+  ): Promise<OperationalOrder | false> {
+    const updated = await (this.repository as any).rollbackOrderAsync(orderNo, targetStage, updates);
+    if (updated) {
+      this.notify();
+    }
+    return updated;
+  }
+
+  public async archiveOrderAsync(orderNo: string): Promise<boolean> {
+    const ok = await (this.repository as any).archiveOrderAsync(orderNo);
+    if (ok) {
+      this.notify();
+    }
+    return ok;
   }
 
   // 3. Update order in-place (tanpa pindah stage)
@@ -1211,6 +1309,9 @@ export function useOrderStore() {
     addOrderFromContract: orderStore.addOrderFromContract.bind(orderStore),
     addOrderFromContractAsync: orderStore.addOrderFromContractAsync.bind(orderStore),
     advanceOrder: orderStore.advanceOrder.bind(orderStore),
+    advanceOrderAsync: orderStore.advanceOrderAsync.bind(orderStore),
+    rollbackOrderAsync: orderStore.rollbackOrderAsync.bind(orderStore),
+    archiveOrderAsync: orderStore.archiveOrderAsync.bind(orderStore),
     updateOrder: orderStore.updateOrder.bind(orderStore),
     updateOrderAsync: orderStore.updateOrderAsync.bind(orderStore),
     verifyPayment: orderStore.verifyPayment.bind(orderStore),

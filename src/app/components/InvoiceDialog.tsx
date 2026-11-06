@@ -2,7 +2,8 @@ import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, Di
 import { Button } from "./ui/button";
 import { Card } from "./ui/card";
 import { Separator } from "./ui/separator";
-import { Printer, Download } from "lucide-react";
+import { Printer, Download, AlertTriangle } from "lucide-react";
+import { validateDocumentFinancialData } from "../../domain/finance/types";
 import { toast } from "sonner";
 
 interface InvoiceDialogProps {
@@ -13,6 +14,8 @@ interface InvoiceDialogProps {
 
 export function InvoiceDialog({ open, onOpenChange, order }: InvoiceDialogProps) {
   if (!order) return null;
+
+  const val = validateDocumentFinancialData(order);
 
   const handlePrint = () => {
     window.print();
@@ -36,6 +39,15 @@ export function InvoiceDialog({ open, onOpenChange, order }: InvoiceDialogProps)
             Cetak atau unduh invoice untuk order ini
           </DialogDescription>
         </DialogHeader>
+
+        {!val.isValidToPrint && (
+          <div className="bg-amber-500/15 border-b border-amber-500/30 px-6 py-2.5 flex items-center gap-2 text-xs text-amber-700 dark:text-amber-400 shrink-0">
+            <AlertTriangle className="w-4 h-4 text-amber-600 dark:text-amber-400 shrink-0" />
+            <span>
+              <strong>Perhatian:</strong> {val.validationErrorMessage || "Data tagihan tidak lengkap atau rincian belum terkonfigurasi. Dokumen tidak dapat dicetak."}
+            </span>
+          </div>
+        )}
 
         {/* Invoice Content */}
         <div className="bg-white text-black p-8 rounded-lg">
@@ -90,7 +102,13 @@ export function InvoiceDialog({ open, onOpenChange, order }: InvoiceDialogProps)
               <tbody>
                 <tr className="border-b border-gray-300">
                   <td className="py-3 px-2">{order.layanan}</td>
-                  <td className="text-right py-3 px-2">Rp {order.totalBiaya.toLocaleString('id-ID')}</td>
+                  <td className="text-right py-3 px-2">
+                    {!val.isValidToPrint && val.total === 0 ? (
+                      <span className="text-amber-600 font-medium">Belum Dikonfigurasi</span>
+                    ) : (
+                      `Rp ${(val.total ?? order.totalBiaya ?? 0).toLocaleString('id-ID')}`
+                    )}
+                  </td>
                 </tr>
                 <tr className="border-b border-gray-300">
                   <td className="py-3 px-2">Nomor Polisi: {order.nopol}</td>
@@ -106,17 +124,39 @@ export function InvoiceDialog({ open, onOpenChange, order }: InvoiceDialogProps)
               <div className="space-y-2 text-sm">
                 <div className="flex justify-between py-2 border-b border-gray-300">
                   <span>Total Biaya:</span>
-                  <span>Rp {order.totalBiaya.toLocaleString('id-ID')}</span>
+                  <span>
+                    {!val.isValidToPrint && val.total === 0 ? (
+                      <span className="text-amber-600 font-medium">Belum Dikonfigurasi</span>
+                    ) : (
+                      `Rp ${(val.total ?? order.totalBiaya ?? 0).toLocaleString('id-ID')}`
+                    )}
+                  </span>
                 </div>
                 <div className="flex justify-between py-2 border-b border-gray-300">
                   <span>Sudah Dibayar:</span>
-                  <span className="text-green-600">Rp {order.dibayar.toLocaleString('id-ID')}</span>
+                  <span className={val.dibayar > 0 ? "text-green-600" : "text-gray-600"}>
+                    Rp {val.dibayar.toLocaleString('id-ID')}
+                  </span>
                 </div>
                 <div className="flex justify-between py-2 border-b-2 border-black">
                   <span>Kekurangan:</span>
-                  <span className={order.kurang > 0 ? "text-red-600" : "text-green-600"}>
-                    Rp {order.kurang.toLocaleString('id-ID')}
-                  </span>
+                  {!val.isValidToPrint ? (
+                    <span className="text-amber-600 font-medium">
+                      {val.isNoSnapshot ? "Belum Dikonfigurasi" : "Data Tidak Valid"}
+                    </span>
+                  ) : val.isValidZero ? (
+                    <span className="text-green-600 font-semibold">
+                      Rp 0 (Bebas Biaya)
+                    </span>
+                  ) : val.isLunas ? (
+                    <span className="text-green-600 font-semibold">
+                      Rp 0 (Lunas)
+                    </span>
+                  ) : (
+                    <span className={val.sisa > 0 ? "text-red-600 font-semibold" : "text-green-600 font-semibold"}>
+                      Rp {val.sisa.toLocaleString('id-ID')}
+                    </span>
+                  )}
                 </div>
               </div>
             </div>
@@ -147,11 +187,11 @@ export function InvoiceDialog({ open, onOpenChange, order }: InvoiceDialogProps)
           <Button variant="outline" onClick={() => onOpenChange(false)}>
             Tutup
           </Button>
-          <Button variant="outline" onClick={handleDownloadPDF}>
+          <Button variant="outline" onClick={handleDownloadPDF} disabled={!val.isValidToPrint}>
             <Download className="w-4 h-4 mr-2" />
             Download PDF
           </Button>
-          <Button onClick={handlePrint} className="bg-primary hover:bg-primary/90 text-primary-foreground shadow-xs">
+          <Button onClick={handlePrint} disabled={!val.isValidToPrint} className="bg-primary hover:bg-primary/90 text-primary-foreground shadow-xs">
             <Printer className="w-4 h-4 mr-2" />
             Cetak Invoice
           </Button>

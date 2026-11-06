@@ -128,8 +128,8 @@ test("Release 3: Database schema initialization is idempotent and non-destructiv
 
     // 2. Populate realistic production data
     testDb.prepare(`
-      INSERT INTO orders (order_no, customer, nomor_hp, layanan, nopol, current_step, current_stage_name, payment_status, total_biaya, is_archived, data_json)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO orders (order_no, customer, nomor_hp, layanan, nopol, current_step, current_stage_name, payment_status, total_biaya, is_archived, data_json, samsat_tujuan_id)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
     `).run(
       "ORD-INIT-001",
       "Customer Idempotent",
@@ -220,8 +220,8 @@ test("Release 4: Release upgrade simulation preserves operational data, document
 
     // Populate Order and Document
     dbN.prepare(`
-      INSERT INTO orders (order_no, customer, nomor_hp, layanan, nopol, current_step, current_stage_name, payment_status, total_biaya, is_archived, data_json)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO orders (order_no, customer, nomor_hp, layanan, nopol, current_step, current_stage_name, payment_status, total_biaya, is_archived, data_json, samsat_tujuan_id)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
     `).run(
       "ORD-UPGRADE-100",
       "Upgrade Customer",
@@ -321,8 +321,8 @@ test("Release 5: Release rollback simulation successfully reverts to previous ar
     const dbN = new DatabaseSync(persistentDbPath);
     initializeSchema(dbN);
     dbN.prepare(`
-      INSERT INTO orders (order_no, customer, nomor_hp, layanan, nopol, current_step, current_stage_name, payment_status, total_biaya, is_archived, data_json)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO orders (order_no, customer, nomor_hp, layanan, nopol, current_step, current_stage_name, payment_status, total_biaya, is_archived, data_json, samsat_tujuan_id)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
     `).run("ORD-STABLE-001", "Stable Customer", "0811111111", "Mutasi Keluar", "B 1111 STB", 1, "Verifikasi", "Belum Lunas", 1500000, 0, "{}");
 
     // Create snapshot of Release N before attempting upgrade

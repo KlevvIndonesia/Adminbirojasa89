@@ -37,6 +37,27 @@ export class DbPaymentMethodRepository {
     return stmt.get(nama) as PaymentMethodEntity | undefined;
   }
 
+  public getByAccount(bank: string, nomorRekening: string): PaymentMethodEntity | undefined {
+    const cleanBank = (bank || "").trim().toLowerCase();
+    const cleanNomor = (nomorRekening || "").trim();
+    if (!cleanBank || !cleanNomor) return undefined;
+    const stmt = db.prepare(`
+      SELECT * FROM payment_methods 
+      WHERE nama_metode = 'Transfer Bank' 
+        AND LOWER(bank) = ? 
+        AND nomor_rekening = ?
+    `);
+    return stmt.get(cleanBank, cleanNomor) as PaymentMethodEntity | undefined;
+  }
+
+  public getActiveTunai(): PaymentMethodEntity | undefined {
+    const stmt = db.prepare(`
+      SELECT * FROM payment_methods 
+      WHERE (nama_metode = 'Tunai' OR nama_metode = 'Cash' OR LOWER(bank) = 'tunai' OR LOWER(bank) = 'cash') AND status = 'Aktif'
+    `);
+    return stmt.get() as PaymentMethodEntity | undefined;
+  }
+
   public create(data: Omit<PaymentMethodEntity, "id" | "created_at" | "updated_at">): PaymentMethodEntity {
     const id = `pm-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
     const stmt = db.prepare(`
@@ -83,32 +104,25 @@ export class DbPaymentMethodRepository {
     return this.getById(id)!;
   }
 
-  public isUsedInTransactions(namaMetode: string): boolean {
+  public isUsedInTransactions(namaMetode: string, id?: string, bank?: string): boolean {
     try {
       // 1. Check in orders table (data_json contains payment)
       const orderStmt = db.prepare(`
         SELECT COUNT(*) as count FROM orders
-        WHERE data_json LIKE ? OR data_json LIKE ?
+        WHERE data_json LIKE ? OR data_json LIKE ? OR data_json LIKE ?
       `);
       const escapedMethod = `%"metodePembayaran":"${namaMetode}"%`;
       const escapedMethod2 = `%"metode_pembayaran":"${namaMetode}"%`;
-      const orderCount = (orderStmt.get(escapedMethod, escapedMethod2) as { count: number }).count;
+      const escapedBank = bank ? `%"bank":"${bank}"%` : escapedMethod;
+      const orderCount = (orderStmt.get(escapedMethod, escapedMethod2, escapedBank) as { count: number }).count;
       if (orderCount > 0) return true;
 
-      // 2. Check in finance_invoices table
-      const invStmt = db.prepare(`
-        SELECT COUNT(*) as count FROM finance_invoices
-        WHERE metode_pembayaran = ?
-      `);
-      const invCount = (invStmt.get(namaMetode) as { count: number }).count;
-      if (invCount > 0) return true;
-
-      // 3. Check in invoice_payments relational table
+      // 2. Check in invoice_payments relational table
       const payStmt = db.prepare(`
         SELECT COUNT(*) as count FROM invoice_payments
-        WHERE metode_pembayaran = ? OR nama_bank = ?
+        WHERE metode_pembayaran_id = ? OR metode_pembayaran = ? OR nama_bank = ?
       `);
-      const payCount = (payStmt.get(namaMetode, namaMetode) as { count: number }).count;
+      const payCount = (payStmt.get(id || "", namaMetode, bank || "") as { count: number }).count;
       if (payCount > 0) return true;
 
       return false;
@@ -123,20 +137,20 @@ export class DbPaymentMethodRepository {
       return { success: false, message: "Metode pembayaran tidak ditemukan" };
     }
 
-    const isUsed = this.isUsedInTransactions(existing.nama_metode);
+    const isUsed = this.isUsedInTransactions(existing.nama_metode, existing.id, existing.bank);
     if (isUsed) {
       if (allowDeactivate) {
         this.update(id, { status: "Nonaktif" });
         return {
           success: true,
           deactivated: true,
-          message: `Metode '${existing.nama_metode}' telah digunakan dalam riwayat transaksi sehingga dinonaktifkan (bukan dihapus permanen) untuk menjaga keutuhan riwayat transaksi.`,
+          message: `Metode '${existing.nama_metode}' (${existing.bank}) telah digunakan dalam riwayat transaksi sehingga dinonaktifkan (bukan dihapus permanen) untuk menjaga keutuhan riwayat transaksi.`,
         };
       } else {
         return {
           success: false,
           deactivated: false,
-          message: `Metode '${existing.nama_metode}' sudah digunakan dalam transaksi dan tidak dapat dihapus permanen. Silakan nonaktifkan metode ini.`,
+          message: `Metode '${existing.nama_metode}' (${existing.bank}) sudah digunakan dalam transaksi dan tidak dapat dihapus permanen. Silakan nonaktifkan metode ini.`,
         };
       }
     }
@@ -146,7 +160,7 @@ export class DbPaymentMethodRepository {
     return {
       success: true,
       deactivated: false,
-      message: `Metode '${existing.nama_metode}' berhasil dihapus permanen.`,
+      message: `Metode '${existing.nama_metode}' (${existing.bank}) berhasil dihapus permanen.`,
     };
   }
 }

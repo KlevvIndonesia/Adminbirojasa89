@@ -27,6 +27,7 @@ import {
   User,
   AlertCircle,
   History,
+  Layers,
 } from "lucide-react";
 
 export interface MenuItem {
@@ -48,7 +49,6 @@ export const menuItems: MenuItem[] = [
       { id: "finance-profit", label: "Profit", path: "/finance/profit", icon: TrendingUp },
       { id: "finance-kas-messenger", label: "Kas Messenger", path: "/finance/kas-messenger", icon: MessageSquare },
       { id: "finance-kas-kantor", label: "Kas Kantor", path: "/finance/kas-kantor", icon: Building2 },
-      { id: "finance-pengeluaran", label: "Pengeluaran", path: "/finance/pengeluaran", icon: CreditCard },
       { id: "finance-penjualan", label: "Data Penjualan", path: "/finance/data-penjualan", icon: FileText },
       { id: "finance-belum-bayar", label: "Belum & Kurang Bayar", path: "/finance/belum-bayar", icon: AlertCircle },
       { id: "finance-profit-pending", label: "Profit Terpending", path: "/finance/profit-pending", icon: Clock },
@@ -62,6 +62,7 @@ export const menuItems: MenuItem[] = [
     path: "/master-data/samsat",
     icon: Database,
     subItems: [
+      { id: "master-layanan", label: "Layanan", path: "/master-data/layanan", icon: Layers },
       { id: "master-samsat", label: "Samsat", path: "/master-data/samsat", icon: Building2 },
       { id: "master-metode-pembayaran", label: "Metode Pembayaran", path: "/master-data/metode-pembayaran", icon: CreditCard },
       { id: "master-biaya-layanan", label: "Biaya Layanan", path: "/master-data/biaya-layanan", icon: DollarSign },

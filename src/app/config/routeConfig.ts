@@ -31,6 +31,25 @@ export const DATA_PENJUALAN_CATEGORIES: Record<string, string> = {
   "lain-lain": "Tarik Berkas",
 };
 
+
+export const BIAYA_LAYANAN_SERVICES_MAP: Record<string, string> = {
+  "perpanjangan-1-tahun": "Perpanjangan 1 Tahun",
+  "perpanjangan-5-tahun": "Perpanjangan 5 Tahun",
+  "mutasi-antar-samsat": "Mutasi Antar Samsat",
+  "mutasi-luar-daerah": "Mutasi Luar Daerah",
+  "balik-nama": "Balik Nama",
+  "tarik-berkas": "Tarik Berkas",
+  "duplikat-stnk": "Duplikat STNK",
+  "lainnya": "Lainnya",
+  // Legacy aliases
+  "perpanjangan-1": "Perpanjangan 1 Tahun",
+  "perpanjangan-5": "Perpanjangan 5 Tahun",
+  "mutasi-antar": "Mutasi Antar Samsat",
+  "mutasi-asal": "Mutasi Antar Samsat",
+  "mutasi-luar": "Mutasi Luar Daerah",
+  "mutasi-antar-daerah": "Mutasi Luar Daerah",
+};
+
 export const CANONICAL_ROUTES: Record<string, RouteMeta> = {
   "/dashboard": {
     path: "/dashboard",
@@ -66,11 +85,11 @@ export const CANONICAL_ROUTES: Record<string, RouteMeta> = {
     parentGroupId: "finance",
   },
   "/finance/pengeluaran": {
-    path: "/finance/pengeluaran",
-    id: "finance-pengeluaran",
-    title: "Pengeluaran",
-    description: "Catat dan monitor seluruh pos pengeluaran operasional kantor",
-    breadcrumbs: ["Finance", "Pengeluaran"],
+    path: "/finance/kas-kantor",
+    id: "finance-kas-kantor",
+    title: "Kas Kantor",
+    description: "Kelola transaksi kas kantor",
+    breadcrumbs: ["Finance", "Kas Kantor"],
     parentGroupId: "finance",
   },
   "/finance/data-penjualan": {
@@ -114,6 +133,14 @@ export const CANONICAL_ROUTES: Record<string, RouteMeta> = {
     parentGroupId: "finance",
   },
   // Master Data
+  "/master-data/layanan": {
+    path: "/master-data/layanan",
+    id: "master-layanan",
+    title: "Master Layanan",
+    description: "Kelola katalog layanan, deskripsi, dan persyaratan dokumen pengurusan",
+    breadcrumbs: ["Master Data", "Layanan"],
+    parentGroupId: "master-data",
+  },
   "/master-data/samsat": {
     path: "/master-data/samsat",
     id: "master-samsat",
@@ -278,6 +305,21 @@ export function getRouteMeta(pathname: string): RouteMeta {
       description: `Rekapitulasi transaksi ${categoryLabel} dan kalkulasi Samsat`,
       breadcrumbs: ["Finance", "Data Penjualan", categoryLabel],
       parentGroupId: "finance",
+    };
+  }
+
+  
+  // Biaya Layanan service match: /master-data/biaya-layanan/:service
+  if (normalized.startsWith("/master-data/biaya-layanan/")) {
+    const service = normalized.replace("/master-data/biaya-layanan/", "").split("/")[0];
+    const serviceLabel = BIAYA_LAYANAN_SERVICES_MAP[service] || "Perpanjangan 1 Tahun";
+    return {
+      path: normalized,
+      id: "master-biaya-layanan",
+      title: `Biaya Layanan - ${serviceLabel}`,
+      description: `Katalog tarif resmi dan biaya jasa untuk ${serviceLabel}`,
+      breadcrumbs: ["Master Data", "Biaya Layanan", serviceLabel],
+      parentGroupId: "master-data",
     };
   }
 

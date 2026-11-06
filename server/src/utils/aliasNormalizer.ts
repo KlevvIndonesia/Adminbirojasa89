@@ -134,6 +134,13 @@ export function resolveAliasGroup(
 // ─── PROTECTED FIELDS WITH ALL ALIAS VARIANTS (P1-B ENFORCEMENT) ────────────
 
 export const PROTECTED_ROOT_FIELD_DESCRIPTIONS: Record<string, string> = {
+  // Cost verification
+  isCostVerified: "Verifikasi biaya order hanya dapat dilakukan melalui endpoint POST /api/orders/:orderNo/verify-cost.",
+  costCompletenessStatus: "Status kelengkapan biaya order dikelola secara otomatis oleh sistem.",
+  costVerifiedAt: "Waktu verifikasi biaya dikelola secara otomatis oleh sistem.",
+  costVerifiedBy: "Petugas pemverifikasi biaya dikelola secara otomatis oleh sistem.",
+  costSnapshot: "Snapshot biaya order dikelola secara otomatis oleh sistem.",
+  costBreakdown: "Rincian biaya order dikelola secara otomatis oleh sistem.",
   // Supervisor & Document Approval Gating
   approvedBySpv: "Persetujuan Supervisor (approvedBySpv) hanya dapat ditetapkan melalui alur persetujuan resmi Stage 6.",
   spvApprovedAt: "Timestamp persetujuan Supervisor dilindungi oleh sistem.",
@@ -190,6 +197,25 @@ export const PROTECTED_ROOT_FIELD_DESCRIPTIONS: Record<string, string> = {
 };
 
 export const PROTECTED_ROOT_ALIASES_MAP: Record<string, string> = {
+  // Service Requirements Snapshot protection (Patch D)
+  serviceRequirementsSnapshot: "serviceRequirementsSnapshot",
+  service_requirements_snapshot: "serviceRequirementsSnapshot",
+  requirementsSnapshot: "serviceRequirementsSnapshot",
+  requirements_snapshot: "serviceRequirementsSnapshot",
+
+  // Cost verification & pricing completeness
+  isCostVerified: "isCostVerified",
+  is_cost_verified: "isCostVerified",
+  costCompletenessStatus: "costCompletenessStatus",
+  cost_completeness_status: "costCompletenessStatus",
+  costVerifiedAt: "costVerifiedAt",
+  cost_verified_at: "costVerifiedAt",
+  costVerifiedBy: "costVerifiedBy",
+  cost_verified_by: "costVerifiedBy",
+  costSnapshot: "costSnapshot",
+  cost_snapshot: "costSnapshot",
+  costBreakdown: "costBreakdown",
+  cost_breakdown: "costBreakdown",
   // Supervisor
   approvedBySpv: "approvedBySpv",
   approved_by_spv: "approvedBySpv",
@@ -299,6 +325,10 @@ export const PROTECTED_ROOT_ALIASES_MAP: Record<string, string> = {
 };
 
 export const PROTECTED_PAYMENT_FIELD_DESCRIPTIONS: Record<string, string> = {
+  isCostVerified: "Status verifikasi biaya order dilindungi oleh sistem.",
+  costCompletenessStatus: "Status kelengkapan biaya order dilindungi oleh sistem.",
+  costVerifiedAt: "Waktu verifikasi biaya order dilindungi oleh sistem.",
+  costVerifiedBy: "Petugas verifikator biaya order dilindungi oleh sistem.",
   isPaymentVerified: "Status verifikasi pembayaran hanya dapat diubah melalui endpoint /verify-payment.",
   paymentVerifiedAt: "Timestamp verifikasi pembayaran dilindungi oleh sistem.",
   paymentVerifiedBy: "Identitas verifikator pembayaran dilindungi oleh sistem.",
@@ -320,6 +350,15 @@ export const PROTECTED_PAYMENT_FIELD_DESCRIPTIONS: Record<string, string> = {
 };
 
 export const PROTECTED_PAYMENT_ALIASES_MAP: Record<string, string> = {
+  // Cost verification in payment
+  isCostVerified: "isCostVerified",
+  is_cost_verified: "isCostVerified",
+  costCompletenessStatus: "costCompletenessStatus",
+  cost_completeness_status: "costCompletenessStatus",
+  costVerifiedAt: "costVerifiedAt",
+  cost_verified_at: "costVerifiedAt",
+  costVerifiedBy: "costVerifiedBy",
+  cost_verified_by: "costVerifiedBy",
   isPaymentVerified: "isPaymentVerified",
   is_payment_verified: "isPaymentVerified",
   isVerified: "isPaymentVerified",
@@ -370,6 +409,60 @@ export const PROTECTED_PAYMENT_ALIASES_MAP: Record<string, string> = {
  * Throws ApiError(403, "PROTECTED_FIELD_VIOLATION") if found.
  */
 export function assertNoProtectedFieldViolations(body: Record<string, any>, user?: { role?: string } | null): void {
+  const userRole = (user?.role || "").toLowerCase().trim();
+  const isMessenger = userRole === "messenger";
+
+  // PATCH B: Strict Zero Free-Text Notes Enforcement for Messenger
+  if (isMessenger) {
+    const forbiddenMessengerFields = [
+      "messengerTaskNotes", "messenger_task_notes",
+      "samsatPickupNotes", "samsat_pickup_notes",
+      "catatanKendala", "catatan_kendala",
+      "catatanOrder", "catatan_order",
+      "catatanPenjadwalan", "catatan_penjadwalan",
+      "catatanSamsat", "catatan_samsat",
+      "catatanPengantaran", "catatan_pengantaran",
+    ];
+    for (const field of forbiddenMessengerFields) {
+      if (body[field] !== undefined) {
+        throw new ApiError(
+          403,
+          "FORBIDDEN",
+          `Field '${field}' tidak diizinkan diubah oleh Messenger. Free-text operational notes dilarang dan instruksi admin dikelola khusus oleh Admin.`
+        );
+      }
+    }
+    if (body.pickupProof && typeof body.pickupProof === "object") {
+      if (body.pickupProof.notes || body.pickupProof.catatanKendala) {
+        throw new ApiError(403, "FORBIDDEN", "Catatan bebas pada pickupProof tidak diizinkan bagi Messenger.");
+      }
+    }
+    if (body.deliveryHandover && typeof body.deliveryHandover === "object") {
+      if (body.deliveryHandover.notes) {
+        throw new ApiError(403, "FORBIDDEN", "Catatan bebas pada deliveryHandover tidak diizinkan bagi Messenger.");
+      }
+    }
+    if (body.deliveryProof && typeof body.deliveryProof === "object") {
+      if (body.deliveryProof.notes) {
+        throw new ApiError(403, "FORBIDDEN", "Catatan bebas pada deliveryProof tidak diizinkan bagi Messenger.");
+      }
+    }
+    if (Array.isArray(body.messengerComponentProgress)) {
+      for (const comp of body.messengerComponentProgress) {
+        if (comp && typeof comp === "object" && comp.note) {
+          throw new ApiError(403, "FORBIDDEN", "Catatan bebas pada messengerComponentProgress tidak diizinkan bagi Messenger.");
+        }
+      }
+    }
+    if (Array.isArray(body.additionalProcesses)) {
+      for (const proc of body.additionalProcesses) {
+        if (proc && typeof proc === "object" && proc.note) {
+          throw new ApiError(403, "FORBIDDEN", "Catatan bebas pada additionalProcesses tidak diizinkan bagi Messenger.");
+        }
+      }
+    }
+  }
+
   const isAuthorizedRole = Boolean(
     user?.role && ["administrator", "admin", "finance", "svp"].includes(user.role.toLowerCase().trim())
   );
@@ -455,7 +548,7 @@ export function assertNoProtectedFieldViolations(body: Record<string, any>, user
  */
 export const ORDER_ALIAS_DEFS: AliasDefinition[] = [
   { canonicalKey: "customer", aliases: ["customer", "customerName", "customer_name"], isSensitive: true },
-  { canonicalKey: "nomorHP", aliases: ["nomorHP", "nomor_hp", "phone", "noHp"], isSensitive: true },
+  { canonicalKey: "nomorHP", aliases: ["nomorHP", "nomorHp", "nomor_hp", "phone", "noHp"], isSensitive: true },
   { canonicalKey: "layanan", aliases: ["layanan", "serviceType", "service_type", "tipe_layanan"], isSensitive: true },
   { canonicalKey: "nopol", aliases: ["nopol", "platNomor", "plat_nomor"], isSensitive: true },
   {
@@ -524,6 +617,12 @@ export function normalizeOrderPayload<T extends Record<string, any>>(body: T): T
   if (!body || typeof body !== "object" || Array.isArray(body)) {
     return body;
   }
+
+  // Strip client-forged service requirements snapshot (Patch D)
+  delete (body as any).serviceRequirementsSnapshot;
+  delete (body as any).service_requirements_snapshot;
+  delete (body as any).requirementsSnapshot;
+  delete (body as any).requirements_snapshot;
 
   for (const def of ORDER_ALIAS_DEFS) {
     resolveAliasGroup(body, def);

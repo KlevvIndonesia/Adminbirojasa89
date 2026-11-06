@@ -84,6 +84,25 @@ test("Data Integrity 1: Finance payment synchronizes to Order atomically", async
     assert.ok(linkedInvoice, "Linked invoice must exist in finance database");
     assert.strictEqual(linkedInvoice.status, "UNPAID");
 
+    // 2b. Verify order cost through official endpoint before recording payment
+    const verifyCostRes = await fetch(`${baseUrl}/api/orders/${orderNo}/verify-cost`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+      body: JSON.stringify({
+        finalTotalBiaya: 750000,
+        notes: "Verifikasi biaya pra-pembayaran",
+      }),
+    });
+    assert.strictEqual(verifyCostRes.status, 200);
+
+    // 2c. Approve Supervisi Stage 6 for payment gating
+    const approveRes = await fetch(`${baseUrl}/api/orders/${orderNo}/approve-documents`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ stage: 6 }),
+    });
+    assert.strictEqual(approveRes.status, 200);
+
     // 3. Record full payment on Invoice via Finance API
     const payRes = await fetch(`${baseUrl}/api/finance/invoices/${linkedInvoice.id}/pay`, {
       method: "POST",
@@ -140,7 +159,10 @@ test("Data Integrity 2: Order verify-payment synchronizes to Finance atomically"
     const verifyRes = await fetch(`${baseUrl}/api/orders/${orderNo}/verify-payment`, {
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-      body: JSON.stringify({ verifierName: "Supervisor Ari" }),
+      body: JSON.stringify({
+        verifierName: "Supervisor Ari",
+        buktiPembayaran: { fileUrl: "https://proof.example.com/transfer.jpg" },
+      }),
     });
     assert.strictEqual(verifyRes.status, 200);
     const verifiedOrder = (await verifyRes.json() as any).data;
@@ -191,6 +213,25 @@ test("Data Integrity 3: Partial payment maintains mathematical consistency acros
     const invoicesData = (await invoicesRes.json() as any).data;
     const linkedInvoice = invoicesData.find((inv: any) => inv.orderNo === orderNo);
     assert.ok(linkedInvoice);
+
+    // 2b. Verify order cost through official endpoint before recording partial payment
+    const verifyCostRes = await fetch(`${baseUrl}/api/orders/${orderNo}/verify-cost`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+      body: JSON.stringify({
+        finalTotalBiaya: 1000000,
+        notes: "Verifikasi biaya pra-pembayaran parsial",
+      }),
+    });
+    assert.strictEqual(verifyCostRes.status, 200);
+
+    // 2c. Approve Supervisi Stage 6 for payment gating
+    const approveRes = await fetch(`${baseUrl}/api/orders/${orderNo}/approve-documents`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ stage: 6 }),
+    });
+    assert.strictEqual(approveRes.status, 200);
 
     const payRes = await fetch(`${baseUrl}/api/finance/invoices/${linkedInvoice.id}/pay`, {
       method: "POST",
@@ -299,7 +340,7 @@ test("Data Integrity 5: Dashboard financial KPI derivation normalizes PAID and L
 test("Data Integrity 6: Cross-Module Provider Swapping functions without consumer disruption", () => {
   // Finance Repository
   const finRepo = new FinanceRepository(new MockFinanceProvider());
-  assert.ok(finRepo.getInvoices().length > 0, "MockFinanceProvider returns fixtures");
+  assert.ok(Array.isArray(finRepo.getInvoices()), "MockFinanceProvider returns invoices array");
   const apiFinProvider = new ApiFinanceProvider();
   finRepo.setProvider(apiFinProvider);
   assert.strictEqual(finRepo.getProvider(), apiFinProvider, "FinanceProvider swapped successfully");

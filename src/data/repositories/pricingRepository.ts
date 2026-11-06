@@ -44,6 +44,11 @@ export interface IPricingRepository {
   isLoading?(): boolean;
   getError?(): Error | null;
   initFromApi?(): Promise<void>;
+  getSamsatOperationalTariffs?(samsatId?: string): Promise<any[]>;
+  updateSamsatOperationalTariff?(samsatId: string, itemKey: string, payload: any): Promise<any>;
+  updateSamsatOperationalTariffsBatch?(samsatId: string, tariffs: any[]): Promise<any>;
+  deleteSamsatOperationalTariff?(idOrParams: string | { samsatId: string; pricingItemId: string }): Promise<boolean>;
+  batchReplicateServicePricing?(params: any): Promise<any>;
 }
 
 export class PricingRepository implements IPricingRepository {
@@ -137,6 +142,13 @@ export class PricingRepository implements IPricingRepository {
     return true;
   }
 
+  async batchReplicateServicePricing(params: any): Promise<any> {
+    if (this.provider.batchReplicateServicePricing) {
+      return await this.provider.batchReplicateServicePricing(params);
+    }
+    return null;
+  }
+
   getServicePackages(): Record<string, ServicePackageConfig> {
     return pricingStore.getServicePackages();
   }
@@ -169,6 +181,34 @@ export class PricingRepository implements IPricingRepository {
     if (this.provider && typeof (this.provider as any).initFromApi === "function") {
       await (this.provider as any).initFromApi();
     }
+  }
+
+  public async getSamsatOperationalTariffs(samsatId?: string): Promise<any[]> {
+    if (this.provider.getSamsatOperationalTariffs) {
+      return await this.provider.getSamsatOperationalTariffs(samsatId);
+    }
+    return [];
+  }
+
+  public async updateSamsatOperationalTariff(samsatId: string, itemKey: string, payload: any): Promise<any> {
+    if (this.provider.updateSamsatOperationalTariff) {
+      return await this.provider.updateSamsatOperationalTariff(samsatId, itemKey, payload);
+    }
+    return null;
+  }
+
+  public async updateSamsatOperationalTariffsBatch(samsatId: string, tariffs: any[]): Promise<any> {
+    if (this.provider.updateSamsatOperationalTariffsBatch) {
+      return await this.provider.updateSamsatOperationalTariffsBatch(samsatId, tariffs);
+    }
+    return null;
+  }
+
+  public async deleteSamsatOperationalTariff(idOrParams: string | { samsatId: string; pricingItemId: string }): Promise<boolean> {
+    if (this.provider.deleteSamsatOperationalTariff) {
+      return await this.provider.deleteSamsatOperationalTariff(idOrParams);
+    }
+    return true;
   }
 }
 

@@ -102,7 +102,7 @@ export function validateOrderPricingSanity(payload: OrderPricingPayload): Pricin
   }
 
   // 2. Resolve and validate biayaJasa and biayaSamsat
-  const rawJasa = payload.biayaJasa ?? payload.profit ?? 0;
+  const rawJasa = payload.biayaJasa ?? payload.profit ?? payload.costSnapshot?.biayaJasa ?? 0;
   const biayaJasa = Number(rawJasa);
   if (!Number.isFinite(biayaJasa) || biayaJasa < 0) {
     return {
@@ -116,7 +116,7 @@ export function validateOrderPricingSanity(payload: OrderPricingPayload): Pricin
     };
   }
 
-  const rawSamsat = payload.biayaSamsat ?? payload.uangKeluar ?? 0;
+  const rawSamsat = payload.biayaSamsat ?? payload.uangKeluar ?? payload.costSnapshot?.biayaSamsat ?? 0;
   const biayaSamsat = Number(rawSamsat);
   if (!Number.isFinite(biayaSamsat) || biayaSamsat < 0) {
     return {

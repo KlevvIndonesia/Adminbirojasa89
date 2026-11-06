@@ -18,7 +18,6 @@ import {
   ReimbursementCategory,
 } from "../../../src/domain/messenger/types";
 import { OperationalOrder } from "../../../src/domain/order/types";
-import { INITIAL_KARYAWAN } from "../../../src/app/data/karyawanPenggunaAdapter";
 import { normalizeReimbursementPayload } from "../utils/aliasNormalizer";
 
 export interface MessengerSummaryStats {
@@ -96,48 +95,52 @@ export interface TaskDetailResponse {
   };
 }
 
+export function isSamsatOrTaxCategory(category?: string | null): boolean {
+  if (!category || typeof category !== "string") return false;
+  const normalized = category.trim().toLowerCase().replace(/[\s\-_]+/g, "");
+  const forbiddenPatterns = [
+    "samsat",
+    "pajak",
+    "pkb",
+    "swdkllj",
+    "pnbp",
+    "stnk",
+    "bpkb",
+    "tnkb",
+    "plat",
+    "mutasi",
+    "baliknama",
+    "bbn",
+    "bbnkb",
+    "dendapajak",
+    "administrasisamsat",
+  ];
+  return forbiddenPatterns.some((pattern) => normalized.includes(pattern));
+}
+
 export class MessengerService {
   /**
    * Get all messengers with complete stats and expense aggregates
    */
   public getMessengersWithStats(dateFrom?: string, dateTo?: string): MessengerSummaryStats[] {
-    // 1. Gather all unique messenger identities from INITIAL_KARYAWAN and users table
-    const allUsers = dbUserRepository.getAll();
-    const messengerUsers = allUsers.filter(
-      (u) => u.jabatan.toUpperCase() === "MESSENGER" || (u as any).role === "messenger"
-    );
-
+    // 1. Gather all active messenger identities directly from SQLite (employees and users tables)
     const messengerMap = new Map<string, MessengerSummaryStats>();
 
-    // From INITIAL_KARYAWAN
-    const messengerEmployees = INITIAL_KARYAWAN.filter((k) => k.jabatan === "MESSENGER");
-    for (const emp of messengerEmployees) {
-      messengerMap.set(emp.nama.toLowerCase(), {
-        employeeId: emp.id,
-        name: emp.nama,
-        phone: emp.noHp,
-        wilayah: emp.wilayah,
-        status: emp.status,
-        completedTasksCount: 0,
-        totalDiajukan: 0,
-        totalDisetujui: 0,
-        totalDibayar: 0,
-        totalMenunggu: 0,
-        totalDisetujuiBelumDibayar: 0,
-        totalDitolak: 0,
-      });
-    }
-
-    // Merge from users
-    for (const u of messengerUsers) {
-      const key = u.nama.toLowerCase();
-      if (!messengerMap.has(key)) {
-        messengerMap.set(key, {
-          employeeId: `USR-${u.id}`,
-          name: u.nama,
-          phone: "081299887766",
-          wilayah: "Jakarta",
-          status: u.status,
+    // Load active messengers from employees table
+    try {
+      const empStmt = db.prepare(`
+        SELECT e.id, e.nama_lengkap, e.no_hp, e.wilayah, e.status_karyawan
+        FROM employees e
+        WHERE UPPER(e.jabatan) = 'MESSENGER' AND e.status_karyawan != 'NONAKTIF'
+      `);
+      const empRows = empStmt.all() as any[];
+      for (const emp of empRows) {
+        messengerMap.set(emp.nama_lengkap.toLowerCase(), {
+          employeeId: emp.id,
+          name: emp.nama_lengkap,
+          phone: emp.no_hp || "",
+          wilayah: emp.wilayah || "Jakarta",
+          status: emp.status_karyawan,
           completedTasksCount: 0,
           totalDiajukan: 0,
           totalDisetujui: 0,
@@ -147,7 +150,43 @@ export class MessengerService {
           totalDitolak: 0,
         });
       }
-    }
+    } catch (e) {}
+
+    // Load active messenger users from users table
+    try {
+      const userStmt = db.prepare(`
+        SELECT id, nama, email, jabatan, status, employee_id, phone, wilayah
+        FROM users
+        WHERE UPPER(jabatan) = 'MESSENGER' AND status = 'Aktif'
+      `);
+      const userRows = userStmt.all() as any[];
+      for (const u of userRows) {
+        if (!u.employee_id) continue; // Exclude unmapped / inactive accounts
+        const key = u.nama.toLowerCase();
+        const existing = messengerMap.get(key);
+        if (existing) {
+          // If user has canonical employee_id, prefer canonical format
+          if (u.employee_id) existing.employeeId = u.employee_id;
+          if (!existing.phone && u.phone) existing.phone = u.phone;
+          if (!existing.wilayah && u.wilayah) existing.wilayah = u.wilayah;
+        } else {
+          messengerMap.set(key, {
+            employeeId: u.employee_id,
+            name: u.nama,
+            phone: u.phone || "",
+            wilayah: u.wilayah || "Jakarta",
+            status: u.status,
+            completedTasksCount: 0,
+            totalDiajukan: 0,
+            totalDisetujui: 0,
+            totalDibayar: 0,
+            totalMenunggu: 0,
+            totalDisetujuiBelumDibayar: 0,
+            totalDitolak: 0,
+          });
+        }
+      }
+    } catch (e) {}
 
     // 2. Fetch all completed tasks from orders
     const history = this.getAllCompletedTasksInternal();
@@ -368,6 +407,15 @@ export class MessengerService {
     user?: TokenPayload | null
   ): ReimbursementRequest {
     normalizeReimbursementPayload(data as any);
+
+    // Phase C Rule 1.A / 3.D: Reject Samsat and Tax categories from operational reimbursement
+    if (isSamsatOrTaxCategory(data.category)) {
+      throw new ApiError(
+        400,
+        "FORBIDDEN_REIMBURSEMENT_CATEGORY",
+        `Biaya resmi Samsat / Pajak ('${data.category}') tidak diperbolehkan diajukan sebagai reimbursement operasional. Biaya Samsat wajib diproses melalui alur penagihan biaya order dan invoice.`
+      );
+    }
     if (!data.employeeId || !data.messengerName || !data.category || !data.amount || !data.date) {
       throw new ApiError(400, "VALIDATION_ERROR", "Data pengajuan biaya belum lengkap (kategori, nominal, tanggal wajib diisi).");
     }
@@ -384,22 +432,38 @@ export class MessengerService {
       }
     }
 
-    // Referential integrity check: employee/messenger must exist in users or system adapter
+    // Referential integrity check: employee/messenger must exist in users or employees table
     const rawEmpId = data.employeeId.trim();
-    const userStmt = db.prepare("SELECT id, nama FROM users WHERE id = ? OR employee_id = ? OR nama = ?");
     const numericId = Number(rawEmpId.replace(/^usr-/i, ""));
+    const userStmt = db.prepare("SELECT id, nama, employee_id, status FROM users WHERE id = ? OR employee_id = ?");
     const matchedUser = userStmt.get(
       isNaN(numericId) ? -1 : numericId,
-      rawEmpId,
-      data.messengerName.trim()
+      rawEmpId
     ) as any;
 
-    const matchedAdapter = !matchedUser ? INITIAL_KARYAWAN.find(
-      (k) => k.id === rawEmpId || (k as any).employeeId === rawEmpId || k.nama.toLowerCase() === data.messengerName.toLowerCase()
-    ) : null;
+    let matchedEmployee: any = null;
+    try {
+      const empStmt = db.prepare("SELECT id, nama_lengkap, status_karyawan FROM employees WHERE id = ?");
+      matchedEmployee = empStmt.get(rawEmpId);
+    } catch (e) {}
 
-    if (!matchedUser && !matchedAdapter) {
+    if (!matchedUser && !matchedEmployee) {
       throw new ApiError(404, "USER_NOT_FOUND", `Pegawai/Kurir '${data.messengerName}' (ID: ${data.employeeId}) tidak terdaftar dalam sistem.`);
+    }
+
+    if (matchedUser && matchedUser.status === "Nonaktif") {
+      throw new ApiError(403, "EMPLOYEE_INACTIVE", "Status akun kurir/pegawai nonaktif.");
+    }
+    if (matchedEmployee && matchedEmployee.status_karyawan === "NONAKTIF") {
+      throw new ApiError(403, "EMPLOYEE_INACTIVE", "Status kurir/pegawai nonaktif.");
+    }
+
+    // Caller authorization check: If caller is authenticated as messenger, caller can only submit for their own canonical ID
+    if (user && user.role === "messenger") {
+      const callerEmpId = (user.employeeId || "").trim();
+      if (!callerEmpId || callerEmpId !== rawEmpId) {
+        throw new ApiError(403, "FORBIDDEN", "Kurir hanya dapat mengajukan reimbursement atas identitas sendiri.");
+      }
     }
 
     return runInTransaction(() => {
@@ -451,6 +515,15 @@ export class MessengerService {
       throw new ApiError(404, "NOT_FOUND", `Pengajuan biaya '${id}' tidak ditemukan.`);
     }
 
+    // Phase C Rule 1.A / 3.D: Reject Samsat and Tax categories from approval
+    if (decision === "Disetujui" && isSamsatOrTaxCategory(existing.category)) {
+      throw new ApiError(
+        400,
+        "FORBIDDEN_REIMBURSEMENT_CATEGORY",
+        `Pengajuan biaya kategori '${existing.category}' tidak dapat disetujui karena termasuk biaya resmi Samsat/Pajak yang wajib diproses melalui alur penagihan biaya order dan invoice.`
+      );
+    }
+
     if (existing.status === "Dibayar") {
       throw new ApiError(400, "INVALID_STATE", "Pengajuan biaya sudah dicairkan/dibayar dan tidak dapat diubah lagi.");
     }
@@ -493,7 +566,74 @@ export class MessengerService {
   }
 
   /**
-   * Pay / Realize reimbursement (disburses operational cash outflow into Kas Messenger)
+   * Void / Cancel reimbursement payout
+   */
+  public voidReimbursement(
+    id: string,
+    user: TokenPayload,
+    voidReason: string
+  ): ReimbursementRequest {
+    const allowedRoles = ["administrator", "supervisor", "svp"];
+    if (!allowedRoles.includes((user.role || "").toLowerCase())) {
+      throw new ApiError(403, "FORBIDDEN", "Hanya Supervisor atau Administrator yang berhak membatalkan (void) pencairan reimbursement.");
+    }
+
+    if (!voidReason || typeof voidReason !== "string" || !voidReason.trim()) {
+      throw new ApiError(400, "MISSING_VOID_REASON", "Alasan pembatalan (voidReason) wajib diisi.");
+    }
+
+    const existing = dbMessengerRepository.getReimbursementById(id);
+    if (!existing) {
+      throw new ApiError(404, "NOT_FOUND", `Pengajuan reimbursement '${id}' tidak ditemukan.`);
+    }
+
+    if (existing.status !== "Dibayar") {
+      throw new ApiError(400, "INVALID_STATUS", `Hanya reimbursement berstatus 'Dibayar' yang dapat dibatalkan (status saat ini: '${existing.status}').`);
+    }
+
+    return runInTransaction(() => {
+      const nowStr = new Date().toISOString().split("T")[0];
+      const amountPaid = existing.approvedAmount !== undefined && existing.approvedAmount > 0
+        ? existing.approvedAmount
+        : existing.amount;
+
+      // 1. Compensating Reversal in Kas Kantor (Debit because original payout was Kredit)
+      dbFinanceRepository.addKasKantor({
+        tanggal: nowStr,
+        keterangan: `[VOID/BATAL] Reversal Pencairan Reimbursement: ${existing.messengerName} (${existing.category}) [Ref: ${id}] - ${voidReason.trim()}`,
+        status: "Debit",
+        debit: amountPaid,
+        kredit: 0,
+        penanggungJawab: user.nama,
+        orderNo: existing.orderNo || undefined,
+        kategori: "Reimbursement Reversal",
+      });
+
+      // 2. Update Reimbursement status back to Disetujui
+      const updates: Partial<ReimbursementRequest> = {
+        status: "Disetujui",
+      };
+      dbMessengerRepository.updateReimbursement(id, updates);
+
+      // 3. Audit Log
+      dbAuditRepository.save({
+        id: `audit-void-reimb-${Date.now()}`,
+        userId: user.userId,
+        userName: user.nama,
+        userRole: user.role as any,
+        action: "VOID_REIMBURSEMENT",
+        module: "Messenger",
+        details: `Void pencairan reimbursement #${id} sebesar Rp ${amountPaid.toLocaleString("id-ID")} untuk kurir ${existing.messengerName}. Alasan: ${voidReason.trim()}`,
+        metadata: { id, amountPaid, voidReason: voidReason.trim(), messengerId: existing.messengerId },
+        createdAt: new Date().toISOString(),
+      });
+
+      return dbMessengerRepository.getReimbursementById(id) || existing;
+    });
+  }
+
+  /**
+   * Pay / Realize reimbursement (strictly disburses from Kas Kantor, zero mutation to Kas Messenger)
    */
   public payReimbursement(
     id: string,
@@ -513,6 +653,15 @@ export class MessengerService {
       throw new ApiError(400, "ALREADY_PAID", `Pengajuan biaya '${id}' sudah dibayarkan sebelumnya.`);
     }
 
+    // Phase C Rule 1.A / 3.D: Reject Samsat and Tax categories from payout
+    if (isSamsatOrTaxCategory(existing.category)) {
+      throw new ApiError(
+        400,
+        "FORBIDDEN_REIMBURSEMENT_CATEGORY",
+        `Pengajuan reimbursement kategori '${existing.category}' tidak dapat dicairkan karena termasuk biaya resmi Samsat/Pajak.`
+      );
+    }
+
     return runInTransaction(() => {
       const nowStr = new Date().toISOString().split("T")[0];
       const nowIso = new Date().toISOString();
@@ -520,55 +669,38 @@ export class MessengerService {
         ? existing.approvedAmount
         : existing.amount;
 
-      // Idempotency check: verify this reimbursement has not already been disbursed into kas_messenger
-      const existingKasCheck = db.prepare("SELECT id FROM kas_messenger WHERE reimbursement_id = ?").get(id) as any;
+      // Idempotency check: verify this reimbursement has not already been disbursed into kas_kantor
+      const existingKasCheck = db.prepare("SELECT id FROM kas_kantor WHERE keterangan LIKE ?").get(`%[Ref: ${id}]%`);
       if (existingKasCheck) {
-        throw new ApiError(400, "ALREADY_DISBURSED", `Pengajuan reimbursement '${id}' sudah dicairkan pada transaksi Kas Messenger #${existingKasCheck.id}.`);
+        throw new ApiError(400, "ALREADY_DISBURSED", `Pengajuan reimbursement '${id}' sudah dicairkan pada transaksi Kas Kantor #${existingKasCheck.id}.`);
       }
 
-      // 1. Create real cash outflow in Kas Messenger
-      const kasMessengerItem = dbFinanceRepository.addKasMessenger({
+      // Phase C Rule 1.A / 3.C: Payout is cash disbursement strictly from Kas Kantor (Kredit).
+      // Courier used personal funds; do NOT deduct from Kas Messenger.
+      const kasKantorItem = dbFinanceRepository.addKasKantor({
         tanggal: nowStr,
-        jenis: "Operasional",
-        messenger: existing.messengerName,
-        keterangan: `Reimbursement ${existing.category}: ${existing.note || existing.category}${existing.orderNo ? ` (${existing.orderNo})` : ""} [Ref: ${id}]`,
-        in: 0,
-        out: amountToPay,
+        keterangan: `[KAS KELUAR] Pencairan Reimbursement Kurir: ${existing.messengerName} (${existing.category}) [Ref: ${id}]`,
+        status: "Kredit",
+        debit: 0,
+        kredit: amountToPay,
         penanggungJawab: user.nama,
         orderNo: existing.orderNo || undefined,
-        reimbursementId: id,
-        receiptUrl: existing.receiptUrl || undefined,
         kategori: existing.category,
       });
 
-      // QC-02 Fix: Double-entry balanced bookkeeping. Deduct cash from Kas Kantor (Kredit)
-      const isOfficeCash = !paymentDetails?.channel || paymentDetails?.channel.toLowerCase().includes("kantor") || paymentDetails?.paymentMethod?.toLowerCase().includes("tunai") || paymentDetails?.paymentMethod?.toLowerCase().includes("kas");
-      if (isOfficeCash) {
-        dbFinanceRepository.addKasKantor({
-          tanggal: nowStr,
-          keterangan: `[KAS KELUAR] Pencairan Reimbursement Kurir: ${existing.messengerName} (${existing.category}) [Ref: ${id}]`,
-          status: "Kredit",
-          debit: 0,
-          kredit: amountToPay,
-          penanggungJawab: user.nama,
-          orderNo: existing.orderNo || undefined,
-        });
-      }
-
-      // 2. Update reimbursement record
+      // Update reimbursement record
       const updates: Partial<ReimbursementRequest> = {
         status: "Dibayar",
         paidAt: nowIso,
         paidBy: user.nama,
-        paymentMethod: paymentDetails?.paymentMethod || "Kas Messenger (Tunai)",
+        paymentMethod: paymentDetails?.paymentMethod || "Kas Kantor (Tunai)",
         transactionRef: paymentDetails?.transactionRef || `TRX-REIMB-${id}`,
-        kasMessengerId: kasMessengerItem.id,
-        channel: paymentDetails?.channel || "Kas Messenger",
+        channel: paymentDetails?.channel || "Kas Kantor",
       };
 
       dbMessengerRepository.updateReimbursement(id, updates);
 
-      // 3. Record audit log
+      // Record audit log
       dbAuditRepository.save({
         id: `audit-reimb-pay-${Date.now()}`,
         userId: user.userId,
@@ -576,8 +708,8 @@ export class MessengerService {
         userRole: user.role as any,
         action: "UPDATE",
         module: "Reimbursement Payout",
-        details: `Pencairan reimbursement ${id} sebesar Rp ${amountToPay.toLocaleString("id-ID")} kepada ${existing.messengerName} dicatat pada Kas Messenger #${kasMessengerItem.id}`,
-        metadata: { id, amount: amountToPay, kasMessengerId: kasMessengerItem.id, channel: updates.channel },
+        details: `Pencairan reimbursement ${id} sebesar Rp ${amountToPay.toLocaleString("id-ID")} kepada ${existing.messengerName} dicatat pada Kas Kantor #${kasKantorItem.id}`,
+        metadata: { id, amount: amountToPay, kasKantorId: kasKantorItem.id, channel: updates.channel },
         createdAt: nowIso,
       });
 
@@ -728,6 +860,54 @@ export class MessengerService {
           });
         }
       }
+
+      // 4. Jemput Hasil Samsat (Phase 4 Dedicated)
+      const jemputHasilAcc = (order.taskAcceptance || {})["Jemput Hasil Samsat"] as any;
+      const isJemputHasilDone =
+        order.samsatPickupStatus === "Dokumen Samsat Diterima di Kantor" ||
+        jemputHasilAcc?.status === "COMPLETED" ||
+        Boolean(order.samsatPickupCompletedAt);
+
+      if (isJemputHasilDone) {
+        const cycle = jemputHasilAcc?.cycle || (order as any).samsatCycle || 1;
+        const histId = `HIST-${order.orderNo}-JEMPUT_HASIL-C${cycle}`;
+        if (!seenIds.has(histId)) {
+          seenIds.add(histId);
+          const mName =
+            jemputHasilAcc?.completedBy ||
+            order.samsatPickupMessengerNama ||
+            order.samsatPickupMessenger ||
+            jemputHasilAcc?.courierName ||
+            "Kurir Jemput Hasil";
+          const mId =
+            jemputHasilAcc?.completedById ||
+            order.samsatPickupMessengerId ||
+            jemputHasilAcc?.courierId ||
+            this.resolveMessengerEmpId(mName);
+
+          history.push({
+            id: histId,
+            orderNo: order.orderNo,
+            taskType: "Jemput Hasil Samsat",
+            messenger: mName,
+            messengerEmployeeId: mId,
+            customer: order.customer,
+            phone: order.nomorHP || "-",
+            nopol: order.nopol || "-",
+            jenisKendaraan: order.jenisKendaraan || "-",
+            layanan: order.layanan,
+            wilayah: order.wilayahSamsatAsal ? (order.wilayahSamsatAsal.toLowerCase().includes("samsat") ? order.wilayahSamsatAsal : `Samsat ${order.wilayahSamsatAsal}`) : "Samsat",
+            completedAt: order.samsatPickupCompletedAt || jemputHasilAcc?.completedAt || (order as any).updatedAt || order.createdAt,
+            totalTagihan: tagihan,
+            terbayar,
+            statusBayar,
+            status: "Selesai",
+            keterangan: "Berkas fisik hasil Samsat telah diserahkan dan diterima di kantor",
+            photoProofUrl: (order as any).samsatPickupProof || (order as any).samsatResultProof,
+            rawOrder: order,
+          });
+        }
+      }
     }
 
     return history.sort((a, b) => {
@@ -738,8 +918,22 @@ export class MessengerService {
   }
 
   public resolveMessengerEmpId(name: string): string {
-    const found = INITIAL_KARYAWAN.find((k) => k.nama.toLowerCase() === name.toLowerCase());
-    return found ? found.id : "EMP-MSG-001";
+    if (!name || typeof name !== "string") return "";
+    const cleanName = name.trim().toLowerCase();
+    try {
+      const userStmt = db.prepare(
+        "SELECT employee_id FROM users WHERE LOWER(nama) = ? AND employee_id IS NOT NULL LIMIT 1"
+      );
+      const userRow = userStmt.get(cleanName) as { employee_id: string } | undefined;
+      if (userRow?.employee_id) return userRow.employee_id;
+
+      const empStmt = db.prepare(
+        "SELECT id FROM employees WHERE LOWER(nama_lengkap) = ? AND status_karyawan != 'NONAKTIF' LIMIT 1"
+      );
+      const empRow = empStmt.get(cleanName) as { id: string } | undefined;
+      if (empRow?.id) return empRow.id;
+    } catch (e) {}
+    return "";
   }
 
   private buildTaskDetailFromItem(item: MessengerHistoryItem): TaskDetailResponse {
@@ -1007,8 +1201,8 @@ export class MessengerService {
       id: `HIST-${rawOrder.orderNo}-CUSTOM`,
       orderNo: rawOrder.orderNo,
       taskType,
-      messenger: rawOrder.messenger || (rawOrder as any).assignedMessengerName || "Budi Santoso",
-      messengerEmployeeId: (rawOrder as any).assignedMessengerId || "EMP-MSG-001",
+      messenger: rawOrder.messenger || (rawOrder as any).assignedMessengerName || "-",
+      messengerEmployeeId: (rawOrder as any).assignedMessengerId || undefined,
       customer: rawOrder.customer,
       phone: rawOrder.nomorHP || "-",
       nopol: rawOrder.nopol || "-",

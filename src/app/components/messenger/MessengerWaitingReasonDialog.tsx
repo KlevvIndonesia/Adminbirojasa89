@@ -9,7 +9,6 @@ import {
 } from "../ui/dialog";
 import { Button } from "../ui/button";
 import { Label } from "../ui/label";
-import { Textarea } from "../ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../ui/select";
 import { AlertCircle, Clock } from "lucide-react";
 import { WAITING_REASONS, SAMSAT_WAITING_REASONS, WaitingReason, SamsatWaitingReason } from "../../../domain/messenger/types";
@@ -21,7 +20,7 @@ interface MessengerWaitingReasonDialogProps {
   title?: string;
   description?: string;
   reasons?: readonly string[];
-  onSubmit: (reason: any, note: string) => void;
+  onSubmit: (reason: any, note?: string) => void;
   isSubmitting?: boolean;
 }
 
@@ -29,13 +28,12 @@ export function MessengerWaitingReasonDialog({
   open,
   onOpenChange,
   title = "Pilih Alasan Status Menunggu",
-  description = "Status Menunggu memerlukan alasan wajib dan catatan keterangan operasional.",
+  description = "Status Menunggu memerlukan alasan wajib yang terstruktur.",
   reasons = SAMSAT_WAITING_REASONS,
   onSubmit,
   isSubmitting = false,
 }: MessengerWaitingReasonDialogProps) {
   const [selectedReason, setSelectedReason] = useState<string>("");
-  const [note, setNote] = useState("");
   const [error, setError] = useState<string | null>(null);
 
   const handleSubmit = (e: React.FormEvent) => {
@@ -47,15 +45,13 @@ export function MessengerWaitingReasonDialog({
     }
 
     setError(null);
-    onSubmit(selectedReason as WaitingReason, note.trim());
+    onSubmit(selectedReason as WaitingReason);
     setSelectedReason("");
-    setNote("");
   };
 
   const handleCancel = () => {
     setError(null);
     setSelectedReason("");
-    setNote("");
     onOpenChange(false);
   };
 
@@ -102,19 +98,6 @@ export function MessengerWaitingReasonDialog({
                 ))}
               </SelectContent>
             </Select>
-          </div>
-
-          <div className="space-y-2">
-            <Label className="text-xs font-semibold text-foreground">
-              Catatan Tambahan (Opsional)
-            </Label>
-            <Textarea
-              placeholder="Berikan detail kendala atau tindak lanjut..."
-              value={note}
-              onChange={(e) => setNote(e.target.value)}
-              rows={3}
-              className="text-xs resize-none"
-            />
           </div>
 
           <DialogFooter className="flex gap-2 justify-end pt-2">

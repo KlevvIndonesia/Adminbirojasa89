@@ -20,8 +20,36 @@ const generateOrderData = () => {
 
 const initialOrderData = generateOrderData();
 
-export function Order() {
-  const [orderData] = useState<any[]>(initialOrderData);
+export interface OrderRecordItem {
+  orderNo?: string;
+  customer?: string;
+  nopol?: string;
+  layanan?: string;
+  currentStageName?: string;
+  isCancelled?: boolean;
+  status?: string;
+  totalBiaya?: number;
+  [key: string]: unknown;
+}
+
+export interface OrderProps {
+  initialOrders?: OrderRecordItem[];
+}
+
+export function computeOrderStats(orders: OrderRecordItem[] = []) {
+  const activeOrders = orders.filter(
+    (order) =>
+      order.currentStageName !== "Dibatalkan" &&
+      !order.isCancelled &&
+      order.status !== "Dibatalkan"
+  );
+  const totalOrders = activeOrders.length;
+  const totalRevenue = activeOrders.reduce((sum, order) => sum + (Number(order.totalBiaya) || 0), 0);
+  return { totalOrders, totalRevenue, activeOrders };
+}
+
+export function Order({ initialOrders }: OrderProps = {}) {
+  const [orderData] = useState<any[]>(initialOrders ?? initialOrderData);
   const [searchTerm, setSearchTerm] = useState("");
   const [filterLayanan, setFilterLayanan] = useState("all");
   const [currentPage, setCurrentPage] = useState(1);
@@ -53,9 +81,8 @@ export function Order() {
     setCurrentPage(1);
   };
 
-  // Stats calculation
-  const totalOrders = orderData.length;
-  const totalRevenue = orderData.reduce((sum, order) => sum + order.totalBiaya, 0);
+  // Stats calculation (excludes cancelled orders)
+  const { totalOrders, totalRevenue } = computeOrderStats(orderData);
 
   const handleViewOrder = (order: any) => {
     setSelectedOrder(order);
@@ -122,7 +149,7 @@ export function Order() {
               </div>
               <div>
                 <p className="text-xs sm:text-sm text-muted-foreground">Rata-rata per Order</p>
-                <h3 className="text-xl font-bold font-mono tabular-nums text-foreground">Rp {Math.round(totalRevenue / totalOrders / 1000)}rb</h3>
+                <h3 className="text-xl font-bold font-mono tabular-nums text-foreground">Rp {totalOrders > 0 ? Math.round(totalRevenue / totalOrders / 1000) : 0}rb</h3>
               </div>
             </div>
           </Card>
@@ -133,10 +160,11 @@ export function Order() {
         initial={{ opacity: 0, y: 20 }}
         animate={{ opacity: 1, y: 0 }}
         transition={{ delay: 0.2 }}
+        className="flex-1 flex flex-col min-h-0"
       >
-        <Card className="p-4 sm:p-5 border border-border/80 bg-card shadow-xs">
+        <Card className="p-4 sm:p-5 border border-border/80 bg-card shadow-xs flex-1 flex flex-col min-h-0">
           {/* Filters */}
-          <div className="flex flex-col lg:flex-row gap-4 mb-6">
+          <div className="flex flex-col lg:flex-row gap-4 mb-4 shrink-0">
             <div className="relative flex-1">
               <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 w-4 h-4 text-muted-foreground" />
               <Input 
@@ -173,75 +201,82 @@ export function Order() {
           </div>
 
           {/* Info Bar */}
-          <div className="mb-4 flex justify-between items-center">
-            <p className="text-sm text-muted-foreground">
+          <div className="mb-3 flex justify-between items-center shrink-0">
+            <p className="text-xs text-muted-foreground">
               Menampilkan {filteredData.length} dari {orderData.length} order selesai
             </p>
           </div>
           
           {/* Table */}
-          <div className="rounded-lg border border-border overflow-hidden">
-            <Table>
-              <TableHeader className="bg-secondary/30">
-                <TableRow>
-                  <TableHead>No</TableHead>
-                  <TableHead>No Order</TableHead>
-                  <TableHead>Nama Customer</TableHead>
-                  <TableHead>Nomor Polisi</TableHead>
-                  <TableHead>Jenis Pengurusan</TableHead>
-                  <TableHead>Tgl Order</TableHead>
-                  <TableHead>Tgl Selesai</TableHead>
-                  <TableHead>Total Biaya</TableHead>
-                  <TableHead className="text-right">Aksi</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {paginatedData.length > 0 ? (
-                  paginatedData.map((order, index) => (
-                    <TableRow key={order.id} className="hover:bg-secondary/20 transition-colors">
-                      <TableCell className="w-16 font-mono tabular-nums text-muted-foreground">{startIndex + index + 1}</TableCell>
-                      <TableCell className="font-mono tabular-nums font-medium text-foreground">{order.noOrder}</TableCell>
-                      <TableCell className="font-medium text-foreground">{order.customer}</TableCell>
-                      <TableCell className="font-mono tabular-nums">{order.nopol}</TableCell>
-                      <TableCell>{order.layanan}</TableCell>
-                      <TableCell className="font-mono tabular-nums text-muted-foreground">{order.tanggalOrder}</TableCell>
-                      <TableCell className="font-mono tabular-nums text-muted-foreground">{order.tanggalSelesai}</TableCell>
-                      <TableCell className="font-mono tabular-nums font-semibold text-foreground">Rp {order.totalBiaya.toLocaleString('id-ID')}</TableCell>
-                      <TableCell className="text-right">
-                        <Button 
-                          size="sm" 
-                          variant="ghost" 
-                          className="h-8 w-8 p-0 hover:bg-secondary"
-                          onClick={() => handleViewOrder(order)}
-                        >
-                          <Eye className="w-4 h-4 text-muted-foreground" />
-                        </Button>
+          <div className="rounded-lg border border-border bg-card overflow-hidden shadow-2xs flex-1 flex flex-col min-h-0">
+            <div className="w-full flex-1 flex flex-col min-h-0">
+              <Table 
+                containerClassName="overflow-y-auto overflow-x-auto max-h-[calc(100vh-320px)] sm:max-h-[calc(100vh-340px)] min-h-[160px]"
+                className={`w-full min-w-[750px] ${paginatedData.length === 0 ? "h-full" : ""}`}
+              >
+                <TableHeader className="sticky top-0 z-10 bg-card border-b border-border shadow-2xs">
+                  <TableRow className="hover:bg-transparent">
+                    <TableHead className="w-16 font-semibold text-xs text-foreground/80 bg-card">No</TableHead>
+                    <TableHead className="font-semibold text-xs text-foreground/80 bg-card">No Order</TableHead>
+                    <TableHead className="font-semibold text-xs text-foreground/80 bg-card">Nama Customer</TableHead>
+                    <TableHead className="font-semibold text-xs text-foreground/80 bg-card">Nomor Polisi</TableHead>
+                    <TableHead className="font-semibold text-xs text-foreground/80 bg-card">Jenis Pengurusan</TableHead>
+                    <TableHead className="font-semibold text-xs text-foreground/80 bg-card">Tgl Order</TableHead>
+                    <TableHead className="font-semibold text-xs text-foreground/80 bg-card">Tgl Selesai</TableHead>
+                    <TableHead className="font-semibold text-xs text-foreground/80 bg-card">Total Biaya</TableHead>
+                    <TableHead className="text-right font-semibold text-xs text-foreground/80 bg-card">Aksi</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {paginatedData.length > 0 ? (
+                    paginatedData.map((order, index) => (
+                      <TableRow key={order.id} className="hover:bg-muted/30 transition-colors border-b border-border/60 last:border-0 h-10">
+                        <TableCell className="w-16 font-mono tabular-nums text-muted-foreground text-xs">{startIndex + index + 1}</TableCell>
+                        <TableCell className="font-mono tabular-nums font-medium text-foreground text-xs">{order.noOrder}</TableCell>
+                        <TableCell className="font-medium text-foreground text-xs">{order.customer}</TableCell>
+                        <TableCell className="font-mono tabular-nums text-xs">{order.nopol}</TableCell>
+                        <TableCell className="text-xs">{order.layanan}</TableCell>
+                        <TableCell className="font-mono tabular-nums text-muted-foreground text-xs">{order.tanggalOrder}</TableCell>
+                        <TableCell className="font-mono tabular-nums text-muted-foreground text-xs">{order.tanggalSelesai}</TableCell>
+                        <TableCell className="font-mono tabular-nums font-semibold text-foreground text-xs">Rp {order.totalBiaya.toLocaleString('id-ID')}</TableCell>
+                        <TableCell className="text-right">
+                          <Button 
+                            size="sm" 
+                            variant="ghost" 
+                            className="h-7 w-7 p-0 hover:bg-primary/10 hover:text-primary rounded transition-colors"
+                            onClick={() => handleViewOrder(order)}
+                          >
+                            <Eye className="w-3.5 h-3.5 text-muted-foreground" />
+                          </Button>
+                        </TableCell>
+                      </TableRow>
+                    ))
+                  ) : (
+                    <TableRow className="h-full hover:bg-transparent">
+                      <TableCell colSpan={9} className="text-center text-muted-foreground py-8">
+                        Tidak ada data ditemukan
                       </TableCell>
                     </TableRow>
-                  ))
-                ) : (
-                  <TableRow>
-                    <TableCell colSpan={9} className="text-center text-muted-foreground py-8">
-                      Tidak ada data ditemukan
-                    </TableCell>
-                  </TableRow>
-                )}
-              </TableBody>
-            </Table>
-          </div>
+                  )}
+                </TableBody>
+              </Table>
+            </div>
 
-          {/* Standardized Table Pagination */}
-          <TablePagination
-            currentPage={currentPage}
-            totalItems={filteredData.length}
-            itemsPerPage={itemsPerPage}
-            onPageChange={setCurrentPage}
-            onItemsPerPageChange={(newSize) => {
-              setItemsPerPage(newSize);
-              setCurrentPage(1);
-            }}
-            pageSizeOptions={[10, 25, 50, 100]}
-          />
+            {/* Standardized Table Pagination */}
+            <div className="border-t border-border/80 p-3 bg-card shrink-0 mt-auto">
+              <TablePagination
+                currentPage={currentPage}
+                totalItems={filteredData.length}
+                itemsPerPage={itemsPerPage}
+                onPageChange={setCurrentPage}
+                onItemsPerPageChange={(newSize) => {
+                  setItemsPerPage(newSize);
+                  setCurrentPage(1);
+                }}
+                pageSizeOptions={[10, 25, 50, 100]}
+              />
+            </div>
+          </div>
         </Card>
       </motion.div>
 
