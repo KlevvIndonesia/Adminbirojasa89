@@ -17,6 +17,7 @@ export interface DocumentAccessTicket {
   ticket: string;
   documentId: string;
   userId: string;
+  employeeId?: string;
   userName: string;
   userRole: string;
   operation: DocumentTicketOperation;
@@ -60,6 +61,7 @@ export class DocumentTicketService {
       ticket: ticketStr,
       documentId,
       userId: String(user.userId || (user as any).id || user.email),
+      employeeId: (user as any).employeeId || undefined,
       userName: user.nama || user.email,
       userRole: user.role || user.jabatan || "admin",
       operation,

@@ -218,6 +218,53 @@ class AuditLogService {
     this.logs = [];
     this.notify();
   }
+
+  public async clearLogsOnServer(): Promise<{ success: boolean; deletedCount: number; message: string }> {
+    const authHeaders = this.getAuthHeader();
+    if (!authHeaders.Authorization) {
+      throw new Error("Sesi login Anda tidak valid atau telah kedaluwarsa. Silakan login kembali.");
+    }
+
+    const baseUrl = APP_CONFIG.apiBaseUrl.replace(/\/$/, "");
+    let res = await fetch(`${baseUrl}/audit-logs`, {
+      method: "DELETE",
+      headers: { "Content-Type": "application/json", ...authHeaders },
+    });
+
+    if (res.status === 404 || res.status === 405) {
+      res = await fetch(`${baseUrl}/audit/clear`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...authHeaders },
+      });
+    }
+
+    if (!res.ok) {
+      let errDetail = `HTTP ${res.status}`;
+      try {
+        const body = await res.json();
+        if (body.error?.message) errDetail = body.error.message;
+        else if (body.message) errDetail = body.message;
+      } catch {}
+      throw new Error(`Gagal membersihkan riwayat aktivitas: ${errDetail}`);
+    }
+
+    const payload = await res.json();
+    const deletedCount = payload.data?.deletedCount ?? payload.deletedCount ?? 0;
+
+    // Immediately empty local memory state
+    this.logs = [];
+    this.hasSuccessfullyLoaded = true;
+    this.lastError = null;
+    this.isDataStale = false;
+    this.notify();
+
+    return {
+      success: true,
+      deletedCount,
+      message: payload.message || "Riwayat aktivitas berhasil dibersihkan secara permanen.",
+    };
+  }
+
 }
 
 export const auditLog = new AuditLogService();

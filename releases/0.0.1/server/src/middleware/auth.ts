@@ -4,51 +4,101 @@
  */
 
 import { Request, Response, NextFunction } from "express";
-import { verifyToken, TokenPayload } from "../utils/crypto";
+import { verifyToken, type TokenPayload } from "../utils/crypto";
+import { dbOrderRepository } from "../repositories/dbOrderRepository";
+import { dbUserRepository } from "../repositories/dbUserRepository";
 
-export interface AuthenticatedRequest extends Request {
+export type { TokenPayload };
+
+export interface AuthenticatedRequest<P = any, ResBody = any, ReqBody = any, ReqQuery = any> extends Request<P, ResBody, ReqBody, ReqQuery> {
   user?: TokenPayload | null;
+}
+
+export interface TokenValidationResult {
+  valid: boolean;
+  userPayload: TokenPayload | null;
+  errorCode?: "UNAUTHENTICATED" | "REVOKED_IDENTITY" | "ACCOUNT_INACTIVE";
+  errorMessage?: string;
+}
+
+/**
+ * Validates JWT cryptographic signature and strictly enforces real-time database
+ * user existence and active status. Immediately rejects revoked/deleted/inactive identities.
+ */
+export function validateTokenAndUser(token: string): TokenValidationResult {
+  if (!token || typeof token !== "string") {
+    return { valid: false, userPayload: null, errorCode: "UNAUTHENTICATED", errorMessage: "Token autentikasi tidak disediakan." };
+  }
+
+  const payload = verifyToken(token);
+  if (!payload) {
+    return { valid: false, userPayload: null, errorCode: "UNAUTHENTICATED", errorMessage: "Token autentikasi tidak valid atau telah kedaluwarsa." };
+  }
+
+  // Real-time database verification: user MUST exist and MUST be 'Aktif'
+  const dbUser = dbUserRepository.getByIdWithCredentials(payload.userId);
+  if (!dbUser) {
+    return {
+      valid: false,
+      userPayload: null,
+      errorCode: "REVOKED_IDENTITY",
+      errorMessage: "Akun pengguna tidak ditemukan atau telah dihapus secara permanen.",
+    };
+  }
+
+  if (dbUser.status !== "Aktif") {
+    return {
+      valid: false,
+      userPayload: null,
+      errorCode: "ACCOUNT_INACTIVE",
+      errorMessage: "Akun pengguna telah dinonaktifkan.",
+    };
+  }
+
+  return { valid: true, userPayload: payload };
+}
+
+function extractToken(req: Request): string {
+  const authHeader = req.headers["authorization"];
+  return authHeader ? (authHeader.startsWith("Bearer ") ? authHeader.slice(7).trim() : authHeader.trim()) : "";
 }
 
 /**
  * Optional authentication: decodes token if provided, but does not block anonymous requests.
  */
 export function authenticateToken(req: AuthenticatedRequest, res: Response, next: NextFunction): void {
-  const authHeader = req.headers["authorization"];
-  const token = authHeader ? (authHeader.startsWith("Bearer ") ? authHeader.slice(7).trim() : authHeader.trim()) : "";
+  const token = extractToken(req);
   if (!token) {
     req.user = null;
     return next();
   }
 
-  const payload = verifyToken(token);
-  req.user = payload;
+  const result = validateTokenAndUser(token);
+  req.user = result.valid ? result.userPayload : null;
   next();
 }
 
 /**
- * Mandatory authentication: rejects any request lacking a valid, verified JWT.
+ * Mandatory authentication: rejects any request lacking a valid, verified JWT
+ * or belonging to a deleted / non-active user.
  */
 export function requireAuth(req: AuthenticatedRequest, res: Response, next: NextFunction): void {
-  if (!req.user) {
-    const authHeader = req.headers["authorization"];
-    const token = authHeader ? (authHeader.startsWith("Bearer ") ? authHeader.slice(7).trim() : authHeader.trim()) : "";
-    if (token) {
-      req.user = verifyToken(token);
-    }
-  }
+  const token = extractToken(req);
+  const result = validateTokenAndUser(token);
 
-  if (!req.user) {
+  if (!result.valid || !result.userPayload) {
     res.status(401).json({
       success: false,
       error: {
-        code: "UNAUTHENTICATED",
-        message: "Autentikasi diperlukan untuk mengakses resource ini.",
+        code: result.errorCode || "UNAUTHENTICATED",
+        message: result.errorMessage || "Autentikasi diperlukan untuk mengakses resource ini.",
       },
       timestamp: new Date().toISOString(),
     });
     return;
   }
+
+  req.user = result.userPayload;
   next();
 }
 
@@ -59,23 +109,20 @@ export function requireAuth(req: AuthenticatedRequest, res: Response, next: Next
 export function requireRoles(...allowedRoles: string[]) {
   return (req: AuthenticatedRequest, res: Response, next: NextFunction): void => {
     if (!req.user) {
-      const authHeader = req.headers["authorization"];
-      const token = authHeader ? (authHeader.startsWith("Bearer ") ? authHeader.slice(7).trim() : authHeader.trim()) : "";
-      if (token) {
-        req.user = verifyToken(token);
+      const token = extractToken(req);
+      const result = validateTokenAndUser(token);
+      if (!result.valid || !result.userPayload) {
+        res.status(401).json({
+          success: false,
+          error: {
+            code: result.errorCode || "UNAUTHENTICATED",
+            message: result.errorMessage || "Autentikasi diperlukan untuk mengakses resource ini.",
+          },
+          timestamp: new Date().toISOString(),
+        });
+        return;
       }
-    }
-
-    if (!req.user) {
-      res.status(401).json({
-        success: false,
-        error: {
-          code: "UNAUTHENTICATED",
-          message: "Autentikasi diperlukan untuk mengakses resource ini.",
-        },
-        timestamp: new Date().toISOString(),
-      });
-      return;
+      req.user = result.userPayload;
     }
 
     const userRole = req.user.role;
@@ -102,20 +149,17 @@ export function requireRoles(...allowedRoles: string[]) {
  */
 export function requireStageAuthority(req: AuthenticatedRequest, res: Response, next: NextFunction): void {
   if (!req.user) {
-    const authHeader = req.headers["authorization"];
-    if (authHeader) {
-      const token = authHeader.startsWith("Bearer ") ? authHeader.slice(7).trim() : authHeader.trim();
-      req.user = verifyToken(token);
+    const token = extractToken(req);
+    const result = validateTokenAndUser(token);
+    if (!result.valid || !result.userPayload) {
+      res.status(401).json({
+        success: false,
+        error: { code: result.errorCode || "UNAUTHENTICATED", message: result.errorMessage || "Autentikasi diperlukan." },
+        timestamp: new Date().toISOString(),
+      });
+      return;
     }
-  }
-
-  if (!req.user) {
-    res.status(401).json({
-      success: false,
-      error: { code: "UNAUTHENTICATED", message: "Autentikasi diperlukan." },
-      timestamp: new Date().toISOString(),
-    });
-    return;
+    req.user = result.userPayload;
   }
 
   const userRole = req.user.role;
@@ -146,14 +190,24 @@ export function requireStageAuthority(req: AuthenticatedRequest, res: Response, 
     return;
   }
 
-  // Admin cannot supervise Stage 6
-  if (userRole === "admin" && (targetStage === "Supervisi" || req.params?.stage === "Supervisi")) {
-    res.status(403).json({
-      success: false,
-      error: { code: "FORBIDDEN", message: "Hanya Supervisor / SVP yang berwenang melakukan supervisi Stage 6." },
-      timestamp: new Date().toISOString(),
-    });
-    return;
+  // Admin cannot supervise Stage 6 (advancing FROM Stage 6 to Stage 7)
+  const orderNo = req.params?.orderNo;
+  let currentStageName = "";
+  if (orderNo) {
+    const existingOrder = dbOrderRepository.getByOrderNo(orderNo);
+    currentStageName = existingOrder?.currentStageName || "";
+  }
+
+  if (userRole === "admin") {
+    // Admin is view-only in Stage 6 and cannot approve/advance from Stage 6
+    if (currentStageName === "Supervisi" || req.params?.stage === "Supervisi") {
+      res.status(403).json({
+        success: false,
+        error: { code: "FORBIDDEN", message: "Hanya Supervisor / SVP yang berwenang melakukan supervisi Stage 6." },
+        timestamp: new Date().toISOString(),
+      });
+      return;
+    }
   }
 
   next();
@@ -164,20 +218,17 @@ export function requireStageAuthority(req: AuthenticatedRequest, res: Response, 
  */
 export function requireUserSelfOrAdmin(req: AuthenticatedRequest, res: Response, next: NextFunction): void {
   if (!req.user) {
-    const authHeader = req.headers["authorization"];
-    if (authHeader) {
-      const token = authHeader.startsWith("Bearer ") ? authHeader.slice(7).trim() : authHeader.trim();
-      req.user = verifyToken(token);
+    const token = extractToken(req);
+    const result = validateTokenAndUser(token);
+    if (!result.valid || !result.userPayload) {
+      res.status(401).json({
+        success: false,
+        error: { code: result.errorCode || "UNAUTHENTICATED", message: result.errorMessage || "Autentikasi diperlukan." },
+        timestamp: new Date().toISOString(),
+      });
+      return;
     }
-  }
-
-  if (!req.user) {
-    res.status(401).json({
-      success: false,
-      error: { code: "UNAUTHENTICATED", message: "Autentikasi diperlukan." },
-      timestamp: new Date().toISOString(),
-    });
-    return;
+    req.user = result.userPayload;
   }
 
   const targetId = req.params.id;

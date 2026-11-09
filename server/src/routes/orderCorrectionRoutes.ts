@@ -4,7 +4,7 @@
  */
 
 import { Router } from "express";
-import { requireAuth } from "../middleware/auth";
+import { requireAuth, requireRoles } from "../middleware/auth";
 import {
   reviewOrderCorrection,
   getOrderCorrectionById,
@@ -15,4 +15,9 @@ export const orderCorrectionRouter = Router();
 
 orderCorrectionRouter.get("/", requireAuth, listOrderCorrections);
 orderCorrectionRouter.get("/:id", requireAuth, getOrderCorrectionById);
-orderCorrectionRouter.post("/:id/review", requireAuth, reviewOrderCorrection);
+orderCorrectionRouter.post(
+  "/:id/review",
+  requireAuth,
+  requireRoles("administrator", "admin", "svp", "supervisor", "spv"),
+  reviewOrderCorrection
+);

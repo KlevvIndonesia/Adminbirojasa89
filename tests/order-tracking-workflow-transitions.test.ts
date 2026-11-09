@@ -10,6 +10,7 @@ import test from "node:test";
 import assert from "node:assert";
 import http from "node:http";
 import { createApp } from "../server/src/app";
+import { db } from "../server/src/database/db";
 
 function startTestServer(): Promise<{ server: http.Server; baseUrl: string }> {
   return new Promise((resolve) => {
@@ -117,6 +118,11 @@ test("Order Tracking Workflow - Comprehensive 8 Stages & RBAC Security Verificat
     assert.strictEqual(illegalJumpRes.status, 400, "Skipping stages (1 -> 4) must be rejected");
     const illegalJumpData = (await illegalJumpRes.json()) as any;
     assert.strictEqual(illegalJumpData.error.code, "INVALID_STAGE_TRANSITION");
+
+    // Database state assertion: verifying no mutation occurred after illegal jump rejection
+    const dbRowAfterFailedJump = db.prepare("SELECT current_step, current_stage_name FROM orders WHERE order_no = ?").get(actualOrderNo) as any;
+    assert.strictEqual(dbRowAfterFailedJump.current_step, 1, "DB current_step must remain 1 after failed jump");
+    assert.strictEqual(dbRowAfterFailedJump.current_stage_name, "Verifikasi", "DB current_stage_name must remain Verifikasi");
 
     // =========================================================================
     // SECURITY GUARD: Advance endpoint must reject client forged lifecycle keys
@@ -453,6 +459,245 @@ test("Order Tracking Workflow - Comprehensive 8 Stages & RBAC Security Verificat
     const switchData = (await switchAdvanceRes.json()) as any;
     assert.strictEqual(switchData.data.currentStep, 3);
     assert.strictEqual(switchData.data.currentStageName, "Verifikasi Dokumen");
+
+  } finally {
+    server.close();
+  }
+});
+
+test("Order Workflow - Extended Boundary Validations, Concurrency, and DB Persistence Verification", async (t) => {
+  const { server, baseUrl } = await startTestServer();
+
+  try {
+    const adminToken = await loginUser(baseUrl, "admin@birojasa.com", "admin123");
+
+    // 1. Create a pristine test order starting at Step 1 (Verifikasi)
+    const createRes = await fetch(`${baseUrl}/api/orders`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${adminToken}`,
+      },
+      body: JSON.stringify({
+        customer: "Budi Validasi",
+        nomorHP: "081288887777",
+        nopol: "B 1234 VAL",
+        layanan: "Perpanjangan STNK Tahunan",
+        wilayahSamsatAsal: "Jakarta Selatan",
+        totalEstimasi: 500000,
+        biayaSamsat: 350000,
+        biayaJasa: 150000,
+        metodeLayanan: "Antar Jemput Dokumen",
+      }),
+    });
+    assert.strictEqual(createRes.status, 201);
+    const createData = await createRes.json() as any;
+    const orderNo = createData.data.orderNo;
+    assert.ok(orderNo);
+    const initialRow = db.prepare("SELECT current_step, current_stage_name, updated_at FROM orders WHERE order_no = ?").get(orderNo) as any;
+    assert.strictEqual(initialRow.current_step, 1);
+    assert.strictEqual(initialRow.current_stage_name, "Verifikasi");
+
+    // SCENARIO: Validasi Gagal Tidak Meninggalkan Perubahan Parsial (DB Assertion)
+    const initialAuditCount = (db.prepare("SELECT COUNT(*) as count FROM audit_logs WHERE action = 'ADVANCE_STAGE' AND metadata_json LIKE ?").get(`%${orderNo}%`) as any).count;
+    const failRes = await fetch(`${baseUrl}/api/orders/${orderNo}/advance`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${adminToken}`,
+      },
+      body: JSON.stringify({
+        targetStage: "Proses Samsat",
+        updates: {
+          catatanPenjadwalan: "Catatan Tidak Sah Yang Tidak Boleh Tersimpan",
+        },
+      }),
+    });
+    assert.strictEqual(failRes.status, 400);
+    const failData = await failRes.json() as any;
+    assert.strictEqual(failData.error.code, "INVALID_STAGE_TRANSITION");
+
+    // DB Assertions: current_step, current_stage_name, updated_at, data_json, audit logs
+    const rowAfterFail = db.prepare("SELECT current_step, current_stage_name, updated_at, data_json FROM orders WHERE order_no = ?").get(orderNo) as any;
+    assert.strictEqual(rowAfterFail.current_step, 1, "current_step must remain 1 in database");
+    assert.strictEqual(rowAfterFail.current_stage_name, "Verifikasi", "current_stage_name must remain Verifikasi in database");
+    assert.strictEqual(rowAfterFail.updated_at, initialRow.updated_at, "updated_at must remain unchanged in database");
+    const parsedDataJson = JSON.parse(rowAfterFail.data_json || "{}");
+    assert.strictEqual(parsedDataJson.catatanPenjadwalan, undefined, "Illegal update must not be persisted into data_json");
+    const afterFailAuditCount = (db.prepare("SELECT COUNT(*) as count FROM audit_logs WHERE action = 'ADVANCE_STAGE' AND metadata_json LIKE ?").get(`%${orderNo}%`) as any).count;
+    assert.strictEqual(afterFailAuditCount, initialAuditCount, "Audit log must not record failed advance");
+
+    // SCENARIO: Tahap 1 -> Tahap 2 (Valid Sequential Advance)
+    const step1to2Res = await fetch(`${baseUrl}/api/orders/${orderNo}/advance`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${adminToken}`,
+      },
+      body: JSON.stringify({
+        targetStage: "Penjadwalan",
+        updates: { isVerified: true, messenger: "Kurir Penguji" },
+      }),
+    });
+    assert.strictEqual(step1to2Res.status, 200);
+    const rowStep2 = db.prepare("SELECT current_step, current_stage_name FROM orders WHERE order_no = ?").get(orderNo) as any;
+    assert.strictEqual(rowStep2.current_step, 2);
+    assert.strictEqual(rowStep2.current_stage_name, "Penjadwalan");
+
+    // SCENARIO: Tahap yang sama (Idempotency Rule)
+    const idempotentRes = await fetch(`${baseUrl}/api/orders/${orderNo}/advance`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${adminToken}`,
+      },
+      body: JSON.stringify({
+        targetStage: "Penjadwalan",
+        updates: { catatanPenjadwalan: "Update catatan di tahap yang sama" },
+      }),
+    });
+    assert.strictEqual(idempotentRes.status, 200, "Same stage advance must be accepted idempotently");
+    const idempotentData = await idempotentRes.json() as any;
+    assert.strictEqual(idempotentData.data.currentStep, 2);
+    assert.strictEqual(idempotentData.data.currentStageName, "Penjadwalan");
+    const rowIdempotent = db.prepare("SELECT current_step, current_stage_name, data_json FROM orders WHERE order_no = ?").get(orderNo) as any;
+    assert.strictEqual(rowIdempotent.current_step, 2);
+    assert.strictEqual(rowIdempotent.current_stage_name, "Penjadwalan");
+    assert.ok(rowIdempotent.data_json.includes("Update catatan di tahap yang sama"));
+
+    // SCENARIO: Transisi Mundur via /advance Ditolak (Harus via /rollback)
+    const backwardAdvanceRes = await fetch(`${baseUrl}/api/orders/${orderNo}/advance`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${adminToken}`,
+      },
+      body: JSON.stringify({
+        targetStage: "Verifikasi",
+      }),
+    });
+    assert.strictEqual(backwardAdvanceRes.status, 400, "Backward transition via /advance must be rejected");
+    const backwardAdvanceData = await backwardAdvanceRes.json() as any;
+    assert.strictEqual(backwardAdvanceData.error.code, "INVALID_STAGE_TRANSITION");
+
+    // SCENARIO: Transisi Mundur via /rollback Berhasil (Existing Business Rules)
+    const rollbackRes = await fetch(`${baseUrl}/api/orders/${orderNo}/rollback`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${adminToken}`,
+      },
+      body: JSON.stringify({
+        targetStage: "Verifikasi",
+        updates: { catatan: "Rollback ke Verifikasi untuk pengecekan ulang" },
+      }),
+    });
+    assert.strictEqual(rollbackRes.status, 200, "Valid rollback via /rollback must succeed");
+    const rowRollback = db.prepare("SELECT current_step, current_stage_name FROM orders WHERE order_no = ?").get(orderNo) as any;
+    assert.strictEqual(rowRollback.current_step, 1);
+    assert.strictEqual(rowRollback.current_stage_name, "Verifikasi");
+
+    // SCENARIO: Order Dibatalkan (Cannot be advanced)
+    const cancelRes = await fetch(`${baseUrl}/api/orders/${orderNo}/cancel`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${adminToken}`,
+      },
+      body: JSON.stringify({
+        reason: "Customer membatalkan permintaan layanan",
+      }),
+    });
+    assert.strictEqual(cancelRes.status, 200);
+    const advanceCancelledRes = await fetch(`${baseUrl}/api/orders/${orderNo}/advance`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${adminToken}`,
+      },
+      body: JSON.stringify({
+        targetStage: "Penjadwalan",
+      }),
+    });
+    assert.strictEqual(advanceCancelledRes.status, 400);
+    const advanceCancelledData = await advanceCancelledRes.json() as any;
+    assert.strictEqual(advanceCancelledData.error.code, "ORDER_CANCELLED");
+
+    // SCENARIO: Order Tidak Ditemukan (404)
+    const ghostRes = await fetch(`${baseUrl}/api/orders/ORD-GHOST-NOT-FOUND/advance`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${adminToken}`,
+      },
+      body: JSON.stringify({
+        targetStage: "Penjadwalan",
+      }),
+    });
+    assert.strictEqual(ghostRes.status, 404);
+    const ghostData = await ghostRes.json() as any;
+    assert.strictEqual(ghostData.error.code, "ORDER_NOT_FOUND");
+
+    // SCENARIO: Order Selesai (Terminal Step 8 Cannot Advance Further)
+    const completedOrderNo = `ORD-COMPL-${Date.now()}`;
+    db.prepare(`
+      INSERT INTO orders (order_no, customer, nomor_hp, layanan, nopol, current_step, current_stage_name, payment_status, total_biaya, data_json, created_at, updated_at)
+      VALUES (?, 'Customer Selesai', '081299998888', 'Perpanjangan 1 Tahun', 'B 9999 FIN', 8, 'Dokumen Telah Diterima', 'Lunas', 500000, '{"currentStep":8,"currentStageName":"Dokumen Telah Diterima"}', datetime('now'), datetime('now'))
+    `).run(completedOrderNo);
+
+    const advanceCompletedRes = await fetch(`${baseUrl}/api/orders/${completedOrderNo}/advance`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${adminToken}`,
+      },
+      body: JSON.stringify({
+        targetStage: "Pengantaran",
+      }),
+    });
+    assert.strictEqual(advanceCompletedRes.status, 400, "Completed order cannot advance to another stage");
+    const advanceCompletedData = await advanceCompletedRes.json() as any;
+    assert.strictEqual(advanceCompletedData.error.code, "INVALID_STAGE_TRANSITION");
+
+    // SCENARIO: Dua Request Bersamaan (Concurrency & Atomicity Check)
+    const concCreateRes = await fetch(`${baseUrl}/api/orders`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${adminToken}`,
+      },
+      body: JSON.stringify({
+        customer: "Customer Konkuren",
+        nomorHP: "081211110000",
+        nopol: "B 1010 CNC",
+        layanan: "Perpanjangan STNK Tahunan",
+        totalEstimasi: 500000,
+        biayaSamsat: 350000,
+        biayaJasa: 150000,
+      }),
+    });
+    assert.strictEqual(concCreateRes.status, 201);
+    const concCreateData = await concCreateRes.json() as any;
+    const concOrderNo = concCreateData.data.orderNo;
+    assert.ok(concOrderNo);
+
+    const [concRes1, concRes2] = await Promise.all([
+      fetch(`${baseUrl}/api/orders/${concOrderNo}/advance`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${adminToken}` },
+        body: JSON.stringify({ targetStage: "Penjadwalan", updates: { isVerified: true, messenger: "Kurir Alpha" } }),
+      }),
+      fetch(`${baseUrl}/api/orders/${concOrderNo}/advance`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${adminToken}` },
+        body: JSON.stringify({ targetStage: "Penjadwalan", updates: { isVerified: true, messenger: "Kurir Beta" } }),
+      }),
+    ]);
+    assert.strictEqual(concRes1.status, 200, "First concurrent request must succeed");
+    assert.strictEqual(concRes2.status, 200, "Second concurrent request must succeed (idempotent same stage)");
+    const concDbRow = db.prepare("SELECT current_step, current_stage_name FROM orders WHERE order_no = ?").get(concOrderNo) as any;
+    assert.strictEqual(concDbRow.current_step, 2, "DB state must strictly be Step 2 after concurrent requests");
+    assert.strictEqual(concDbRow.current_stage_name, "Penjadwalan");
 
   } finally {
     server.close();

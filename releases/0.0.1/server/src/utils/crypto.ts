@@ -91,10 +91,12 @@ export function timingSafeCompare(a: string, b: string): boolean {
 
 export interface TokenPayload {
   userId: string;
+  id?: string;
   email: string;
   nama: string;
   jabatan: string;
-  role: 'administrator' | 'finance' | 'admin' | 'messenger';
+  role: 'administrator' | 'finance' | 'admin' | 'messenger' | 'supervisor' | 'svp' | string;
+  employeeId?: string;
   iat?: number;
   exp: number;
 }

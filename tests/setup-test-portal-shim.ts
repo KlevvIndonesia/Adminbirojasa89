@@ -41,6 +41,19 @@ const mockHead = {
   }),
 };
 
+const storageMap = new Map<string, string>();
+const mockStorage = {
+  getItem: (k: string) => storageMap.get(k) ?? null,
+  setItem: (k: string, v: string) => { storageMap.set(k, String(v)); },
+  removeItem: (k: string) => { storageMap.delete(k); },
+  clear: () => { storageMap.clear(); },
+  get length() { return storageMap.size; },
+  key: (i: number) => Array.from(storageMap.keys())[i] ?? null,
+};
+
+(globalThis as any).localStorage = mockStorage;
+(globalThis as any).window.localStorage = mockStorage;
+
 (ReactDOM as any).createPortal = (children: any) => children;
 
 const origUseState = React.useState;

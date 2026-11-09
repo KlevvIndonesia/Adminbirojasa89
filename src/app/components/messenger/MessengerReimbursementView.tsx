@@ -168,7 +168,7 @@ export function MessengerReimbursementView({ currentUser }: MessengerReimburseme
     setIsSubmitting(true);
     try {
       const res = await submitReimbursement({
-        employeeId: currentUser.employeeId || "EMP-MSG-001",
+        employeeId: currentUser.employeeId || "EMP-0004",
         messengerName: currentUser.userName,
         category,
         amount: cleanAmount,

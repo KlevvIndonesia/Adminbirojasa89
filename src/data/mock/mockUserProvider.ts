@@ -5,7 +5,7 @@
 
 import { SystemUser } from "../../domain/user/types";
 import { InMemoryStorage } from "../storage/memoryStorage";
-import { AuthUserSession, DEMO_CREDENTIALS } from "../repositories/userRepository";
+import { AuthUserSession, AuthResult, DEMO_CREDENTIALS } from "../repositories/userRepository";
 
 export const initialUsers: SystemUser[] = [
   { id: 1, nama: "Admin Utama", jabatan: "ADMIN", email: "admin@birojasa.com", status: "Aktif" },
@@ -44,6 +44,7 @@ export interface IUserDataProvider {
   deleteUser(id: number | string): boolean;
   subscribe(listener: () => void): () => void;
   authenticate(email: string, password: string): Promise<AuthUserSession | null>;
+  authenticateDetailed?(email: string, password: string): Promise<AuthResult>;
   getDemoCredentials(): typeof DEMO_CREDENTIALS;
   resetPassword?(id: number | string): Promise<{ success: boolean; message?: string }>;
   isLoading?(): boolean;
@@ -115,11 +116,39 @@ export class MockUserProvider implements IUserDataProvider {
     return { success: true, message: "Kata sandi berhasil direset." };
   }
 
-  public async authenticate(email: string, password: string): Promise<AuthUserSession | null> {
+  public async authenticateDetailed(email: string, password: string): Promise<AuthResult> {
+    if (!email || !email.trim() || !password || !password.trim()) {
+      return {
+        success: false,
+        errorCode: "VALIDATION_ERROR",
+        errorMessage: "Email atau password yang Anda masukkan tidak sesuai. Periksa kembali data login Anda.",
+      };
+    }
+
+    const cleanEmail = email.trim().toLowerCase();
+
+    // Check if the user exists in initialUsers and is inactive
+    const existingUser = this.getAll().find((u) => u.email.toLowerCase() === cleanEmail);
+    if (existingUser && existingUser.status === "Nonaktif") {
+      return {
+        success: false,
+        errorCode: "ACCOUNT_INACTIVE",
+        errorMessage: "Akun Anda belum aktif atau aksesnya telah dinonaktifkan. Hubungi administrator.",
+      };
+    }
+
     const creds = Object.values(DEMO_CREDENTIALS).find(
-      (c) => c.email.toLowerCase() === email.toLowerCase() && c.password === password
+      (c) => c.email.toLowerCase() === cleanEmail && c.password === password
     );
-    if (!creds) return null;
+
+    if (!creds) {
+      return {
+        success: false,
+        errorCode: "INVALID_CREDENTIALS",
+        errorMessage: "Email atau password yang Anda masukkan tidak sesuai. Periksa kembali data login Anda.",
+      };
+    }
+
     if (typeof window !== "undefined" && window.localStorage) {
       window.localStorage.setItem("auth_user", JSON.stringify({
         role: creds.role,
@@ -129,12 +158,21 @@ export class MockUserProvider implements IUserDataProvider {
       }));
       window.localStorage.setItem("auth_token", `mock-token-${creds.role}-${Date.now()}`);
     }
+
     return {
-      role: creds.role,
-      name: creds.name,
-      userId: creds.userId,
-      employeeId: creds.employeeId,
+      success: true,
+      session: {
+        role: creds.role,
+        name: creds.name,
+        userId: creds.userId,
+        employeeId: creds.employeeId,
+      },
     };
+  }
+
+  public async authenticate(email: string, password: string): Promise<AuthUserSession | null> {
+    const res = await this.authenticateDetailed(email, password);
+    return res.session || null;
   }
 }
 

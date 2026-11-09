@@ -70,6 +70,7 @@ export function getDb(options?: { targetPath?: string }): DatabaseSync {
   // Safety Guard 1: Strict test isolation
   if (
     process.env.NODE_ENV === "test" ||
+    process.env.SUN89_TEST_ISOLATED === "1" ||
     process.argv.some((arg) => typeof arg === "string" && arg.includes("--test"))
   ) {
     if (path.resolve(targetPath) === operationalDbPath) {

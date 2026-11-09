@@ -2,260 +2,102 @@
  * Karyawan -> Pengguna Authoritative Data Adapter
  * Admin SUN89 — Biro Jasa Management System
  * 
- * Rules:
- * 1. Karyawan is the authoritative source of employee data.
- * 2. Pengguna manages access accounts linked strictly to an existing employee (employeeId).
- * 3. NO user creation in Manajemen Pengguna (must be added via Manajemen Karyawan).
- * 4. Password reset format is strictly DDMMYYYY derived from employee date of birth (tanggalLahir).
+ * Rules (Phase 3 Canonical Integration):
+ * 1. `employees` (/api/employees) is the authoritative Single Source of Truth for employee identity and employment.
+ * 2. `users` (/api/users) is the authoritative Single Source of Truth for login credentials, roles, and account status.
+ * 3. Relationship is maintained via canonical foreign key `users.employee_id REFERENCES employees(id)`.
+ * 4. Separation of Concerns: Account status (`statusAkun`) is distinct from employment status (`status_karyawan`).
+ * 5. Password reset format is derived from employee date of birth (`tanggalLahir`) in DDMMYYYY format.
  */
 
 import { useState, useEffect } from "react";
 import { auditLog } from "../utils/auditLog";
 import { userRepository } from "../../data/repositories/userRepository";
+import { apiEmployeeProvider } from "../../data/api/apiEmployeeProvider";
 import { APP_CONFIG } from "../config/appConfig";
 
 export interface KaryawanRecord {
-  id: string; // e.g. "EMP-001"
+  id: string; // e.g. "EMP-0001"
   nama: string;
-  jabatan: "ADMIN" | "FINANCE" | "SVP" | "MESSENGER" | "CLILEN";
+  jabatan: "ADMIN" | "FINANCE" | "SVP" | "MESSENGER" | "CLILEN" | string;
   wilayah: string;
-  status: "Aktif" | "Nonaktif";
+  status: "Aktif" | "Nonaktif" | string;
   noHp: string;
   email: string;
-  jenisKelamin: "Laki-laki" | "Perempuan";
+  jenisKelamin: "Laki-laki" | "Perempuan" | string;
   alamat: string;
   gajiPokok: number;
   tanggalBergabung: string;
   tanggalLahir: string; // Format: "YYYY-MM-DD" or "DD/MM/YYYY"
+  nikKtp?: string;
+  nik_ktp?: string;
+  userId?: number | string | null;
+  hasAccount?: boolean;
 }
 
 export interface PenggunaRecord {
-  id: string; // e.g. "USR-001"
-  employeeId: string; // FK -> KaryawanRecord.id
-  nama: string; // Mirrored from Karyawan
-  jabatan: string; // Mirrored from Karyawan
-  email: string; // Username/email
-  role: "admin" | "finance" | "svp" | "messenger" | "clilen";
+  id: string; // e.g. "1" or "USR-001"
+  employeeId: string; // FK -> KaryawanRecord.id (empty string if unlinked)
+  nama: string; // Account holder name
+  jabatan: string; // Title
+  email: string; // Username / email
+  role: "admin" | "finance" | "svp" | "messenger" | "clilen" | string;
   statusAkun: "Aktif" | "Nonaktif" | "Belum Aktif";
   terakhirLogin: string;
-  passwordHash?: string; // In-memory/mock storage
+  passwordHash?: string; // Masked / In-memory storage
   lastResetAt?: string;
+  employeeInfo?: KaryawanRecord | null;
 }
 
-// Initial Employees with exact test-case DOBs
+// Initial Employees with exact test-case DOBs (for mock mode)
 export const INITIAL_KARYAWAN: KaryawanRecord[] = [
   {
-    id: "EMP-001",
+    id: "EMP-0001",
     nama: "Budi Santoso",
     jabatan: "SVP",
     wilayah: "Jakarta Barat",
     status: "Aktif",
     noHp: "081234567896",
-    email: "budi.santoso@birojasa.com",
+    email: "svp@birojasa.com",
     jenisKelamin: "Laki-laki",
     alamat: "Jl. Kenanga No. 12, Jakarta Barat",
     gajiPokok: 8500000,
     tanggalBergabung: "2021-09-05",
     tanggalLahir: "2001-10-10", // 10 Oktober 2001 -> Reset Password: 10102001
+    nikKtp: "3175081010010001",
   },
   {
-    id: "EMP-002",
+    id: "EMP-0002",
     nama: "Siti Nurhaliza",
     jabatan: "ADMIN",
     wilayah: "Jakarta Timur",
     status: "Aktif",
     noHp: "081234567893",
-    email: "siti.nur@birojasa.com",
+    email: "admin@birojasa.com",
     jenisKelamin: "Perempuan",
     alamat: "Jl. Melati No. 123, Jakarta Timur",
     gajiPokok: 5000000,
     tanggalBergabung: "2023-01-15",
     tanggalLahir: "2000-01-05", // 05 Januari 2000 -> Reset Password: 05012000
+    nikKtp: "3175080501000002",
   },
   {
-    id: "EMP-003",
+    id: "EMP-0003",
     nama: "Andi Wijaya",
     jabatan: "FINANCE",
     wilayah: "Jakarta Selatan",
     status: "Aktif",
     noHp: "081234567894",
-    email: "andi.wijaya@birojasa.com",
+    email: "finance@birojasa.com",
     jenisKelamin: "Laki-laki",
     alamat: "Jl. Mawar No. 45, Jakarta Selatan",
     gajiPokok: 7000000,
     tanggalBergabung: "2022-06-10",
     tanggalLahir: "1998-07-15",
+    nikKtp: "3175081507980003",
   },
   {
-    id: "EMP-004",
-    nama: "Dewi Lestari",
-    jabatan: "CLILEN",
-    wilayah: "Depok",
-    status: "Aktif",
-    noHp: "081234567895",
-    email: "dewi.lestari@birojasa.com",
-    jenisKelamin: "Perempuan",
-    alamat: "Jl. Anggrek No. 78, Depok",
-    gajiPokok: 5500000,
-    tanggalBergabung: "2023-03-20",
-    tanggalLahir: "1999-04-20",
-  },
-  {
-    id: "EMP-005",
-    nama: "Maya Safitri",
-    jabatan: "ADMIN",
-    wilayah: "Bekasi",
-    status: "Aktif",
-    noHp: "081234567897",
-    email: "maya.safitri@birojasa.com",
-    jenisKelamin: "Perempuan",
-    alamat: "Jl. Dahlia No. 90, Bekasi",
-    gajiPokok: 4800000,
-    tanggalBergabung: "2023-07-12",
-    tanggalLahir: "2002-09-12",
-  },
-  {
-    id: "EMP-006",
-    nama: "Rudi Hartono",
-    jabatan: "MESSENGER",
-    wilayah: "Jakarta Timur",
-    status: "Aktif",
-    noHp: "081234567898",
-    email: "rudi.hartono@birojasa.com",
-    jenisKelamin: "Laki-laki",
-    alamat: "Jl. Melati Jaya No. 34, Jakarta Timur",
-    gajiPokok: 4500000,
-    tanggalBergabung: "2023-02-10",
-    tanggalLahir: "1997-12-03",
-  },
-  {
-    id: "EMP-007",
-    nama: "Joko Prasetyo",
-    jabatan: "MESSENGER",
-    wilayah: "Bekasi",
-    status: "Aktif",
-    noHp: "081234567899",
-    email: "joko.prasetyo@birojasa.com",
-    jenisKelamin: "Laki-laki",
-    alamat: "Jl. Raya Bekasi No. 56, Bekasi",
-    gajiPokok: 4500000,
-    tanggalBergabung: "2023-05-20",
-    tanggalLahir: "1996-08-25",
-  },
-  {
-    id: "EMP-008",
-    nama: "Eko Santoso",
-    jabatan: "MESSENGER",
-    wilayah: "Tangerang",
-    status: "Aktif",
-    noHp: "081234567890",
-    email: "eko.santoso@birojasa.com",
-    jenisKelamin: "Laki-laki",
-    alamat: "Jl. Sudirman No. 10, Tangerang",
-    gajiPokok: 4500000,
-    tanggalBergabung: "2023-11-01",
-    tanggalLahir: "2001-03-14",
-  },
-  {
-    id: "EMP-009",
-    nama: "Nina Rahayu",
-    jabatan: "CLILEN",
-    wilayah: "Jakarta Utara",
-    status: "Aktif",
-    noHp: "081234567891",
-    email: "nina.rahayu@birojasa.com",
-    jenisKelamin: "Perempuan",
-    alamat: "Jl. Danau Sunter No. 4, Jakarta Utara",
-    gajiPokok: 5200000,
-    tanggalBergabung: "2023-08-15",
-    tanggalLahir: "1999-11-22",
-  },
-  {
-    id: "EMP-010",
-    nama: "Dedi Cahyadi",
-    jabatan: "SVP",
-    wilayah: "Jakarta Pusat",
-    status: "Aktif",
-    noHp: "081234567892",
-    email: "dedi.cahyadi@birojasa.com",
-    jenisKelamin: "Laki-laki",
-    alamat: "Jl. Thamrin No. 88, Jakarta Pusat",
-    gajiPokok: 8500000,
-    tanggalBergabung: "2021-04-10",
-    tanggalLahir: "1995-06-18",
-  },
-  {
-    id: "EMP-011",
-    nama: "Linda Permata",
-    jabatan: "ADMIN",
-    wilayah: "Depok",
-    status: "Aktif",
-    noHp: "081234567888",
-    email: "linda.permata@birojasa.com",
-    jenisKelamin: "Perempuan",
-    alamat: "Jl. Margonda Raya No. 100, Depok",
-    gajiPokok: 5000000,
-    tanggalBergabung: "2023-09-01",
-    tanggalLahir: "2000-08-30",
-  },
-  {
-    id: "EMP-012",
-    nama: "Agus Salim",
-    jabatan: "MESSENGER",
-    wilayah: "Bogor",
-    status: "Aktif",
-    noHp: "081234567889",
-    email: "agus.salim@birojasa.com",
-    jenisKelamin: "Laki-laki",
-    alamat: "Jl. Pajajaran No. 22, Bogor",
-    gajiPokok: 4500000,
-    tanggalBergabung: "2024-01-10",
-    tanggalLahir: "1998-02-14",
-  },
-  {
-    id: "EMP-013",
-    nama: "Hadi Gunawan",
-    jabatan: "SVP",
-    wilayah: "Tangerang Selatan",
-    status: "Aktif",
-    noHp: "081234567880",
-    email: "hadi.gunawan@birojasa.com",
-    jenisKelamin: "Laki-laki",
-    alamat: "Jl. BSD Raya No. 50, Tangerang Selatan",
-    gajiPokok: 8500000,
-    tanggalBergabung: "2022-01-05",
-    tanggalLahir: "1994-12-05",
-  },
-  {
-    id: "EMP-014",
-    nama: "Aris Budiman",
-    jabatan: "MESSENGER",
-    wilayah: "Jakarta Barat",
-    status: "Aktif",
-    noHp: "081234567881",
-    email: "aris.budiman@birojasa.com",
-    jenisKelamin: "Laki-laki",
-    alamat: "Jl. Daan Mogot No. 67, Jakarta Barat",
-    gajiPokok: 4500000,
-    tanggalBergabung: "2023-10-15",
-    tanggalLahir: "1997-05-19",
-  },
-  {
-    id: "EMP-015",
-    nama: "Wati Kurniasih",
-    jabatan: "FINANCE",
-    wilayah: "Jakarta Pusat",
-    status: "Aktif",
-    noHp: "081234567882",
-    email: "wati.kurniasih@birojasa.com",
-    jenisKelamin: "Perempuan",
-    alamat: "Jl. Salemba Raya No. 12, Jakarta Pusat",
-    gajiPokok: 7000000,
-    tanggalBergabung: "2022-11-20",
-    tanggalLahir: "1996-03-28",
-  },
-  {
-    id: "EMP-MSG-001",
+    id: "EMP-0004",
     nama: "Budi Santoso",
     jabatan: "MESSENGER",
     wilayah: "Jakarta Pusat",
@@ -267,9 +109,10 @@ export const INITIAL_KARYAWAN: KaryawanRecord[] = [
     gajiPokok: 4800000,
     tanggalBergabung: "2023-01-10",
     tanggalLahir: "1998-05-15",
+    nikKtp: "3175081505980004",
   },
   {
-    id: "EMP-MSG-002",
+    id: "EMP-0005",
     nama: "Andi Pratama",
     jabatan: "MESSENGER",
     wilayah: "Jakarta Selatan",
@@ -281,15 +124,27 @@ export const INITIAL_KARYAWAN: KaryawanRecord[] = [
     gajiPokok: 4800000,
     tanggalBergabung: "2023-02-15",
     tanggalLahir: "1999-08-20",
+    nikKtp: "3175082008990005",
+  },
+  {
+    id: "EMP-0006",
+    nama: "Messenger Cadangan",
+    jabatan: "MESSENGER",
+    wilayah: "Jakarta Utara",
+    status: "Aktif",
+    noHp: "081234567888",
+    email: "messenger@birojasa.com",
+    jenisKelamin: "Laki-laki",
+    alamat: "Jl. Pluit Raya No. 88, Jakarta Utara",
+    gajiPokok: 4500000,
+    tanggalBergabung: "2023-04-01",
+    tanggalLahir: "1997-11-10",
+    nikKtp: "3175081011970006",
   },
 ];
 
-// Initial Accounts linked to Employees
+// Initial Accounts linked to Employees (for mock mode)
 const INITIAL_PENGGUNA: PenggunaRecord[] = INITIAL_KARYAWAN.map((emp, index) => {
-  let statusAkun: "Aktif" | "Nonaktif" | "Belum Aktif" = "Aktif";
-  if (emp.id === "EMP-009") statusAkun = "Nonaktif";
-  if (emp.id === "EMP-012" || emp.id === "EMP-014") statusAkun = "Belum Aktif";
-
   const roleMap: Record<string, "admin" | "finance" | "svp" | "messenger" | "clilen"> = {
     ADMIN: "admin",
     FINANCE: "finance",
@@ -299,25 +154,20 @@ const INITIAL_PENGGUNA: PenggunaRecord[] = INITIAL_KARYAWAN.map((emp, index) => 
   };
 
   return {
-    id: `USR-${String(index + 1).padStart(3, "0")}`,
+    id: String(index + 1),
     employeeId: emp.id,
     nama: emp.nama,
     jabatan: emp.jabatan,
     email: emp.email,
     role: roleMap[emp.jabatan] || "admin",
-    statusAkun,
-    terakhirLogin: statusAkun === "Aktif" ? "2026-09-24 14:32" : "-",
+    statusAkun: "Aktif",
+    terakhirLogin: "2026-09-24 14:32",
     passwordHash: formatDobToPassword(emp.tanggalLahir),
   };
 });
 
 /**
  * Convert any date of birth format into strict DDMMYYYY format
- * Example:
- * 10/10/2001 -> 10102001
- * 05/01/2000 -> 05012000 (preserves leading zero)
- * 2001-10-10 -> 10102001
- * 2000-01-05 -> 05012000
  */
 export function formatDobToPassword(dobInput: string): string {
   if (!dobInput) return "01011990";
@@ -366,13 +216,15 @@ function notify() {
   listeners.forEach((l) => l());
 }
 
-export function syncFromUserRepository() {
+export function syncFromSources() {
   const repoError = userRepository.getError ? userRepository.getError() : null;
+  const empError = apiEmployeeProvider.getError ? apiEmployeeProvider.getError() : null;
   const repoLoading = userRepository.isLoading ? userRepository.isLoading() : false;
+  const empLoading = apiEmployeeProvider.isLoading ? apiEmployeeProvider.isLoading() : false;
 
-  if (repoError) {
-    lastApiError = repoError;
-    // If previously loaded data exists, keep it but mark as stale
+  const currentError = empError || repoError;
+  if (currentError) {
+    lastApiError = currentError;
     if (karyawanList.length > 0 || hasSuccessfullyLoaded) {
       isDataStale = true;
     }
@@ -380,27 +232,17 @@ export function syncFromUserRepository() {
     return;
   }
 
-  if (repoLoading && !hasSuccessfullyLoaded) {
+  if ((repoLoading || empLoading) && !hasSuccessfullyLoaded) {
     notify();
     return;
   }
 
-  const users = userRepository.getAll();
+  const users = userRepository.getAll() || [];
+  const rawEmployees = isApiMode ? apiEmployeeProvider.getAll() : INITIAL_KARYAWAN;
+
   lastApiError = null;
   isDataStale = false;
-
-  if (!Array.isArray(users)) {
-    return;
-  }
-
   hasSuccessfullyLoaded = true;
-
-  if (users.length === 0) {
-    penggunaList = [];
-    karyawanList = [];
-    notify();
-    return;
-  }
 
   const roleMap: Record<string, "admin" | "finance" | "svp" | "messenger" | "clilen"> = {
     ADMIN: "admin",
@@ -410,11 +252,47 @@ export function syncFromUserRepository() {
     CLILEN: "clilen",
   };
 
-  const syncedPengguna: PenggunaRecord[] = users.map((u) => {
+  // 1. Map Employees as single source of truth for employment data
+  const sourceEmployees = rawEmployees.length > 0 ? rawEmployees : (isApiMode ? [] : INITIAL_KARYAWAN);
+  const mappedKaryawan: KaryawanRecord[] = sourceEmployees.map((e: any) => {
+    // Find linked user if exists
+    const linkedUser = users.find((u: any) => {
+      const uEmpId = String(u.employee_id || u.employeeId || "").trim().toLowerCase();
+      const targetEmpId = String(e.id).trim().toLowerCase();
+      return (uEmpId && uEmpId === targetEmpId) || (e.user_id && String(u.id) === String(e.user_id));
+    });
+
+    const rawJabatan = (e.jabatan || linkedUser?.jabatan || "ADMIN").toUpperCase();
+    const statusEmp = (e.status_karyawan === "Aktif" || e.status_karyawan === "TETAP" || e.status === "Aktif") ? "Aktif" : "Nonaktif";
+
+    return {
+      id: e.id,
+      nama: e.nama_lengkap || e.nama || linkedUser?.nama || "",
+      jabatan: rawJabatan,
+      wilayah: e.wilayah || "Jakarta",
+      status: statusEmp,
+      noHp: e.no_hp || e.noHp || linkedUser?.phone || "",
+      email: e.user_email || linkedUser?.email || e.email || "",
+      jenisKelamin: e.jenis_kelamin || e.jenisKelamin || "Laki-laki",
+      alamat: e.alamat_domisili || e.alamat || "Kantor SUN89",
+      gajiPokok: Number(e.gaji_pokok ?? e.gajiPokok ?? 0),
+      tanggalBergabung: e.tanggal_bergabung || e.tanggalBergabung || "2023-01-01",
+      tanggalLahir: e.tgl_lahir || e.tanggalLahir || "2000-01-01",
+      nikKtp: e.nik_ktp || e.nikKtp,
+      userId: linkedUser?.id || e.user_id || null,
+      hasAccount: Boolean(linkedUser || e.user_id),
+    };
+  });
+
+  // 2. Map Users as single source of truth for authentication and account data
+  const sourceUsers = users.length > 0 ? users : (isApiMode ? [] : INITIAL_PENGGUNA);
+  const mappedPengguna: PenggunaRecord[] = sourceUsers.map((u: any) => {
     const rawJabatan = (u.jabatan || "ADMIN").toUpperCase();
-    const role = roleMap[rawJabatan] || "admin";
+    const role = (u.role || roleMap[rawJabatan] || "admin").toLowerCase();
     const statusAkun = u.status === "Aktif" ? "Aktif" : (u.status === "Nonaktif" ? "Nonaktif" : "Belum Aktif");
-    const empId = (u as any).employeeId || (u as any).employee_id || `EMP-${String(u.id).padStart(3, "0")}`;
+    const empId = u.employee_id || u.employeeId || "";
+
+    const linkedEmployee = mappedKaryawan.find((k) => k.id.toLowerCase() === empId.toLowerCase());
 
     return {
       id: String(u.id),
@@ -424,40 +302,35 @@ export function syncFromUserRepository() {
       email: u.email,
       role,
       statusAkun,
-      terakhirLogin: (u as any).lastLogin || (statusAkun === "Aktif" ? "2026-09-24 14:32" : "-"),
-      passwordHash: "01011990",
+      terakhirLogin: u.last_login_at || u.lastLogin || (statusAkun === "Aktif" ? "2026-09-24 14:32" : "-"),
+      passwordHash: "********",
+      employeeInfo: linkedEmployee || null,
     };
   });
 
-  const syncedKaryawan: KaryawanRecord[] = users.map((u) => {
-    const rawJabatan = (u.jabatan || "ADMIN").toUpperCase() as any;
-    const empId = (u as any).employeeId || (u as any).employee_id || `EMP-${String(u.id).padStart(3, "0")}`;
-    return {
-      id: empId,
-      nama: u.nama,
-      jabatan: rawJabatan,
-      wilayah: (u as any).wilayah || "Jakarta",
-      status: u.status === "Aktif" ? "Aktif" : "Nonaktif",
-      noHp: (u as any).phone || (u as any).noHp || (u as any).telepon || "081234567890",
-      email: u.email,
-      jenisKelamin: (u as any).jenisKelamin || (u as any).jenis_kelamin || "Laki-laki",
-      alamat: (u as any).alamat || "Kantor SUN89",
-      gajiPokok: (u as any).gajiPokok ? Number((u as any).gajiPokok) : ((u as any).gaji_pokok ? Number((u as any).gaji_pokok) : 5000000),
-      tanggalBergabung: (u as any).tanggalBergabung || (u as any).tanggal_bergabung || "2023-01-01",
-      tanggalLahir: (u as any).tanggalLahir || (u as any).tanggal_lahir || "2000-01-01",
-    };
-  });
-
-  penggunaList = syncedPengguna;
-  karyawanList = syncedKaryawan;
+  karyawanList = mappedKaryawan;
+  penggunaList = mappedPengguna;
   notify();
 }
 
+// Initial subscription in API mode
 if (isApiMode) {
-  syncFromUserRepository();
+  syncFromSources();
   userRepository.subscribe(() => {
-    syncFromUserRepository();
+    syncFromSources();
   });
+  apiEmployeeProvider.subscribe(() => {
+    syncFromSources();
+  });
+}
+
+function getAuthHeaders(): Record<string, string> {
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  if (typeof window !== "undefined" && window.localStorage) {
+    const token = window.localStorage.getItem("auth_token");
+    if (token) headers["Authorization"] = `Bearer ${token}`;
+  }
+  return headers;
 }
 
 export const karyawanPenggunaAdapter = {
@@ -472,35 +345,40 @@ export const karyawanPenggunaAdapter = {
 
   addKaryawan(data: Omit<KaryawanRecord, "id">): KaryawanRecord {
     const nextNum = karyawanList.length + 1;
-    const newId = `EMP-${String(nextNum).padStart(3, "0")}`;
+    const newId = `EMP-${String(nextNum).padStart(4, "0")}`;
+    const cleanNik = data.nikKtp || `317508${String(Date.now()).slice(-6)}${String(Math.floor(Math.random() * 9000 + 1000))}`;
+
     const newKaryawan: KaryawanRecord = {
       ...data,
       id: newId,
+      nikKtp: cleanNik,
     };
     karyawanList = [...karyawanList, newKaryawan];
 
-    // Automatically provision user account stub with status "Belum Aktif"
-    const nextUsrNum = penggunaList.length + 1;
-    const roleMap: Record<string, "admin" | "finance" | "svp" | "messenger" | "clilen"> = {
-      ADMIN: "admin",
-      FINANCE: "finance",
-      SVP: "svp",
-      MESSENGER: "messenger",
-      CLILEN: "clilen",
-    };
+    // Optional user account stub in mock mode
+    if (!isApiMode && data.email) {
+      const nextUsrNum = penggunaList.length + 1;
+      const roleMap: Record<string, "admin" | "finance" | "svp" | "messenger" | "clilen"> = {
+        ADMIN: "admin",
+        FINANCE: "finance",
+        SVP: "svp",
+        MESSENGER: "messenger",
+        CLILEN: "clilen",
+      };
 
-    const newPengguna: PenggunaRecord = {
-      id: `USR-${String(nextUsrNum).padStart(3, "0")}`,
-      employeeId: newId,
-      nama: newKaryawan.nama,
-      jabatan: newKaryawan.jabatan,
-      email: newKaryawan.email,
-      role: roleMap[newKaryawan.jabatan] || "admin",
-      statusAkun: "Belum Aktif",
-      terakhirLogin: "-",
-      passwordHash: formatDobToPassword(newKaryawan.tanggalLahir),
-    };
-    penggunaList = [...penggunaList, newPengguna];
+      const newPengguna: PenggunaRecord = {
+        id: String(nextUsrNum),
+        employeeId: newId,
+        nama: newKaryawan.nama,
+        jabatan: newKaryawan.jabatan,
+        email: newKaryawan.email,
+        role: roleMap[newKaryawan.jabatan] || "admin",
+        statusAkun: "Aktif",
+        terakhirLogin: "-",
+        passwordHash: formatDobToPassword(newKaryawan.tanggalLahir),
+      };
+      penggunaList = [...penggunaList, newPengguna];
+    }
 
     auditLog.log({
       userId: "usr-admin-system",
@@ -512,20 +390,26 @@ export const karyawanPenggunaAdapter = {
     });
 
     if (isApiMode) {
-      userRepository.createUser({
-        nama: data.nama,
-        email: data.email,
-        jabatan: data.jabatan,
-        status: data.status === "Aktif" ? "Aktif" : "Nonaktif",
-        employeeId: newId,
-        phone: data.noHp,
+      apiEmployeeProvider.createEmployee({
+        id: newId,
+        nik_ktp: cleanNik,
+        nama_lengkap: data.nama,
+        no_hp: data.noHp,
+        tgl_lahir: data.tanggalLahir,
         wilayah: data.wilayah,
-        alamat: data.alamat,
-        tanggalLahir: data.tanggalLahir,
-        gajiPokok: data.gajiPokok,
-        tanggalBergabung: data.tanggalBergabung,
-        jenisKelamin: data.jenisKelamin,
-      } as any);
+        alamat_domisili: data.alamat,
+        jabatan: data.jabatan,
+        gaji_pokok: data.gajiPokok,
+        status_karyawan: data.status,
+        tanggal_bergabung: data.tanggalBergabung,
+        jenis_kelamin: data.jenisKelamin,
+        email: data.email,
+        createAccount: Boolean(data.email),
+      }).then(() => {
+        syncFromSources();
+      }).catch((err) => {
+        console.error("Failed to create employee on server:", err);
+      });
     }
 
     notify();
@@ -539,7 +423,7 @@ export const karyawanPenggunaAdapter = {
     const updated = { ...karyawanList[idx], ...data };
     karyawanList[idx] = updated;
 
-    // Sync mirrored properties in Pengguna
+    // Sync mirrored name/title in Pengguna list if linked
     penggunaList = penggunaList.map((p) => {
       if (p.employeeId === id) {
         return {
@@ -547,7 +431,6 @@ export const karyawanPenggunaAdapter = {
           nama: updated.nama,
           jabatan: updated.jabatan,
           email: updated.email,
-          ...(data.tanggalLahir ? { passwordHash: formatDobToPassword(updated.tanggalLahir) } : {}),
         };
       }
       return p;
@@ -563,23 +446,22 @@ export const karyawanPenggunaAdapter = {
     });
 
     if (isApiMode) {
-      const match = userRepository.getAll().find((u: any) => u.employeeId === id || u.email === updated.email);
-      if (match) {
-        userRepository.updateUser(match.id, {
-          nama: updated.nama,
-          email: updated.email,
-          jabatan: updated.jabatan,
-          status: updated.status === "Aktif" ? "Aktif" : "Nonaktif",
-          employeeId: updated.id,
-          phone: updated.noHp,
-          wilayah: updated.wilayah,
-          alamat: updated.alamat,
-          tanggalLahir: updated.tanggalLahir,
-          gajiPokok: updated.gajiPokok,
-          tanggalBergabung: updated.tanggalBergabung,
-          jenisKelamin: updated.jenisKelamin,
-        } as any);
-      }
+      apiEmployeeProvider.updateEmployee(id, {
+        nama_lengkap: updated.nama,
+        no_hp: updated.noHp,
+        tgl_lahir: updated.tanggalLahir,
+        wilayah: updated.wilayah,
+        alamat_domisili: updated.alamat,
+        jabatan: updated.jabatan,
+        gaji_pokok: updated.gajiPokok,
+        status_karyawan: updated.status,
+        tanggal_bergabung: updated.tanggalBergabung,
+        jenis_kelamin: updated.jenisKelamin,
+      }).then(() => {
+        syncFromSources();
+      }).catch((err) => {
+        console.error("Failed to update employee on server:", err);
+      });
     }
 
     notify();
@@ -591,8 +473,8 @@ export const karyawanPenggunaAdapter = {
     if (!target) return false;
 
     karyawanList = karyawanList.filter((k) => k.id !== id);
-    // Remove associated user account when employee is deleted from HR master
-    penggunaList = penggunaList.filter((p) => p.employeeId !== id);
+    // Unlink associated user account
+    penggunaList = penggunaList.map((p) => p.employeeId === id ? { ...p, employeeId: "", employeeInfo: null } : p);
 
     auditLog.log({
       userId: "usr-admin-system",
@@ -604,14 +486,163 @@ export const karyawanPenggunaAdapter = {
     });
 
     if (isApiMode) {
-      const match = userRepository.getAll().find((u: any) => u.employeeId === id || u.email === target.email);
-      if (match) {
-        userRepository.deleteUser(match.id);
-      }
+      apiEmployeeProvider.deleteEmployee(id).then(() => {
+        syncFromSources();
+      }).catch((err) => {
+        console.error("Failed to delete employee on server:", err);
+      });
     }
 
     notify();
     return true;
+  },
+
+  // ─── PERMANENT ERASURE ────────────────────────────────────────────────
+  async preflightPermanentErasure(id: string): Promise<{
+    allowed: boolean;
+    blockers: { code: string; message: string; details?: any }[];
+    target?: any;
+    summary?: any;
+    error?: string;
+  }> {
+    if (isApiMode) {
+      try {
+        const res = await fetch(`${APP_CONFIG.apiBaseUrl}/users/${encodeURIComponent(id)}/permanent-erasure-preflight`, {
+          method: "GET",
+          headers: getAuthHeaders(),
+        });
+        const json = await res.json();
+        if (!res.ok) {
+          return {
+            allowed: false,
+            blockers: json.error?.blockers || (json.error?.details?.blockers || [
+              { code: json.error?.code || "PREFLIGHT_ERROR", message: json.error?.message || "Gagal memeriksa status penghapusan." }
+            ]),
+            error: json.error?.message,
+          };
+        }
+        return {
+          allowed: json.data?.allowed ?? false,
+          blockers: json.data?.blockers || [],
+          target: json.data?.target,
+          summary: json.data?.summary,
+        };
+      } catch (err: any) {
+        return {
+          allowed: false,
+          blockers: [{ code: "NETWORK_ERROR", message: err.message || "Gagal terhubung ke backend." }],
+          error: err.message,
+        };
+      }
+    }
+
+    // Mock Mode fallback
+    const targetKaryawan = karyawanList.find((k) => k.id === id);
+    const targetPengguna = penggunaList.find((p) => p.employeeId === id || p.id === id);
+    const blockers: { code: string; message: string }[] = [];
+
+    const roleStr = String(targetPengguna?.role || "");
+    if (targetPengguna && (roleStr === "admin" || roleStr === "svp" || roleStr === "administrator")) {
+      const activeAdmins = penggunaList.filter(
+        (p) => (p.role === "admin" || p.role === "svp" || (p.role as string) === "administrator") && p.statusAkun === "Aktif" && p.id !== targetPengguna.id
+      );
+      if (activeAdmins.length === 0) {
+        blockers.push({ code: "LAST_ADMIN", message: "Tidak dapat menghapus administrator terakhir." });
+      }
+    }
+
+    return {
+      allowed: blockers.length === 0,
+      blockers,
+      target: {
+        employeeId: targetKaryawan?.id,
+        employeeName: targetKaryawan?.nama,
+        employeeNik: targetKaryawan?.nikKtp || "3171000000000000",
+        userRole: targetPengguna?.role,
+        userStatus: targetPengguna?.statusAkun,
+      },
+      summary: {
+        personalFilesCount: 0,
+        financialTransactionsPreserved: 0,
+        auditLogsToPurge: 1,
+        auditLogsToAnonymize: 0,
+      },
+    };
+  },
+
+  async permanentErasure(
+    id: string,
+    confirmationText: string,
+    reason?: string
+  ): Promise<{
+    success: boolean;
+    status?: "COMPLETED" | "DATABASE_COMPLETED";
+    fileCleanupPending?: boolean;
+    message?: string;
+    error?: string;
+    blockers?: any[];
+  }> {
+    if (confirmationText?.trim() !== "HAPUS PERMANEN") {
+      return {
+        success: false,
+        error: "Konfirmasi tidak valid. Anda wajib mengetik teks 'HAPUS PERMANEN'.",
+      };
+    }
+
+    if (isApiMode) {
+      try {
+        const res = await fetch(`${APP_CONFIG.apiBaseUrl}/users/${encodeURIComponent(id)}/permanent-erasure`, {
+          method: "POST",
+          headers: getAuthHeaders(),
+          body: JSON.stringify({ confirmationText: "HAPUS PERMANEN", reason }),
+        });
+        const json = await res.json();
+        if (!res.ok) {
+          return {
+            success: false,
+            error: json.error?.message || "Penghapusan permanen gagal dieksekusi.",
+            blockers: json.error?.blockers || (json.error?.details?.blockers || []),
+          };
+        }
+
+        karyawanList = karyawanList.filter((k) => k.id !== id);
+        penggunaList = penggunaList.filter((p) => p.employeeId !== id && p.id !== id);
+        karyawanPenggunaAdapter.refresh();
+        notify();
+
+        return {
+          success: true,
+          status: json.data?.status || "COMPLETED",
+          fileCleanupPending: json.data?.fileCleanupPending || false,
+          message: json.message || "Penghapusan permanen berhasil dilakukan.",
+        };
+      } catch (err: any) {
+        return {
+          success: false,
+          error: err.message || "Gagal menghubungi server untuk penghapusan permanen.",
+        };
+      }
+    }
+
+    karyawanList = karyawanList.filter((k) => k.id !== id);
+    penggunaList = penggunaList.filter((p) => p.employeeId !== id && p.id !== id);
+
+    auditLog.log({
+      userId: "usr-admin-system",
+      userName: "Administrator",
+      action: "PERMANENT_ERASURE_EXECUTED",
+      module: "Karyawan",
+      details: "Penghapusan permanen data karyawan dan akun pengguna berhasil.",
+      userRole: "admin",
+    });
+
+    notify();
+    return {
+      success: true,
+      status: "COMPLETED",
+      fileCleanupPending: false,
+      message: "Data karyawan dan akun pengguna berhasil dihapus permanen.",
+    };
   },
 
   // ─── PENGGUNA OPERATIONS ──────────────────────────────────────────────
@@ -635,11 +666,6 @@ export const karyawanPenggunaAdapter = {
       ...penggunaList[idx],
       statusAkun: "Aktif",
     };
-
-    const empIdx = karyawanList.findIndex((k) => k.id === penggunaList[idx].employeeId);
-    if (empIdx !== -1) {
-      karyawanList[empIdx] = { ...karyawanList[empIdx], status: "Aktif" };
-    }
 
     if (isApiMode) {
       userRepository.updateUser(userId, { status: "Aktif" });
@@ -666,11 +692,6 @@ export const karyawanPenggunaAdapter = {
       ...penggunaList[idx],
       statusAkun: "Nonaktif",
     };
-
-    const empIdx = karyawanList.findIndex((k) => k.id === penggunaList[idx].employeeId);
-    if (empIdx !== -1) {
-      karyawanList[empIdx] = { ...karyawanList[empIdx], status: "Nonaktif" };
-    }
 
     if (isApiMode) {
       userRepository.updateUser(userId, { status: "Nonaktif" });
@@ -700,12 +721,11 @@ export const karyawanPenggunaAdapter = {
     }
     const isCallerSvp = currentUserRole === "administrator" || currentUserRole === "svp";
 
-    // Strictly protect SVP account from role change by non-SVP
+    // Protect SVP account from role change by non-SVP
     if (penggunaList[idx].role === "svp" && !isCallerSvp) {
       return false;
     }
 
-    // Prevent non-SVP from elevating to SVP
     if (role === "svp" && !isCallerSvp) {
       return false;
     }
@@ -716,13 +736,8 @@ export const karyawanPenggunaAdapter = {
       jabatan: role.toUpperCase(),
     };
 
-    const empIdx = karyawanList.findIndex((k) => k.id === penggunaList[idx].employeeId);
-    if (empIdx !== -1) {
-      karyawanList[empIdx] = { ...karyawanList[empIdx], jabatan: role.toUpperCase() as any };
-    }
-
     if (isApiMode) {
-      userRepository.updateUser(userId, { jabatan: role.toUpperCase() });
+      userRepository.updateUser(userId, { role, jabatan: role.toUpperCase() });
     }
 
     auditLog.log({
@@ -738,10 +753,6 @@ export const karyawanPenggunaAdapter = {
     return true;
   },
 
-  /**
-   * Reset Password strictly using the Employee's Date of Birth formatted as DDMMYYYY
-   * Returns the new plaintext password for feedback dialog
-   */
   async resetPassword(userId: string): Promise<{ success: boolean; newPassword?: string; error?: string }> {
     const user = penggunaList.find((p) => p.id === userId);
     if (!user) return { success: false, error: "Pengguna tidak ditemukan." };
@@ -758,11 +769,8 @@ export const karyawanPenggunaAdapter = {
     }
 
     const employee = karyawanList.find((k) => k.id === user.employeeId);
-    if (!employee || !employee.tanggalLahir) {
-      return { success: false, error: "Tanggal lahir karyawan tidak tersedia." };
-    }
-
-    const newPassword = formatDobToPassword(employee.tanggalLahir);
+    const dob = employee?.tanggalLahir || "1990-01-01";
+    const newPassword = formatDobToPassword(dob);
 
     if (isApiMode && userRepository.resetPassword) {
       try {
@@ -799,10 +807,9 @@ export const karyawanPenggunaAdapter = {
     return { success: true, newPassword };
   },
 
-  // Reset to initial baseline (for tests)
   _resetToInitial() {
     if (isApiMode) {
-      syncFromUserRepository();
+      syncFromSources();
     } else {
       karyawanList = [...INITIAL_KARYAWAN];
       penggunaList = [...INITIAL_PENGGUNA];
@@ -813,7 +820,7 @@ export const karyawanPenggunaAdapter = {
   _setApiMode(enabled: boolean) {
     isApiMode = enabled;
     if (enabled) {
-      syncFromUserRepository();
+      syncFromSources();
     } else {
       karyawanList = [...INITIAL_KARYAWAN];
       penggunaList = [...INITIAL_PENGGUNA];
@@ -823,12 +830,14 @@ export const karyawanPenggunaAdapter = {
 
   isLoading(): boolean {
     if (!isApiMode) return false;
-    return Boolean(userRepository.isLoading && userRepository.isLoading() && !hasSuccessfullyLoaded);
+    const repoLoading = Boolean(userRepository.isLoading && userRepository.isLoading());
+    const empLoading = Boolean(apiEmployeeProvider.isLoading && apiEmployeeProvider.isLoading());
+    return (repoLoading || empLoading) && !hasSuccessfullyLoaded;
   },
 
   getError(): string | null {
     if (!isApiMode) return null;
-    return lastApiError || (userRepository.getError ? userRepository.getError() : null);
+    return lastApiError || (userRepository.getError ? userRepository.getError() : null) || (apiEmployeeProvider.getError ? apiEmployeeProvider.getError() : null);
   },
 
   isStale(): boolean {
@@ -836,11 +845,15 @@ export const karyawanPenggunaAdapter = {
   },
 
   async refresh(): Promise<void> {
-    const provider = (userRepository as any).getProvider ? (userRepository as any).getProvider() : null;
-    if (provider && typeof provider.initFromApi === "function") {
-      await provider.initFromApi();
+    if (isApiMode) {
+      await Promise.allSettled([
+        apiEmployeeProvider.initFromApi(),
+        (userRepository as any).getProvider && typeof (userRepository as any).getProvider().initFromApi === "function"
+          ? (userRepository as any).getProvider().initFromApi()
+          : Promise.resolve(),
+      ]);
     }
-    syncFromUserRepository();
+    syncFromSources();
   },
 
   subscribe(listener: () => void) {
@@ -876,5 +889,7 @@ export function useKaryawanPengguna() {
     addKaryawan: karyawanPenggunaAdapter.addKaryawan,
     updateKaryawan: karyawanPenggunaAdapter.updateKaryawan,
     deleteKaryawan: karyawanPenggunaAdapter.deleteKaryawan,
+    preflightPermanentErasure: karyawanPenggunaAdapter.preflightPermanentErasure,
+    permanentErasure: karyawanPenggunaAdapter.permanentErasure,
   };
 }

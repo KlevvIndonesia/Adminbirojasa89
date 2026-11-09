@@ -31,6 +31,9 @@ export interface IFinanceRepository {
   resolveInvoice(id: number, details?: any): boolean;
   completeInvoice(id: number, completedBy?: string): boolean;
   payoutCashback?(id: number, payoutData: any): Promise<boolean> | boolean;
+  voidInvoicePayment?(id: number, paymentId: number, reason: string): Promise<boolean> | boolean;
+  voidCashbackPayout?(id: number, reason: string): Promise<boolean> | boolean;
+  getVoidAuditHistory?(): Promise<{ payments: any[]; cashbacks: any[] }>;
   addKasKantor?(item: Omit<KasKantorItem, "id">): KasKantorItem | null;
   deleteKasKantor?(id: number): Promise<boolean> | boolean;
   addKasMessenger?(item: Omit<KasMessengerItem, "id" | "total"> & { total?: number }): KasMessengerItem | null;
@@ -123,6 +126,27 @@ export class FinanceRepository implements IFinanceRepository {
       return await this.provider.payoutCashback(id, payoutData);
     }
     return false;
+  }
+
+  public async voidInvoicePayment(id: number, paymentId: number, reason: string): Promise<boolean> {
+    if (this.provider.voidInvoicePayment) {
+      return await this.provider.voidInvoicePayment(id, paymentId, reason);
+    }
+    return false;
+  }
+
+  public async voidCashbackPayout(id: number, reason: string): Promise<boolean> {
+    if (this.provider.voidCashbackPayout) {
+      return await this.provider.voidCashbackPayout(id, reason);
+    }
+    return false;
+  }
+
+  public async getVoidAuditHistory(): Promise<{ payments: any[]; cashbacks: any[] }> {
+    if (this.provider.getVoidAuditHistory) {
+      return await this.provider.getVoidAuditHistory();
+    }
+    return { payments: [], cashbacks: [] };
   }
 
   public addKasKantor(item: Omit<KasKantorItem, "id">): KasKantorItem | null {

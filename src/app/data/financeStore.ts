@@ -103,6 +103,33 @@ export type OrderCreatorFn = (data: {
   [key: string]: any;
 }) => OperationalOrder | false;
 
+export type OrderAsyncCreatorFn = (data: {
+  customer: string;
+  nopol: string;
+  layanan: string;
+  namaPemilik?: string;
+  nomorHP?: string;
+  wilayahSamsatAsal?: string;
+  jenisKendaraan?: string;
+  biayaJasa?: number;
+  totalEstimasi?: number;
+  uangMasuk?: number;
+  uangKeluar?: number;
+  r4r2?: string;
+  bpkb?: string;
+  [key: string]: any;
+}) => Promise<OperationalOrder | false>;
+
+export interface ContractMutationResult {
+  success: boolean;
+  error?: {
+    code: string;
+    message: string;
+    field?: string;
+    statusCode?: number;
+  };
+}
+
 export {
   derivePaymentStatus,
   calculateInvoiceProfitMetrics,
@@ -299,10 +326,15 @@ class FinanceStore {
   private unsubscribeRepo?: () => void;
   private unsubscribeOrderRepo?: () => void;
   private orderCreator: OrderCreatorFn | null = null;
+  private orderAsyncCreator: OrderAsyncCreatorFn | null = null;
   private deletedOrderNos: Set<string> = new Set();
 
   public setOrderCreator(creator: OrderCreatorFn): void {
     this.orderCreator = creator;
+  }
+
+  public setOrderAsyncCreator(creator: OrderAsyncCreatorFn): void {
+    this.orderAsyncCreator = creator;
   }
 
   constructor() {
@@ -1697,9 +1729,12 @@ class FinanceStore {
   }
 
   public async voidInvoicePayment(invoiceId: number | string, paymentId: number, reason: string): Promise<boolean> {
-    if (this.isApiMode && typeof (financeRepository as any).voidInvoicePayment === "function") {
+    if (this.isApiMode) {
       try {
-        await (financeRepository as any).voidInvoicePayment(Number(invoiceId), paymentId, reason);
+        const ok = await financeRepository.voidInvoicePayment(Number(invoiceId), paymentId, reason);
+        if (!ok) {
+          throw new Error("Provider keuangan aktif tidak mendukung pembatalan (Void) pembayaran.");
+        }
         this.syncFromRepository();
         return true;
       } catch (err) {
@@ -1716,9 +1751,12 @@ class FinanceStore {
   }
 
   public async voidCashbackPayout(invoiceId: number | string, reason: string): Promise<boolean> {
-    if (this.isApiMode && typeof (financeRepository as any).voidCashbackPayout === "function") {
+    if (this.isApiMode) {
       try {
-        await (financeRepository as any).voidCashbackPayout(Number(invoiceId), reason);
+        const ok = await financeRepository.voidCashbackPayout(Number(invoiceId), reason);
+        if (!ok) {
+          throw new Error("Provider keuangan aktif tidak mendukung pembatalan (Void) cashback.");
+        }
         this.syncFromRepository();
         return true;
       } catch (err) {
@@ -1736,11 +1774,12 @@ class FinanceStore {
   }
 
   public async getVoidAuditHistory(): Promise<{ payments: any[]; cashbacks: any[] }> {
-    if (this.isApiMode && typeof (financeRepository as any).getVoidAuditHistory === "function") {
+    if (this.isApiMode) {
       try {
-        return await (financeRepository as any).getVoidAuditHistory();
+        return await financeRepository.getVoidAuditHistory();
       } catch (err) {
         console.error("getVoidAuditHistory failed:", err);
+        throw err;
       }
     }
     return { payments: [], cashbacks: [] };
@@ -1838,7 +1877,8 @@ class FinanceStore {
     }
 
     this.syncContractRowFromInvoice(record);
-    this.notifyPaymentSync(record);
+    // Downstream Order -> Finance sync must not echo back via notifyPaymentSync(),
+    // otherwise orderStore.syncPaymentFromFinance fires a duplicate PUT after /verify-payment or /advance.
     this.notify();
     return record;
   }
@@ -2263,6 +2303,307 @@ class FinanceStore {
   // DATA PENJUALAN CONTRACT SYNC
   // ==========================================
 
+  private buildOrderUpdatesFromContractFields(
+    order: OperationalOrder | undefined,
+    orderNo: string,
+    updatedFields: Record<string, any>
+  ): Partial<OperationalOrder> {
+    const orderUpdates: Partial<OperationalOrder> = {};
+    const nextPayment: any = order?.payment ? { ...order.payment } : {};
+    let paymentTouched = false;
+
+    // 1. Informasi Berkas
+    const tglBerkasVal = updatedFields["Tanggal Masuk Berkas"] ?? updatedFields.tanggalMasukBerkas ?? updatedFields.tanggal_masuk_berkas;
+    if (tglBerkasVal !== undefined) {
+      orderUpdates.tanggalMasukBerkas = tglBerkasVal;
+      (orderUpdates as any).tanggal_masuk_berkas = tglBerkasVal;
+    }
+
+    const custVal = updatedFields["Nama Customer"] ?? updatedFields["Customer"];
+    if (custVal !== undefined) {
+      orderUpdates.customer = String(custVal).trim();
+    }
+    const ownerVal = updatedFields["Nama Pemilik (STNK/BPKB)"] ?? updatedFields["Nama"];
+    if (ownerVal !== undefined) {
+      orderUpdates.namaPemilik = String(ownerVal).trim() || "-";
+    }
+    const plateVal = updatedFields["Plat No"] ?? updatedFields["Nomor Polisi"];
+    if (plateVal !== undefined) {
+      orderUpdates.nopol = String(plateVal).trim();
+    }
+    const serviceVal = updatedFields["Jenis Pengurusan"] ?? updatedFields["Layanan"];
+    if (serviceVal !== undefined) {
+      orderUpdates.layanan = String(serviceVal).trim();
+    }
+    const samsatVal = updatedFields["Samsat Asal"] ?? updatedFields["Samsat"] ?? updatedFields["Wilayah Samsat Asal"] ?? updatedFields.samsatAsal;
+    if (samsatVal !== undefined) {
+      orderUpdates.wilayahSamsatAsal = String(samsatVal).trim();
+      (orderUpdates as any).samsat_asal = String(samsatVal).trim();
+    }
+    const samsatTujuanVal = updatedFields["Samsat Tujuan"] ?? updatedFields.wilayahSamsatTujuan ?? updatedFields.samsatTujuan;
+    if (samsatTujuanVal !== undefined) {
+      orderUpdates.wilayahSamsatTujuan = String(samsatTujuanVal).trim();
+      (orderUpdates as any).samsat_tujuan = String(samsatTujuanVal).trim();
+    }
+    if (updatedFields["R4 / R2"]) {
+      orderUpdates.jenisKendaraan = updatedFields["R4 / R2"] === "R2" ? "Motor" : "Mobil";
+    }
+    if (updatedFields["Status Kepemilikan"]) {
+      orderUpdates.kepemilikanKendaraan = updatedFields["Status Kepemilikan"];
+      (orderUpdates as any).statusKepemilikan = updatedFields["Status Kepemilikan"];
+    }
+    const phoneVal = updatedFields["Nomor HP"] ?? updatedFields["No HP"] ?? updatedFields.phone;
+    if (phoneVal !== undefined) {
+      orderUpdates.nomorHP = String(phoneVal).trim();
+    }
+
+    // 2. Structured 9-Part Address
+    const hasAnyAddr = Boolean(
+      updatedFields.detailAlamat || updatedFields["Detail Alamat"] ||
+      updatedFields.kota || updatedFields["Kota/Kabupaten"] ||
+      updatedFields.kecamatan || updatedFields["Kecamatan"] ||
+      updatedFields.kelurahan || updatedFields["Kelurahan/Desa"] ||
+      updatedFields.rtRw || updatedFields["RT/RW"] ||
+      updatedFields.nomorRumah || updatedFields["Nomor Rumah"] ||
+      updatedFields.patokan || updatedFields["Patokan"] ||
+      updatedFields.linkLokasi || updatedFields["Link Lokasi"] ||
+      updatedFields.provinsi || updatedFields["Provinsi"] ||
+      updatedFields["Alamat"] || updatedFields.alamat
+    );
+    if (hasAnyAddr) {
+      const detail = (updatedFields.detailAlamat ?? updatedFields["Detail Alamat"] ?? order?.alamatPenjemputan?.detail ?? "").trim();
+      const kota = (updatedFields.kota ?? updatedFields["Kota/Kabupaten"] ?? order?.alamatPenjemputan?.kota ?? "").trim();
+      const kecamatan = (updatedFields.kecamatan ?? updatedFields["Kecamatan"] ?? order?.alamatPenjemputan?.kecamatan ?? "").trim();
+      const kelurahan = (updatedFields.kelurahan ?? updatedFields["Kelurahan/Desa"] ?? order?.alamatPenjemputan?.kelurahan ?? "").trim();
+      const rtRw = (updatedFields.rtRw ?? updatedFields["RT/RW"] ?? order?.alamatPenjemputan?.rtRw ?? "").trim();
+      const nomor = (updatedFields.nomorRumah ?? updatedFields["Nomor Rumah"] ?? order?.alamatPenjemputan?.nomor ?? "").trim();
+      const landmark = (updatedFields.patokan ?? updatedFields["Patokan"] ?? order?.alamatPenjemputan?.landmark ?? "").trim();
+      const mapsUrl = (updatedFields.linkLokasi ?? updatedFields["Link Lokasi"] ?? order?.alamatPenjemputan?.mapsUrl ?? "").trim();
+      const provinsi = (updatedFields.provinsi ?? updatedFields["Provinsi"] ?? (order?.alamatPenjemputan as any)?.provinsi ?? "").trim();
+
+      orderUpdates.alamatPenjemputan = {
+        detail: detail || "",
+        kota: kota || "",
+        kecamatan: kecamatan || "",
+        kelurahan: kelurahan || "",
+        rtRw: rtRw || "",
+        nomor: nomor || "",
+        landmark: landmark || "",
+        mapsUrl: mapsUrl || "",
+        ...(provinsi ? { provinsi } : {}),
+      } as any;
+      orderUpdates.alamatPengantaran = { ...orderUpdates.alamatPenjemputan } as any;
+      (orderUpdates as any).alamat = updatedFields["Alamat"] || [
+        detail,
+        nomor ? `No. ${nomor}` : "",
+        rtRw ? `RT/RW ${rtRw}` : "",
+        kelurahan ? `Kel. ${kelurahan}` : "",
+        kecamatan ? `Kec. ${kecamatan}` : "",
+        kota,
+        provinsi,
+      ].filter(Boolean).join(", ");
+    }
+
+    // 3. Rincian Keuangan & Komponen Biaya
+    if (updatedFields["Biaya Jasa"] !== undefined || updatedFields.biayaJasa !== undefined) {
+      const jasaVal = Number(updatedFields["Biaya Jasa"] ?? updatedFields.biayaJasa) || 0;
+      orderUpdates.biayaJasa = jasaVal;
+      (orderUpdates as any).biaya_jasa = jasaVal;
+    }
+    if (updatedFields["Biaya Antar Jemput"] !== undefined || updatedFields.biayaAntarJemput !== undefined) {
+      const antarVal = Number(updatedFields["Biaya Antar Jemput"] ?? updatedFields.biayaAntarJemput) || 0;
+      (orderUpdates as any).biayaAntarJemput = antarVal;
+      (orderUpdates as any).biaya_antar_jemput = antarVal;
+    }
+    if (updatedFields["Biaya Lainnya"] !== undefined || updatedFields.biayaLainnya !== undefined) {
+      const lainnyaVal = Number(updatedFields["Biaya Lainnya"] ?? updatedFields.biayaLainnya) || 0;
+      (orderUpdates as any).biayaLainnya = lainnyaVal;
+      (orderUpdates as any).biaya_lainnya = lainnyaVal;
+    }
+    if (updatedFields["Biaya Pokok Samsat"] !== undefined || updatedFields.biayaSamsat !== undefined || updatedFields.uangKeluar !== undefined) {
+      const samsatVal = Number(updatedFields["Biaya Pokok Samsat"] ?? updatedFields.biayaSamsat ?? updatedFields.uangKeluar) || 0;
+      (orderUpdates as any).biayaSamsat = samsatVal;
+      (orderUpdates as any).biaya_samsat = samsatVal;
+      (orderUpdates as any).uangKeluar = samsatVal;
+      orderUpdates.pkb = samsatVal;
+    }
+    if (updatedFields["Total Tagihan Konsumen"] !== undefined || updatedFields.totalTagihan !== undefined || updatedFields.totalBiaya !== undefined) {
+      const totalVal = Number(updatedFields["Total Tagihan Konsumen"] ?? updatedFields.totalTagihan ?? updatedFields.totalBiaya) || 0;
+      orderUpdates.totalEstimasi = totalVal;
+      (orderUpdates as any).totalBiaya = totalVal;
+      (orderUpdates as any).total_biaya = totalVal;
+      nextPayment.totalBiaya = totalVal;
+      nextPayment.totalEstimasi = totalVal;
+      paymentTouched = true;
+    }
+    if (updatedFields["Uang Masuk dari Konsumen"] !== undefined || updatedFields.uangMasuk !== undefined) {
+      const masukVal = Number(updatedFields["Uang Masuk dari Konsumen"] ?? updatedFields.uangMasuk) || 0;
+      (orderUpdates as any).uangMasuk = masukVal;
+      nextPayment.dibayar = masukVal;
+      const curTot = nextPayment.totalBiaya || Number(updatedFields["Total Tagihan Konsumen"]) || 0;
+      nextPayment.kurang = Math.max(0, curTot - masukVal);
+      paymentTouched = true;
+    }
+
+    if (updatedFields["Tanggal Uang Masuk"] !== undefined || updatedFields.tanggalUangMasuk !== undefined) {
+      const tglMasukVal = updatedFields["Tanggal Uang Masuk"] || updatedFields.tanggalUangMasuk;
+      (orderUpdates as any).tanggalUangMasuk = tglMasukVal;
+    }
+    if (updatedFields["Tanggal Uang Keluar"] !== undefined || updatedFields.tanggalPengeluaranSamsat !== undefined || updatedFields.tanggalUangKeluar !== undefined) {
+      const tglKeluarVal = updatedFields["Tanggal Uang Keluar"] || updatedFields.tanggalPengeluaranSamsat || updatedFields.tanggalUangKeluar;
+      (orderUpdates as any).tanggalPengeluaranSamsat = tglKeluarVal;
+      (orderUpdates as any).tanggalUangKeluar = tglKeluarVal;
+    }
+
+    // 4. Faktur, BPKB & Dokumen Fisik
+    if (updatedFields["No Invoice"] !== undefined || updatedFields.noInvoice !== undefined) {
+      const invVal = (updatedFields["No Invoice"] || updatedFields.noInvoice || "").trim();
+      (orderUpdates as any).noInvoice = invVal;
+      nextPayment.invoiceNo = invVal;
+      paymentTouched = true;
+    }
+    if (updatedFields["BPKB"] !== undefined || updatedFields["Dokumen BPKB"] !== undefined || updatedFields.bpkb !== undefined) {
+      const bpkbVal = updatedFields["BPKB"] || updatedFields["Dokumen BPKB"] || updatedFields.bpkb;
+      (orderUpdates as any).bpkb = bpkbVal;
+      (orderUpdates as any).dokumenBPKB = bpkbVal;
+      if (order?.clientDocuments) {
+        const isAda = bpkbVal === "Ada" ? "Sudah Tersedia" : "Belum Tersedia";
+        orderUpdates.clientDocuments = {
+          ...order.clientDocuments,
+          BPKB: {
+            ...(order.clientDocuments.BPKB || { name: "BPKB Asli" }),
+            status: isAda,
+          },
+        };
+      }
+    }
+    if (updatedFields["Status Pengerjaan"]) {
+      (orderUpdates as any).statusPengerjaan = updatedFields["Status Pengerjaan"];
+      (orderUpdates as any).salesSnapshotStatus = updatedFields["Status Pengerjaan"];
+    }
+    if (updatedFields["Tanda Terima"] !== undefined || updatedFields["Nomor Tanda Terima"] !== undefined) {
+      const ttVal = updatedFields["Tanda Terima"] || updatedFields["Nomor Tanda Terima"];
+      (orderUpdates as any).tandaTerima = ttVal;
+      (orderUpdates as any).nomorTandaTerima = ttVal;
+    }
+    if (updatedFields["TTB BPKB"] !== undefined || updatedFields["Nomor TTB BPKB"] !== undefined || updatedFields.ttbBPKB !== undefined) {
+      const ttbVal = updatedFields["TTB BPKB"] || updatedFields["Nomor TTB BPKB"] || updatedFields.ttbBPKB;
+      (orderUpdates as any).ttbBPKB = ttbVal;
+      (orderUpdates as any).nomorTTBBPKB = ttbVal;
+    }
+    if (updatedFields["Staf Pengirim"] !== undefined || updatedFields.stafPengirim !== undefined) {
+      (orderUpdates as any).stafPengirim = updatedFields["Staf Pengirim"] || updatedFields.stafPengirim;
+    }
+    if (updatedFields["Nama Penerima"] !== undefined || updatedFields.namaPenerima !== undefined) {
+      (orderUpdates as any).namaPenerima = updatedFields["Nama Penerima"] || updatedFields.namaPenerima;
+      (orderUpdates as any).namaPenerimaKeluar = updatedFields["Nama Penerima"] || updatedFields.namaPenerima;
+    }
+    if (updatedFields["Nomor Rekening Pengirim"] !== undefined || updatedFields.noRekeningPengirim !== undefined) {
+      const rekVal = updatedFields["Nomor Rekening Pengirim"] || updatedFields.noRekeningPengirim;
+      (orderUpdates as any).noRekeningPengirim = rekVal;
+      nextPayment.noRekening = rekVal;
+      paymentTouched = true;
+    }
+    if (updatedFields["Nomor Rekening Penerima"] !== undefined || updatedFields.noRekeningPenerima !== undefined) {
+      (orderUpdates as any).noRekeningPenerima = updatedFields["Nomor Rekening Penerima"] || updatedFields.noRekeningPenerima;
+    }
+    if (updatedFields["Keterangan"] !== undefined || updatedFields.catatanOrder !== undefined) {
+      const catVal = updatedFields["Keterangan"] || updatedFields.catatanOrder;
+      orderUpdates.catatanOrder = catVal;
+      (orderUpdates as any).catatan = catVal;
+    }
+    if (updatedFields["Keterangan Dokumen BPKB"] !== undefined) {
+      (orderUpdates as any).keteranganDokumenBPKB = updatedFields["Keterangan Dokumen BPKB"];
+    }
+
+    // 5. Lampiran Dokumen Sync
+    if (Array.isArray(updatedFields.dokumenAwal) || Array.isArray(updatedFields.dokumenAkhir)) {
+      const docsAwal = Array.isArray(updatedFields.dokumenAwal) ? updatedFields.dokumenAwal : [];
+      const docsAkhir = Array.isArray(updatedFields.dokumenAkhir) ? updatedFields.dokumenAkhir : [];
+      const rekapDocs: any[] = [
+        ...docsAwal.map((d: any) => ({
+          id: d.id,
+          orderId: orderNo,
+          phase: "BEFORE" as const,
+          documentType: "OTHER" as const,
+          label: d.customName || d.name || "Dokumen Masuk",
+          fileType: (d.mimeType?.includes("pdf") || (d.name || "").toLowerCase().endsWith(".pdf")) ? "PDF" as const : "IMAGE" as const,
+          fileUrl: d.fileUrl || "",
+          uploadedAt: d.createdAt || new Date().toISOString(),
+          uploadedBy: "Admin",
+        })),
+        ...docsAkhir.map((d: any) => ({
+          id: d.id,
+          orderId: orderNo,
+          phase: "AFTER" as const,
+          documentType: "OTHER" as const,
+          label: d.customName || d.name || "Dokumen Keluar",
+          fileType: (d.mimeType?.includes("pdf") || (d.name || "").toLowerCase().endsWith(".pdf")) ? "PDF" as const : "IMAGE" as const,
+          fileUrl: d.fileUrl || "",
+          uploadedAt: d.createdAt || new Date().toISOString(),
+          uploadedBy: "Admin",
+        })),
+      ];
+      (orderUpdates as any).rekapDocuments = rekapDocs;
+      orderUpdates.rekapDocuments = rekapDocs;
+    }
+
+    if (paymentTouched) {
+      orderUpdates.payment = nextPayment;
+    }
+
+    return orderUpdates;
+  }
+
+  private applyLinkedInvoiceAndDatasetUpdate(
+    category: PenjualanContractCategory,
+    id: number | string,
+    orderNo: string,
+    order: OperationalOrder | undefined,
+    updatedFields: Record<string, any>
+  ): void {
+    const linkedInv = this.invoices.find(
+      (i) => i.orderNo === orderNo || (order?.payment?.invoiceNo && (i.invoice === order.payment.invoiceNo || i.invoiceNo === order.payment.invoiceNo))
+    );
+    if (linkedInv) {
+      if (updatedFields["Nama Customer"]) linkedInv.customer = updatedFields["Nama Customer"];
+      if (updatedFields["Plat No"]) linkedInv.nopol = updatedFields["Plat No"];
+      if (updatedFields["Jenis Pengurusan"]) linkedInv.jenisLayanan = updatedFields["Jenis Pengurusan"];
+      if (updatedFields["No Invoice"] || updatedFields.noInvoice) {
+        const newInvNo = updatedFields["No Invoice"] || updatedFields.noInvoice;
+        linkedInv.invoice = newInvNo;
+        linkedInv.invoiceNo = newInvNo;
+      }
+      if (updatedFields["Tanggal Masuk Berkas"]) linkedInv.tanggal = updatedFields["Tanggal Masuk Berkas"];
+      if (updatedFields["Total Tagihan Konsumen"] !== undefined) linkedInv.totalTagihan = Number(updatedFields["Total Tagihan Konsumen"]) || 0;
+      if (updatedFields["Biaya Pokok Samsat"] !== undefined) linkedInv.biayaSamsat = Number(updatedFields["Biaya Pokok Samsat"]) || 0;
+      if (updatedFields["Biaya Lainnya"] !== undefined) (linkedInv as any).biayaLainnya = Number(updatedFields["Biaya Lainnya"]) || 0;
+      if (updatedFields["Biaya Antar Jemput"] !== undefined) (linkedInv as any).biayaAntarJemput = Number(updatedFields["Biaya Antar Jemput"]) || 0;
+      if (updatedFields["Uang Masuk dari Konsumen"] !== undefined) {
+        linkedInv.terbayar = Number(updatedFields["Uang Masuk dari Konsumen"]) || 0;
+        linkedInv.sisa = Math.max(0, linkedInv.totalTagihan - linkedInv.terbayar);
+        linkedInv.status = derivePaymentStatus(linkedInv.totalTagihan, linkedInv.terbayar);
+      }
+      const curUangMasuk = linkedInv.terbayar || 0;
+      const curSamsat = linkedInv.biayaSamsat || 0;
+      const curLainnya = Number((linkedInv as any).biayaLainnya || 0);
+      linkedInv.profit = Math.max(0, curUangMasuk - curSamsat - curLainnya);
+      if (updatedFields["Tanda Terima"]) linkedInv.tandaTerima = updatedFields["Tanda Terima"];
+      if (updatedFields["TTB BPKB"]) linkedInv.ttbBPKB = updatedFields["TTB BPKB"];
+    }
+
+    const dataset = this.contractDatasets[category];
+    if (dataset) {
+      const idx = dataset.findIndex((d: any) => d.id === id || d.orderNo === orderNo || d["Nomor Order"] === orderNo);
+      if (idx !== -1) {
+        dataset[idx] = {
+          ...dataset[idx],
+          ...updatedFields,
+        };
+      }
+    }
+  }
+
   public updateContractData(
     category: PenjualanContractCategory,
     id: number | string,
@@ -2288,288 +2629,11 @@ class FinanceStore {
       const orderNo = id.slice(4);
       const order = orderRepository.getByOrderNo(orderNo);
       if (order) {
-        const orderUpdates: Partial<OperationalOrder> = {};
-        
-        // 1. Informasi Berkas
-        const tglBerkasVal = updatedFields["Tanggal Masuk Berkas"] ?? updatedFields.tanggalMasukBerkas ?? updatedFields.tanggal_masuk_berkas;
-        if (tglBerkasVal !== undefined) {
-          orderUpdates.tanggalMasukBerkas = tglBerkasVal;
-          (orderUpdates as any).tanggal_masuk_berkas = tglBerkasVal;
+        const orderUpdates = this.buildOrderUpdatesFromContractFields(order, orderNo, updatedFields);
+        if (orderUpdates.payment && order.payment) {
+          Object.assign(order.payment, orderUpdates.payment);
         }
-
-        const custVal = updatedFields["Nama Customer"] ?? updatedFields["Customer"];
-        if (custVal !== undefined) {
-          orderUpdates.customer = custVal.trim();
-        }
-        const ownerVal = updatedFields["Nama Pemilik (STNK/BPKB)"] ?? updatedFields["Nama"];
-        if (ownerVal !== undefined) {
-          orderUpdates.namaPemilik = ownerVal.trim() || "-";
-        }
-        const plateVal = updatedFields["Plat No"] ?? updatedFields["Nomor Polisi"];
-        if (plateVal !== undefined) {
-          orderUpdates.nopol = plateVal.trim();
-        }
-        const serviceVal = updatedFields["Jenis Pengurusan"] ?? updatedFields["Layanan"];
-        if (serviceVal !== undefined) {
-          orderUpdates.layanan = serviceVal.trim();
-        }
-        const samsatVal = updatedFields["Samsat Asal"] ?? updatedFields["Samsat"] ?? updatedFields["Wilayah Samsat Asal"] ?? updatedFields.samsatAsal;
-        if (samsatVal !== undefined) {
-          orderUpdates.wilayahSamsatAsal = samsatVal.trim();
-          (orderUpdates as any).samsat_asal = samsatVal.trim();
-        }
-        const samsatTujuanVal = updatedFields["Samsat Tujuan"] ?? updatedFields.wilayahSamsatTujuan ?? updatedFields.samsatTujuan;
-        if (samsatTujuanVal !== undefined) {
-          orderUpdates.wilayahSamsatTujuan = samsatTujuanVal.trim();
-          (orderUpdates as any).samsat_tujuan = samsatTujuanVal.trim();
-        }
-        if (updatedFields["R4 / R2"]) {
-          orderUpdates.jenisKendaraan = updatedFields["R4 / R2"] === "R2" ? "Motor" : "Mobil";
-        }
-        if (updatedFields["Status Kepemilikan"]) {
-          orderUpdates.kepemilikanKendaraan = updatedFields["Status Kepemilikan"];
-          (orderUpdates as any).statusKepemilikan = updatedFields["Status Kepemilikan"];
-        }
-        const phoneVal = updatedFields["Nomor HP"] ?? updatedFields["No HP"] ?? updatedFields.phone;
-        if (phoneVal !== undefined) {
-          orderUpdates.nomorHP = phoneVal.trim();
-        }
-
-        // 2. Structured 9-Part Address
-        const hasAnyAddr = Boolean(
-          updatedFields.detailAlamat || updatedFields["Detail Alamat"] ||
-          updatedFields.kota || updatedFields["Kota/Kabupaten"] ||
-          updatedFields.kecamatan || updatedFields["Kecamatan"] ||
-          updatedFields.kelurahan || updatedFields["Kelurahan/Desa"] ||
-          updatedFields.rtRw || updatedFields["RT/RW"] ||
-          updatedFields.nomorRumah || updatedFields["Nomor Rumah"] ||
-          updatedFields.patokan || updatedFields["Patokan"] ||
-          updatedFields.linkLokasi || updatedFields["Link Lokasi"] ||
-          updatedFields.provinsi || updatedFields["Provinsi"] ||
-          updatedFields["Alamat"] || updatedFields.alamat
-        );
-        if (hasAnyAddr) {
-          const detail = (updatedFields.detailAlamat ?? updatedFields["Detail Alamat"] ?? order.alamatPenjemputan?.detail ?? "").trim();
-          const kota = (updatedFields.kota ?? updatedFields["Kota/Kabupaten"] ?? order.alamatPenjemputan?.kota ?? "").trim();
-          const kecamatan = (updatedFields.kecamatan ?? updatedFields["Kecamatan"] ?? order.alamatPenjemputan?.kecamatan ?? "").trim();
-          const kelurahan = (updatedFields.kelurahan ?? updatedFields["Kelurahan/Desa"] ?? order.alamatPenjemputan?.kelurahan ?? "").trim();
-          const rtRw = (updatedFields.rtRw ?? updatedFields["RT/RW"] ?? order.alamatPenjemputan?.rtRw ?? "").trim();
-          const nomor = (updatedFields.nomorRumah ?? updatedFields["Nomor Rumah"] ?? order.alamatPenjemputan?.nomor ?? "").trim();
-          const landmark = (updatedFields.patokan ?? updatedFields["Patokan"] ?? order.alamatPenjemputan?.landmark ?? "").trim();
-          const mapsUrl = (updatedFields.linkLokasi ?? updatedFields["Link Lokasi"] ?? order.alamatPenjemputan?.mapsUrl ?? "").trim();
-          const provinsi = (updatedFields.provinsi ?? updatedFields["Provinsi"] ?? (order.alamatPenjemputan as any)?.provinsi ?? "").trim();
-
-          orderUpdates.alamatPenjemputan = {
-            detail: detail || "",
-            kota: kota || "",
-            kecamatan: kecamatan || "",
-            kelurahan: kelurahan || "",
-            rtRw: rtRw || "",
-            nomor: nomor || "",
-            landmark: landmark || "",
-            mapsUrl: mapsUrl || "",
-            ...(provinsi ? { provinsi } : {}),
-          } as any;
-          orderUpdates.alamatPengantaran = { ...orderUpdates.alamatPenjemputan } as any;
-          (orderUpdates as any).alamat = updatedFields["Alamat"] || [
-            detail,
-            nomor ? `No. ${nomor}` : '',
-            rtRw ? `RT/RW ${rtRw}` : '',
-            kelurahan ? `Kel. ${kelurahan}` : '',
-            kecamatan ? `Kec. ${kecamatan}` : '',
-            kota,
-            provinsi
-          ].filter(Boolean).join(', ');
-        }
-
-        // 3. Rincian Keuangan & Komponen Biaya
-        if (updatedFields["Biaya Jasa"] !== undefined || updatedFields.biayaJasa !== undefined) {
-          const jasaVal = Number(updatedFields["Biaya Jasa"] ?? updatedFields.biayaJasa) || 0;
-          orderUpdates.biayaJasa = jasaVal;
-          (orderUpdates as any).biaya_jasa = jasaVal;
-        }
-        if (updatedFields["Biaya Antar Jemput"] !== undefined || updatedFields.biayaAntarJemput !== undefined) {
-          const antarVal = Number(updatedFields["Biaya Antar Jemput"] ?? updatedFields.biayaAntarJemput) || 0;
-          (orderUpdates as any).biayaAntarJemput = antarVal;
-          (orderUpdates as any).biaya_antar_jemput = antarVal;
-        }
-        if (updatedFields["Biaya Lainnya"] !== undefined || updatedFields.biayaLainnya !== undefined) {
-          const lainnyaVal = Number(updatedFields["Biaya Lainnya"] ?? updatedFields.biayaLainnya) || 0;
-          (orderUpdates as any).biayaLainnya = lainnyaVal;
-          (orderUpdates as any).biaya_lainnya = lainnyaVal;
-        }
-        if (updatedFields["Biaya Pokok Samsat"] !== undefined || updatedFields.biayaSamsat !== undefined || updatedFields.uangKeluar !== undefined) {
-          const samsatVal = Number(updatedFields["Biaya Pokok Samsat"] ?? updatedFields.biayaSamsat ?? updatedFields.uangKeluar) || 0;
-          (orderUpdates as any).biayaSamsat = samsatVal;
-          (orderUpdates as any).biaya_samsat = samsatVal;
-          (orderUpdates as any).uangKeluar = samsatVal;
-          orderUpdates.pkb = samsatVal;
-        }
-        if (updatedFields["Total Tagihan Konsumen"] !== undefined || updatedFields.totalTagihan !== undefined || updatedFields.totalBiaya !== undefined) {
-          const totalVal = Number(updatedFields["Total Tagihan Konsumen"] ?? updatedFields.totalTagihan ?? updatedFields.totalBiaya) || 0;
-          orderUpdates.totalEstimasi = totalVal;
-          (orderUpdates as any).totalBiaya = totalVal;
-          (orderUpdates as any).total_biaya = totalVal;
-          if (!order.payment) order.payment = {} as any;
-          if (order.payment) {
-            order.payment.totalBiaya = totalVal;
-            order.payment.totalEstimasi = totalVal;
-          }
-        }
-        if (updatedFields["Uang Masuk dari Konsumen"] !== undefined || updatedFields.uangMasuk !== undefined) {
-          const masukVal = Number(updatedFields["Uang Masuk dari Konsumen"] ?? updatedFields.uangMasuk) || 0;
-          (orderUpdates as any).uangMasuk = masukVal;
-          if (!order.payment) order.payment = {} as any;
-          if (order.payment) {
-            order.payment.dibayar = masukVal;
-            const curTot = order.payment.totalBiaya || Number(updatedFields["Total Tagihan Konsumen"]) || 0;
-            order.payment.kurang = Math.max(0, curTot - masukVal);
-          }
-        }
-
-        if (updatedFields["Tanggal Uang Masuk"] !== undefined || updatedFields.tanggalUangMasuk !== undefined) {
-          const tglMasukVal = updatedFields["Tanggal Uang Masuk"] || updatedFields.tanggalUangMasuk;
-          (orderUpdates as any).tanggalUangMasuk = tglMasukVal;
-        }
-        if (updatedFields["Tanggal Uang Keluar"] !== undefined || updatedFields.tanggalPengeluaranSamsat !== undefined || updatedFields.tanggalUangKeluar !== undefined) {
-          const tglKeluarVal = updatedFields["Tanggal Uang Keluar"] || updatedFields.tanggalPengeluaranSamsat || updatedFields.tanggalUangKeluar;
-          (orderUpdates as any).tanggalPengeluaranSamsat = tglKeluarVal;
-          (orderUpdates as any).tanggalUangKeluar = tglKeluarVal;
-        }
-
-        // 4. Faktur, BPKB & Dokumen Fisik
-        if (updatedFields["No Invoice"] !== undefined || updatedFields.noInvoice !== undefined) {
-          const invVal = (updatedFields["No Invoice"] || updatedFields.noInvoice || "").trim();
-          (orderUpdates as any).noInvoice = invVal;
-          if (order.payment) order.payment.invoiceNo = invVal;
-        }
-        if (updatedFields["BPKB"] !== undefined || updatedFields["Dokumen BPKB"] !== undefined || updatedFields.bpkb !== undefined) {
-          const bpkbVal = updatedFields["BPKB"] || updatedFields["Dokumen BPKB"] || updatedFields.bpkb;
-          (orderUpdates as any).bpkb = bpkbVal;
-          (orderUpdates as any).dokumenBPKB = bpkbVal;
-          if (order.clientDocuments) {
-            const isAda = bpkbVal === "Ada" ? "Sudah Tersedia" : "Belum Tersedia";
-            orderUpdates.clientDocuments = {
-              ...order.clientDocuments,
-              BPKB: {
-                ...(order.clientDocuments.BPKB || { name: "BPKB Asli" }),
-                status: isAda,
-              },
-            };
-          }
-        }
-        if (updatedFields["Status Pengerjaan"]) {
-          (orderUpdates as any).statusPengerjaan = updatedFields["Status Pengerjaan"];
-          (orderUpdates as any).salesSnapshotStatus = updatedFields["Status Pengerjaan"];
-        }
-        if (updatedFields["Tanda Terima"] !== undefined || updatedFields["Nomor Tanda Terima"] !== undefined) {
-          const ttVal = updatedFields["Tanda Terima"] || updatedFields["Nomor Tanda Terima"];
-          (orderUpdates as any).tandaTerima = ttVal;
-          (orderUpdates as any).nomorTandaTerima = ttVal;
-        }
-        if (updatedFields["TTB BPKB"] !== undefined || updatedFields["Nomor TTB BPKB"] !== undefined || updatedFields.ttbBPKB !== undefined) {
-          const ttbVal = updatedFields["TTB BPKB"] || updatedFields["Nomor TTB BPKB"] || updatedFields.ttbBPKB;
-          (orderUpdates as any).ttbBPKB = ttbVal;
-          (orderUpdates as any).nomorTTBBPKB = ttbVal;
-        }
-        if (updatedFields["Staf Pengirim"] !== undefined || updatedFields.stafPengirim !== undefined) {
-          (orderUpdates as any).stafPengirim = updatedFields["Staf Pengirim"] || updatedFields.stafPengirim;
-        }
-        if (updatedFields["Nama Penerima"] !== undefined || updatedFields.namaPenerima !== undefined) {
-          (orderUpdates as any).namaPenerima = updatedFields["Nama Penerima"] || updatedFields.namaPenerima;
-          (orderUpdates as any).namaPenerimaKeluar = updatedFields["Nama Penerima"] || updatedFields.namaPenerima;
-        }
-        if (updatedFields["Nomor Rekening Pengirim"] !== undefined || updatedFields.noRekeningPengirim !== undefined) {
-          (orderUpdates as any).noRekeningPengirim = updatedFields["Nomor Rekening Pengirim"] || updatedFields.noRekeningPengirim;
-          if (order.payment) {
-            order.payment.noRekening = updatedFields["Nomor Rekening Pengirim"] || updatedFields.noRekeningPengirim;
-          }
-        }
-        if (updatedFields["Nomor Rekening Penerima"] !== undefined || updatedFields.noRekeningPenerima !== undefined) {
-          (orderUpdates as any).noRekeningPenerima = updatedFields["Nomor Rekening Penerima"] || updatedFields.noRekeningPenerima;
-        }
-        if (updatedFields["Keterangan"] !== undefined || updatedFields.catatanOrder !== undefined) {
-          const catVal = updatedFields["Keterangan"] || updatedFields.catatanOrder;
-          orderUpdates.catatanOrder = catVal;
-          (orderUpdates as any).catatan = catVal;
-        }
-        if (updatedFields["Keterangan Dokumen BPKB"] !== undefined) {
-          (orderUpdates as any).keteranganDokumenBPKB = updatedFields["Keterangan Dokumen BPKB"];
-        }
-
-        // 5. Lampiran Dokumen Sync
-        if (Array.isArray(updatedFields.dokumenAwal) || Array.isArray(updatedFields.dokumenAkhir)) {
-          const docsAwal = Array.isArray(updatedFields.dokumenAwal) ? updatedFields.dokumenAwal : [];
-          const docsAkhir = Array.isArray(updatedFields.dokumenAkhir) ? updatedFields.dokumenAkhir : [];
-          const rekapDocs: any[] = [
-            ...docsAwal.map((d: any) => ({
-              id: d.id,
-              orderId: orderNo,
-              phase: "BEFORE" as const,
-              documentType: "OTHER" as const,
-              label: d.customName || d.name || "Dokumen Masuk",
-              fileType: (d.mimeType?.includes("pdf") || (d.name || "").toLowerCase().endsWith(".pdf")) ? "PDF" as const : "IMAGE" as const,
-              fileUrl: d.fileUrl || "",
-              uploadedAt: d.createdAt || new Date().toISOString(),
-              uploadedBy: "Admin",
-            })),
-            ...docsAkhir.map((d: any) => ({
-              id: d.id,
-              orderId: orderNo,
-              phase: "AFTER" as const,
-              documentType: "OTHER" as const,
-              label: d.customName || d.name || "Dokumen Keluar",
-              fileType: (d.mimeType?.includes("pdf") || (d.name || "").toLowerCase().endsWith(".pdf")) ? "PDF" as const : "IMAGE" as const,
-              fileUrl: d.fileUrl || "",
-              uploadedAt: d.createdAt || new Date().toISOString(),
-              uploadedBy: "Admin",
-            })),
-          ];
-          (orderUpdates as any).rekapDocuments = rekapDocs;
-          orderUpdates.rekapDocuments = rekapDocs;
-        }
-
-        // Also update linked invoice in local cache
-        const linkedInv = this.invoices.find((i) => i.orderNo === orderNo || (order.payment?.invoiceNo && (i.invoice === order.payment.invoiceNo || i.invoiceNo === order.payment.invoiceNo)));
-        if (linkedInv) {
-          if (updatedFields["Nama Customer"]) linkedInv.customer = updatedFields["Nama Customer"];
-          if (updatedFields["Plat No"]) linkedInv.nopol = updatedFields["Plat No"];
-          if (updatedFields["Jenis Pengurusan"]) linkedInv.jenisLayanan = updatedFields["Jenis Pengurusan"];
-          if (updatedFields["No Invoice"] || updatedFields.noInvoice) {
-            const newInvNo = updatedFields["No Invoice"] || updatedFields.noInvoice;
-            linkedInv.invoice = newInvNo;
-            linkedInv.invoiceNo = newInvNo;
-          }
-          if (updatedFields["Tanggal Masuk Berkas"]) linkedInv.tanggal = updatedFields["Tanggal Masuk Berkas"];
-          if (updatedFields["Total Tagihan Konsumen"] !== undefined) linkedInv.totalTagihan = Number(updatedFields["Total Tagihan Konsumen"]) || 0;
-          if (updatedFields["Biaya Pokok Samsat"] !== undefined) linkedInv.biayaSamsat = Number(updatedFields["Biaya Pokok Samsat"]) || 0;
-          if (updatedFields["Biaya Lainnya"] !== undefined) (linkedInv as any).biayaLainnya = Number(updatedFields["Biaya Lainnya"]) || 0;
-          if (updatedFields["Biaya Antar Jemput"] !== undefined) (linkedInv as any).biayaAntarJemput = Number(updatedFields["Biaya Antar Jemput"]) || 0;
-          if (updatedFields["Uang Masuk dari Konsumen"] !== undefined) {
-            linkedInv.terbayar = Number(updatedFields["Uang Masuk dari Konsumen"]) || 0;
-            linkedInv.sisa = Math.max(0, linkedInv.totalTagihan - linkedInv.terbayar);
-            linkedInv.status = derivePaymentStatus(linkedInv.totalTagihan, linkedInv.terbayar);
-          }
-          const curUangMasuk = linkedInv.terbayar || 0;
-          const curSamsat = linkedInv.biayaSamsat || 0;
-          const curLainnya = Number((linkedInv as any).biayaLainnya || 0);
-          linkedInv.profit = Math.max(0, curUangMasuk - curSamsat - curLainnya);
-          if (updatedFields["Tanda Terima"]) linkedInv.tandaTerima = updatedFields["Tanda Terima"];
-          if (updatedFields["TTB BPKB"]) linkedInv.ttbBPKB = updatedFields["TTB BPKB"];
-        }
-
-        // Update dataset row in memory
-        const dataset = this.contractDatasets[category];
-        if (dataset) {
-          const idx = dataset.findIndex((d: any) => d.id === id || d.orderNo === orderNo || d["Nomor Order"] === orderNo);
-          if (idx !== -1) {
-            dataset[idx] = {
-              ...dataset[idx],
-              ...updatedFields,
-            };
-          }
-        }
-
+        this.applyLinkedInvoiceAndDatasetUpdate(category, id, orderNo, order, updatedFields);
         orderRepository.updateOrder(orderNo, orderUpdates);
         this.notify();
         return true;
@@ -2596,6 +2660,171 @@ class FinanceStore {
     }
 
     return true;
+  }
+
+  public async updateContractDataAsync(
+    category: PenjualanContractCategory,
+    id: number | string,
+    updatedFields: Record<string, any>
+  ): Promise<ContractMutationResult> {
+    if (category === "belum-kurang-bayar" || category === "profit-terpending" || category === "cashback-terpending") {
+      const ok = this.updateContractData(category, id, updatedFields);
+      return ok
+        ? { success: true }
+        : {
+            success: false,
+            error: {
+              code: "NOT_FOUND",
+              message: "Data penjualan tidak ditemukan. Data mungkin sudah dihapus atau berubah.",
+              statusCode: 404,
+            },
+          };
+    }
+
+    // Client-side validation for edited mandatory fields when provided
+    const custVal = updatedFields["Nama Customer"] ?? updatedFields["Customer"];
+    if (custVal !== undefined && !String(custVal).trim()) {
+      return {
+        success: false,
+        error: {
+          code: "VALIDATION_ERROR",
+          message: "Gagal menyimpan data. Nama Customer wajib diisi.",
+          field: "customer",
+          statusCode: 400,
+        },
+      };
+    }
+    const plateVal = updatedFields["Plat No"] ?? updatedFields["Nomor Polisi"];
+    if (plateVal !== undefined && !String(plateVal).trim()) {
+      return {
+        success: false,
+        error: {
+          code: "VALIDATION_ERROR",
+          message: "Gagal menyimpan data. Nomor Polisi wajib diisi lengkap.",
+          field: "nopol",
+          statusCode: 400,
+        },
+      };
+    }
+    const serviceVal = updatedFields["Jenis Pengurusan"] ?? updatedFields["Layanan"];
+    if (serviceVal !== undefined && !String(serviceVal).trim()) {
+      return {
+        success: false,
+        error: {
+          code: "VALIDATION_ERROR",
+          message: "Gagal menyimpan data. Jenis Pengurusan wajib diisi.",
+          field: "layanan",
+          statusCode: 400,
+        },
+      };
+    }
+    const phoneVal = updatedFields["Nomor HP"] ?? updatedFields["No HP"] ?? updatedFields.phone;
+    if (phoneVal !== undefined) {
+      const phoneDigits = String(phoneVal).replace(/[^0-9]/g, "");
+      if (!String(phoneVal).trim() || phoneDigits.length < 9) {
+        return {
+          success: false,
+          error: {
+            code: "VALIDATION_ERROR",
+            message: "Gagal menyimpan data. Nomor HP / WhatsApp wajib diisi (minimal 9 digit angka).",
+            field: "nomorHP",
+            statusCode: 400,
+          },
+        };
+      }
+    }
+
+    const isOrderRow = typeof id === "string" && (id.startsWith("ord:") || id.toUpperCase().startsWith("ORD-"));
+    if (isOrderRow) {
+      const orderNo = String(id).startsWith("ord:") ? String(id).slice(4) : String(id);
+      const order = orderRepository.getByOrderNo(orderNo);
+      const orderUpdates = this.buildOrderUpdatesFromContractFields(order, orderNo, updatedFields);
+
+      try {
+        const ok =
+          typeof orderRepository.updateOrderAsync === "function"
+            ? await orderRepository.updateOrderAsync(orderNo, orderUpdates)
+            : orderRepository.updateOrder(orderNo, orderUpdates);
+
+        if (!ok) {
+          return {
+            success: false,
+            error: {
+              code: "NOT_FOUND",
+              message: "Data penjualan tidak ditemukan. Data mungkin sudah dihapus atau berubah.",
+              statusCode: 404,
+            },
+          };
+        }
+
+        // Only update local linked invoice & contract datasets after server confirmation
+        const confirmedOrder = orderRepository.getByOrderNo(orderNo) || order;
+        this.applyLinkedInvoiceAndDatasetUpdate(category, id, orderNo, confirmedOrder, updatedFields);
+        this.notify();
+        return { success: true };
+      } catch (err: any) {
+        return {
+          success: false,
+          error: {
+            code:
+              err?.code ||
+              (err?.statusCode === 404
+                ? "NOT_FOUND"
+                : err?.statusCode === 403
+                ? "FORBIDDEN"
+                : err?.statusCode === 401
+                ? "UNAUTHENTICATED"
+                : err?.statusCode === 409
+                ? "DUPLICATE_RECORD"
+                : err?.statusCode === 422
+                ? "CONFLICT"
+                : err?.statusCode === 400
+                ? "VALIDATION_ERROR"
+                : err?.statusCode === 0
+                ? "NETWORK_ERROR"
+                : "SERVER_ERROR"),
+            message: err?.detail || err?.message || "Gagal memperbarui data penjualan di server.",
+            field: err?.field,
+            statusCode: err?.statusCode,
+          },
+        };
+      }
+    }
+
+    const dataset = this.contractDatasets[category];
+    if (!dataset) {
+      return {
+        success: false,
+        error: {
+          code: "NOT_FOUND",
+          message: "Data penjualan tidak ditemukan. Data mungkin sudah dihapus atau berubah.",
+          statusCode: 404,
+        },
+      };
+    }
+    const idx = dataset.findIndex((r) => r.id === id || String(r.id) === String(id));
+    if (idx === -1) {
+      return {
+        success: false,
+        error: {
+          code: "NOT_FOUND",
+          message: "Data penjualan tidak ditemukan. Data mungkin sudah dihapus atau berubah.",
+          statusCode: 404,
+        },
+      };
+    }
+
+    const ok = this.updateContractData(category, id, updatedFields);
+    return ok
+      ? { success: true }
+      : {
+          success: false,
+          error: {
+            code: "SERVER_ERROR",
+            message: "Gagal memperbarui data penjualan.",
+            statusCode: 500,
+          },
+        };
   }
 
   public preserveOrderInContractDataset(order: any): void {
@@ -3005,7 +3234,13 @@ class FinanceStore {
             samsatProcesses: [],
             payment: {
               tipePembayaran: uangMasuk >= totalEst && totalEst > 0 ? "Bayar di Awal" : "Bayar di Akhir",
-              metodePembayaran: metodePembayaranMasuk,
+              metodePembayaran: /cash|tunai/i.test(metodePembayaranMasuk)
+                ? "Cash"
+                : /^qris$/i.test(metodePembayaranMasuk)
+                ? "QRIS"
+                : bankUangMasuk && bankUangMasuk !== "-" && bankUangMasuk !== "Lainnya" && !/^kas\b/i.test(bankUangMasuk)
+                ? (metodePembayaranMasuk.toLowerCase().includes(bankUangMasuk.toLowerCase()) ? metodePembayaranMasuk : `Transfer ${bankUangMasuk}`)
+                : metodePembayaranMasuk,
               namaBank: bankUangMasuk,
               noRekening: noRekeningMasuk,
               namaRekening: namaRekeningMasuk,
@@ -3118,6 +3353,593 @@ class FinanceStore {
     return true;
   }
 
+  public async addContractDataAsync(
+    category: PenjualanContractCategory,
+    rows: any[]
+  ): Promise<ContractMutationResult> {
+    const operationalCategories = new Set([
+      "perpanjangan-1-tahun",
+      "perpanjangan-5-tahun",
+      "mutasi-asal",
+      "mutasi-antar-daerah",
+      "balik-nama",
+      "tarik-berkas",
+      "duplikat-stnk",
+      "lainnya",
+      "mutasi-ld",
+      "mutasi-as",
+      "bbn",
+      "perpanjangan-pajak",
+      "lain-lain",
+    ]);
+
+    if (!operationalCategories.has(category)) {
+      const ok = this.addContractData(category, rows);
+      return ok
+        ? { success: true }
+        : {
+            success: false,
+            error: {
+              code: "VALIDATION_ERROR",
+              message: "Gagal menyimpan data. Pastikan seluruh data transaksi valid.",
+              statusCode: 400,
+            },
+          };
+    }
+
+    if (!rows || rows.length === 0) {
+      return {
+        success: false,
+        error: {
+          code: "VALIDATION_ERROR",
+          message: "Gagal menyimpan data. Minimal harus ada satu data transaksi.",
+          statusCode: 400,
+        },
+      };
+    }
+
+    const resolveDefaultLayanan = (cat: PenjualanContractCategory) => {
+      switch (cat) {
+        case "perpanjangan-1-tahun":
+        case "perpanjangan-pajak":
+          return "Perpanjangan 1 Tahun";
+        case "perpanjangan-5-tahun":
+          return "Perpanjangan 5 Tahun";
+        case "mutasi-asal":
+        case "mutasi-as":
+          return "Mutasi Asal Samsat";
+        case "mutasi-antar-daerah":
+        case "mutasi-ld":
+          return "Mutasi Antar Daerah";
+        case "balik-nama":
+        case "bbn":
+          return "Balik Nama";
+        case "tarik-berkas":
+        case "lain-lain":
+          return "Tarik Berkas";
+        case "duplikat-stnk":
+          return "Duplikat STNK";
+        case "lainnya":
+          return "Lainnya";
+        default:
+          return "Perpanjangan 1 Tahun";
+      }
+    };
+
+    const defaultLayanan = resolveDefaultLayanan(category);
+
+    // 1. Strict client validation before network calls
+    for (const row of rows) {
+      const customer = (row["Nama Customer"] || row.customer || "").trim();
+      const nopol = (row["Plat No"] || row.nopol || "").trim();
+      const layanan = (row["Jenis Pengurusan"] || row.layanan || defaultLayanan).trim();
+      const phone = (row["Nomor HP"] || row["No HP"] || row.nomorHP || row.phone || "").trim();
+      const phoneDigits = phone.replace(/[^0-9]/g, "");
+
+      if (!customer) {
+        return {
+          success: false,
+          error: {
+            code: "VALIDATION_ERROR",
+            message: "Gagal menyimpan data. Nama Customer wajib diisi.",
+            field: "customer",
+            statusCode: 400,
+          },
+        };
+      }
+      if (!nopol) {
+        return {
+          success: false,
+          error: {
+            code: "VALIDATION_ERROR",
+            message: "Gagal menyimpan data. Nomor Polisi wajib diisi lengkap.",
+            field: "nopol",
+            statusCode: 400,
+          },
+        };
+      }
+      if (!layanan) {
+        return {
+          success: false,
+          error: {
+            code: "VALIDATION_ERROR",
+            message: "Gagal menyimpan data. Jenis Pengurusan wajib diisi.",
+            field: "layanan",
+            statusCode: 400,
+          },
+        };
+      }
+      if (!phone || phoneDigits.length < 9 || phone === "081200000000") {
+        return {
+          success: false,
+          error: {
+            code: "VALIDATION_ERROR",
+            message: "Gagal menyimpan data. Nomor HP / WhatsApp wajib diisi (minimal 9 digit angka).",
+            field: "nomorHP",
+            statusCode: 400,
+          },
+        };
+      }
+    }
+
+    // 2. Async creation awaiting backend confirmation for each row
+    try {
+      for (const row of rows) {
+        const customer = (row["Nama Customer"] || row.customer || "").trim();
+        const nopol = (row["Plat No"] || row.nopol || "").trim();
+        const layanan = (row["Jenis Pengurusan"] || row.layanan || defaultLayanan).trim();
+        const phone = (row["Nomor HP"] || row["No HP"] || row.nomorHP || row.phone || "").trim();
+        const alamat = (row["Alamat"] || row.alamat || "").trim();
+        const namaPemilik = (row["Nama Pemilik (STNK/BPKB)"] || row["Nama"] || row.namaPemilik || "").trim();
+        const samsat = (row["Samsat Asal"] || row["Samsat"] || row.samsat || "Jakarta Timur").trim();
+        const r4r2 = row["R4 / R2"] || row.r4r2;
+        const jenisKendaraan = r4r2 === "R2" ? "Motor" : "Mobil";
+        const uangMasuk = Number(row["Uang Masuk dari Konsumen"] || row.uangMasuk) || 0;
+        const uangKeluar = Number(row["Biaya Pokok Samsat"] || row["Uang Keluar dari Biro Jasa"] || row.uangKeluar) || 0;
+        const biayaJasa = Number(row["Biaya Jasa"] || row.biayaJasa) || 0;
+        const biayaAntarJemput = Number(row["Biaya Antar Jemput"] || row.biayaAntarJemput) || 0;
+        const biayaLainnya = Number(row["Biaya Lainnya"] || row.biayaLainnya) || 0;
+        const totalTagihan =
+          Number(row["Total Tagihan Konsumen"] || row.totalTagihan) ||
+          (biayaJasa > 0 || uangKeluar > 0 || biayaLainnya > 0
+            ? uangKeluar + biayaJasa + biayaAntarJemput + biayaLainnya
+            : uangMasuk > 0
+            ? uangMasuk
+            : 1500000);
+        const profit = Number(
+          row["Profit"] !== undefined
+            ? row["Profit"]
+            : row.profit !== undefined
+            ? row.profit
+            : uangMasuk - uangKeluar - biayaLainnya
+        );
+        const cashback = Math.max(0, uangMasuk - totalTagihan);
+        const bpkb = row["BPKB"] || row.bpkb || "Ada";
+        const isMutasiLD = category === "mutasi-ld" || category === "mutasi-antar-daerah";
+        const namaPenerimaKeluar = (
+          row["Nama Rekening/Penerima"] ||
+          row["Nama Pemilik Rekening Keluar"] ||
+          row.namaPenerimaKeluar ||
+          row["Nama Penerima"] ||
+          row.namaPenerima ||
+          ""
+        ).trim();
+        const stafPengirim = (row["Staf Pengirim"] || row.stafPengirim || "").trim();
+        const namaPenerima = (row["Nama Penerima"] || row.namaPenerima || namaPenerimaKeluar || "").trim();
+        const noRekeningPengirim = (
+          row["Nomor Rekening Pengirim"] ||
+          row.noRekeningPengirim ||
+          row["Nomor Rekening Masuk"] ||
+          row.noRekeningMasuk ||
+          ""
+        ).trim();
+        const noRekeningPenerima = (row["Nomor Rekening Penerima"] || row.noRekeningPenerima || "").trim();
+        const bankUangKeluar = row["Bank Uang Keluar"] || "";
+        const metodePembayaranKeluar = row["Metode Pembayaran Keluar"] || "";
+        const metodePembayaranMasuk = row["Metode Pembayaran Masuk"] || "Transfer Bank";
+        const bankUangMasuk = row["Bank Uang Masuk"] || "BCA";
+        const noRekeningMasuk = noRekeningPengirim || row["Nomor Rekening Masuk"] || "";
+        const namaRekeningMasuk = row["Nama Pemilik Rekening Masuk"] || "";
+
+        const structuredAddr = row.alamatTerstruktur || row.alamatPenjemputan || {
+          detail: (row.detailAlamat || row["Detail Alamat"] || alamat || "").trim(),
+          kota: (row.kota || row["Kota/Kabupaten"] || samsat || "").trim(),
+          kecamatan: (row.kecamatan || row["Kecamatan"] || "").trim(),
+          kelurahan: (row.kelurahan || row["Kelurahan/Desa"] || "").trim(),
+          rtRw: (row.rtRw || row["RT/RW"] || "").trim(),
+          nomor: (row.nomorRumah || row["Nomor Rumah"] || "").trim(),
+          landmark: (row.patokan || row["Patokan"] || "").trim(),
+          mapsUrl: (row.linkLokasi || row["Link Lokasi"] || "").trim(),
+        };
+
+        const fullAlamat = (
+          row["Alamat"] ||
+          row.alamat ||
+          [
+            structuredAddr.detail,
+            structuredAddr.nomor ? `No. ${structuredAddr.nomor}` : "",
+            structuredAddr.rtRw ? `RT/RW ${structuredAddr.rtRw}` : "",
+            structuredAddr.kelurahan ? `Kel. ${structuredAddr.kelurahan}` : "",
+            structuredAddr.kecamatan ? `Kec. ${structuredAddr.kecamatan}` : "",
+            structuredAddr.kota,
+          ]
+            .filter(Boolean)
+            .join(", ")
+        ).trim();
+
+        const dokumenAwal = Array.isArray(row.dokumenAwal) ? row.dokumenAwal : [];
+        const dokumenAkhir = Array.isArray(row.dokumenAkhir) ? row.dokumenAkhir : [];
+        const rekapDocs: any[] = [
+          ...dokumenAwal.map((d: any) => ({
+            id: d.id || `doc-awal-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
+            orderId: "",
+            phase: "BEFORE" as const,
+            documentType: "OTHER" as const,
+            label: d.customName || d.originalName || d.name || "Dokumen Awal",
+            fileType:
+              d.mimeType?.includes("pdf") || (d.originalName || d.name || "").toLowerCase().endsWith(".pdf")
+                ? ("PDF" as const)
+                : ("IMAGE" as const),
+            fileUrl: d.fileUrl || (d.id ? `/api/documents/${d.id}/preview` : ""),
+            uploadedAt: d.createdAt || new Date().toISOString(),
+            uploadedBy: "Admin",
+            documentId: d.id,
+          })),
+          ...dokumenAkhir.map((d: any) => ({
+            id: d.id || `doc-akhir-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
+            orderId: "",
+            phase: "AFTER" as const,
+            documentType: "OTHER" as const,
+            label: d.customName || d.originalName || d.name || "Dokumen Akhir",
+            fileType:
+              d.mimeType?.includes("pdf") || (d.originalName || d.name || "").toLowerCase().endsWith(".pdf")
+                ? ("PDF" as const)
+                : ("IMAGE" as const),
+            fileUrl: d.fileUrl || (d.id ? `/api/documents/${d.id}/preview` : ""),
+            uploadedAt: d.createdAt || new Date().toISOString(),
+            uploadedBy: "Admin",
+            documentId: d.id,
+          })),
+        ];
+
+        const statusPengerjaan = row["Status Pengerjaan"] || row.statusPengerjaan || (isMutasiLD ? "Pending" : "Dalam Proses");
+        const isSelesai = statusPengerjaan === "Selesai";
+        const kepemilikanKendaraan = row["Status Kepemilikan"] || row.kepemilikanKendaraan || "Pribadi";
+        const noInvoice = row["No Invoice"] !== undefined ? row["No Invoice"] : isMutasiLD ? "" : row.invoiceNo || "";
+        const tandaTerima = row["Tanda Terima"] !== undefined ? row["Tanda Terima"] : isMutasiLD ? "" : "-";
+        const ttbBPKB = row["TTB BPKB"] !== undefined ? row["TTB BPKB"] : isMutasiLD ? "" : bpkb === "Ada" ? "-" : "-";
+        const bpkbVal = row["BPKB"] !== undefined ? row["BPKB"] : isMutasiLD ? "" : bpkb;
+        const statusBPKBVal = row["Status BPKB"] !== undefined ? row["Status BPKB"] : isMutasiLD ? "" : "-";
+        const statusPembayaranVal =
+          uangMasuk >= totalTagihan && totalTagihan > 0
+            ? uangMasuk > totalTagihan
+              ? "Kelebihan Bayar"
+              : "Lunas"
+            : uangMasuk > 0
+            ? "Kurang Bayar"
+            : "Belum Bayar";
+
+        const alamatPenjemputanObj = {
+          kota: structuredAddr.kota || "",
+          kecamatan: structuredAddr.kecamatan || "",
+          kelurahan: structuredAddr.kelurahan || "",
+          detail: structuredAddr.detail || "",
+          rtRw: structuredAddr.rtRw || "",
+          nomor: structuredAddr.nomor || "",
+          landmark: structuredAddr.landmark || "",
+          mapsUrl: structuredAddr.mapsUrl || "",
+        };
+
+        if (this.orderAsyncCreator) {
+          const res = await this.orderAsyncCreator({
+            orderNo: row["Nomor Order"] || row.orderNo,
+            tanggalMasukBerkas: row["Tanggal Masuk Berkas"] || row.tanggalMasukBerkas,
+            tanggalUangMasuk: row["Tanggal Uang Masuk"] || row.tanggalUangMasuk,
+            catatanOrder:
+              row["Keterangan"] ||
+              row.catatan ||
+              row.catatanOrder ||
+              (isMutasiLD
+                ? `Order Mutasi LD dibuat langsung dari Data Penjualan (Status ${statusPengerjaan}).`
+                : "Order dibuat dari Data Penjualan (+ Tambah Data)"),
+            customer,
+            nopol,
+            layanan,
+            namaPemilik,
+            nomorHP: phone,
+            alamat: fullAlamat,
+            alamatPenjemputan: alamatPenjemputanObj,
+            alamatPengantaran: { ...alamatPenjemputanObj },
+            wilayahSamsatAsal: samsat,
+            wilayahSamsatTujuan: row["Samsat Tujuan"] || "-",
+            jenisKendaraan,
+            biayaJasa: biayaJasa || profit,
+            biayaAntarJemput,
+            biayaLainnya,
+            biayaSamsat: uangKeluar,
+            totalEstimasi: totalTagihan,
+            uangMasuk,
+            uangKeluar,
+            r4r2,
+            bpkb: bpkbVal,
+            statusBPKB: statusBPKBVal,
+            noInvoice,
+            invoiceNo: noInvoice,
+            tandaTerima,
+            ttbBPKB,
+            statusPengerjaan,
+            salesSnapshotStatus: statusPengerjaan,
+            statusKepemilikan: kepemilikanKendaraan,
+            statusPembayaran: statusPembayaranVal,
+            currentStep: isSelesai ? 8 : 1,
+            currentStageName: isSelesai ? "Dokumen Telah Diterima" : "Verifikasi",
+            isArchived: isMutasiLD && isSelesai,
+            rekapDocuments: rekapDocs,
+            namaPenerimaKeluar,
+            namaPemilikRekeningKeluar: namaPenerimaKeluar,
+            bankUangKeluar,
+            metodePembayaranKeluar,
+            tanggalPengeluaranSamsat: row["Tanggal Uang Keluar"] || "",
+            metodePembayaranMasuk,
+            bankUangMasuk,
+            noRekeningMasuk,
+            namaRekeningMasuk,
+            stafPengirim,
+            namaPenerima,
+            noRekeningPengirim,
+            noRekeningPenerima,
+            rejectDuplicateOrder: row.rejectDuplicateOrder,
+            rejectDuplicateInvoice: row.rejectDuplicateInvoice,
+          });
+
+          if (res === false) {
+            return {
+              success: false,
+              error: {
+                code: "VALIDATION_ERROR",
+                message: "Gagal menyimpan data. Pastikan data transaksi lengkap dan valid.",
+                statusCode: 400,
+              },
+            };
+          }
+
+          if (res && typeof res === "object" && res.orderNo) {
+            const finalOrderNo = res.orderNo;
+            for (const doc of [...dokumenAwal, ...dokumenAkhir]) {
+              if (doc?.id) {
+                await documentRepository.linkOrder?.(doc.id, finalOrderNo).catch(() => {});
+              }
+            }
+
+            (res as any).salesSnapshotStatus = statusPengerjaan;
+            (res as any).statusPengerjaan = statusPengerjaan;
+            (res as any).statusPembayaran = statusPembayaranVal;
+            (res as any).tandaTerima = tandaTerima;
+            (res as any).ttbBPKB = ttbBPKB;
+            (res as any).noInvoice = res.noInvoice || res.payment?.invoiceNo || noInvoice;
+            (res as any).bpkb = bpkbVal;
+            (res as any).statusBPKB = statusBPKBVal;
+            (res as any).kepemilikanKendaraan = kepemilikanKendaraan;
+            (res as any).alamat = fullAlamat;
+            (res as any).uangMasuk = uangMasuk;
+            (res as any).uangKeluar = uangKeluar;
+            (res as any).biayaSamsat = uangKeluar;
+            (res as any).biayaJasa = biayaJasa || profit;
+            (res as any).biayaAntarJemput = biayaAntarJemput;
+            (res as any).biayaLainnya = biayaLainnya;
+            (res as any).namaPenerimaKeluar = namaPenerimaKeluar;
+            (res as any).namaPemilikRekeningKeluar = namaPenerimaKeluar;
+            (res as any).stafPengirim = stafPengirim;
+            (res as any).namaPenerima = namaPenerima;
+            (res as any).noRekeningPengirim = noRekeningPengirim;
+            (res as any).noRekeningPenerima = noRekeningPenerima;
+            (res as any).bankUangKeluar = bankUangKeluar;
+            (res as any).metodePembayaranKeluar = metodePembayaranKeluar;
+            (res as any).tanggalPengeluaranSamsat = row["Tanggal Uang Keluar"] || "";
+
+            if (isMutasiLD && isSelesai) {
+              res.currentStep = 8;
+              res.currentStageName = "Dokumen Telah Diterima";
+              res.isArchived = true;
+              await orderRepository.archiveOrderAsync?.(finalOrderNo).catch(() => {});
+            }
+          }
+        } else {
+          // Direct async repository creation fallback when orderAsyncCreator is not wired
+          const allOrders = [
+            ...orderRepository.getAllFlat(),
+            ...(typeof orderRepository.getArchivedOrders === "function" ? orderRepository.getArchivedOrders() : []),
+          ];
+          const existingNums = allOrders
+            .map((o) => parseInt((o.orderNo || "").replace(/\D/g, ""), 10))
+            .filter((n) => !isNaN(n));
+          const nextOrderNum = existingNums.length > 0 ? Math.max(...existingNums) + 1 : 101;
+          const orderNo = row["Nomor Order"] || row.orderNo || `ORD-${String(nextOrderNum).padStart(4, "0")}`;
+          const clientRequestId = `req-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
+          const totalEst = totalTagihan;
+
+          const newOrder: OperationalOrder = {
+            orderNo,
+            clientRequestId,
+            customer,
+            nomorHP: phone,
+            layanan,
+            currentStep: isSelesai ? 8 : 1,
+            currentStageName: isSelesai ? "Dokumen Telah Diterima" : "Verifikasi",
+            catatanOrder:
+              row["Keterangan"] ||
+              row.catatan ||
+              (isMutasiLD
+                ? `Order Mutasi LD dibuat langsung dari Data Penjualan (Status ${statusPengerjaan}).`
+                : "Order dibuat dari Data Penjualan (+ Tambah Data)."),
+            createdAt: row["Tanggal Masuk Berkas"] || new Date().toISOString().split("T")[0],
+            isArchived: isMutasiLD && isSelesai,
+            namaPemilik: namaPemilik || "-",
+            kepemilikanKendaraan,
+            jenisKendaraan,
+            tahunKendaraan: new Date().getFullYear(),
+            nopol,
+            pkbBerlakuSd: "",
+            tahunPajak: String(new Date().getFullYear()),
+            bulanPajak: "Januari",
+            nominalPkbTerakhir: 0,
+            nominalSwdkllj: 143000,
+            wilayahSamsatAsal: samsat,
+            wilayahSamsatTujuan: row["Samsat Tujuan"] || "-",
+            alamatPenjemputan: alamatPenjemputanObj,
+            alamatPengantaran: { ...alamatPenjemputanObj },
+            clientDocuments: {
+              stnk: { name: "STNK.pdf", status: "Sudah Tersedia", isOptional: false },
+              bpkb: { name: "BPKB.pdf", status: bpkb === "Ada" ? "Sudah Tersedia" : "Belum Tersedia", isOptional: false },
+              ktp: { name: "KTP.pdf", status: "Sudah Tersedia", isOptional: false },
+            },
+            updatedDocuments: [],
+            biayaJasa: biayaJasa || profit,
+            biayaAntarJemput,
+            namaPenerimaKeluar,
+            bankUangKeluar,
+            metodePembayaranKeluar,
+            tanggalPengeluaranSamsat: row["Tanggal Uang Keluar"] || "",
+            pkb: 0,
+            swdkllj: 143000,
+            dendaSwdkllj: 0,
+            totalEstimasi: totalEst,
+            samsatProcesses: [],
+            payment: {
+              tipePembayaran: uangMasuk >= totalEst && totalEst > 0 ? "Bayar di Awal" : "Bayar di Akhir",
+              metodePembayaran: /cash|tunai/i.test(metodePembayaranMasuk)
+                ? "Cash"
+                : /^qris$/i.test(metodePembayaranMasuk)
+                ? "QRIS"
+                : bankUangMasuk && bankUangMasuk !== "-" && bankUangMasuk !== "Lainnya" && !/^kas\b/i.test(bankUangMasuk)
+                ? (metodePembayaranMasuk.toLowerCase().includes(bankUangMasuk.toLowerCase()) ? metodePembayaranMasuk : `Transfer ${bankUangMasuk}`)
+                : metodePembayaranMasuk,
+              namaBank: bankUangMasuk,
+              noRekening: noRekeningMasuk,
+              namaRekening: namaRekeningMasuk,
+              statusPembayaran: statusPembayaranVal as any,
+              totalBiaya: totalEst,
+              totalEstimasi: totalEst,
+              dibayar: uangMasuk,
+              kurang: Math.max(0, totalEst - uangMasuk),
+              overpayment: cashback,
+              settlementCondition: cashback > 0 ? "OVERPAID" : "PENDING_FINALIZATION",
+              refundStatus: "NONE",
+              isPaymentVerified: uangMasuk >= totalEst && totalEst > 0,
+              invoiceNo: noInvoice || undefined,
+              paymentRecords: [
+                {
+                  id: `PAY-${Date.now()}`,
+                  nominal: uangMasuk,
+                  tanggal: row["Tanggal Uang Masuk"] || new Date().toISOString().split("T")[0],
+                  metodePembayaran: metodePembayaranMasuk,
+                  namaBank: bankUangMasuk,
+                  noRekening: noRekeningMasuk,
+                  namaRekening: namaRekeningMasuk,
+                  statusVerifikasi: uangMasuk > 0 ? "MENUNGGU_VERIFIKASI" : "MENUNGGU_BUKTI",
+                },
+              ],
+            },
+            rekapDocuments: rekapDocs,
+          };
+
+          (newOrder as any).statusPengerjaan = statusPengerjaan;
+          (newOrder as any).salesSnapshotStatus = statusPengerjaan;
+          (newOrder as any).statusPembayaran = statusPembayaranVal;
+          (newOrder as any).tandaTerima = tandaTerima;
+          (newOrder as any).ttbBPKB = ttbBPKB;
+          (newOrder as any).noInvoice = noInvoice;
+          (newOrder as any).bpkb = bpkbVal;
+          (newOrder as any).statusBPKB = statusBPKBVal;
+          (newOrder as any).kepemilikanKendaraan = kepemilikanKendaraan;
+          (newOrder as any).alamat = fullAlamat;
+          (newOrder as any).uangMasuk = uangMasuk;
+          (newOrder as any).uangKeluar = uangKeluar;
+          (newOrder as any).biayaSamsat = uangKeluar;
+          (newOrder as any).biayaJasa = biayaJasa || profit;
+          (newOrder as any).biayaAntarJemput = biayaAntarJemput;
+          (newOrder as any).biayaLainnya = biayaLainnya;
+          (newOrder as any).namaPenerimaKeluar = namaPenerimaKeluar;
+          (newOrder as any).namaPemilikRekeningKeluar = namaPenerimaKeluar;
+          (newOrder as any).stafPengirim = stafPengirim;
+          (newOrder as any).namaPenerima = namaPenerima;
+          (newOrder as any).noRekeningPengirim = noRekeningPengirim;
+          (newOrder as any).noRekeningPenerima = noRekeningPenerima;
+          (newOrder as any).bankUangKeluar = bankUangKeluar;
+          (newOrder as any).metodePembayaranKeluar = metodePembayaranKeluar;
+          (newOrder as any).tanggalPengeluaranSamsat = row["Tanggal Uang Keluar"] || "";
+          (newOrder as any).rejectDuplicateOrder = row.rejectDuplicateOrder;
+          (newOrder as any).rejectDuplicateInvoice = row.rejectDuplicateInvoice;
+
+          const savedOrder = typeof orderRepository.saveOrderAsync === "function"
+            ? await orderRepository.saveOrderAsync(newOrder)
+            : (orderRepository.saveOrder(newOrder), newOrder);
+
+          const confirmedOrderNo = savedOrder?.orderNo || orderNo;
+          const invRecord = this.addInvoice({
+            orderNo: confirmedOrderNo,
+            customer,
+            phone,
+            nopol,
+            jenisLayanan: layanan,
+            totalTagihan: totalEst,
+            terbayar: uangMasuk,
+            metodePembayaran: metodePembayaranMasuk,
+            dueTrigger: "AFTER_DOCUMENT_RECEIVED",
+            collectionStatus: uangMasuk >= totalEst && totalEst > 0 ? "LUNAS" : "BELUM_JATUH_TEMPO",
+            settlementCondition: cashback > 0 ? "OVERPAID" : "PENDING_FINALIZATION",
+            refundStatus: "NONE",
+            overpayment: cashback,
+            invoice: savedOrder?.payment?.invoiceNo || noInvoice || undefined,
+          });
+          if (savedOrder?.payment) savedOrder.payment.invoiceNo = invRecord.invoice;
+          invRecord.tandaTerima = tandaTerima;
+          invRecord.ttbBPKB = ttbBPKB;
+          invRecord.biayaSamsat = uangKeluar;
+          (invRecord as any).biayaLainnya = biayaLainnya;
+          invRecord.profit = profit;
+          invRecord.cashback = cashback;
+          invRecord.status = statusPembayaranVal as any;
+
+          for (const doc of [...dokumenAwal, ...dokumenAkhir]) {
+            if (doc?.id) {
+              await documentRepository.linkOrder?.(doc.id, confirmedOrderNo).catch(() => {});
+            }
+          }
+        }
+      }
+
+      this.notify();
+      return { success: true };
+    } catch (err: any) {
+      return {
+        success: false,
+        error: {
+          code:
+            err?.code ||
+            (err?.statusCode === 404
+              ? "NOT_FOUND"
+              : err?.statusCode === 403
+              ? "FORBIDDEN"
+              : err?.statusCode === 401
+              ? "UNAUTHENTICATED"
+              : err?.statusCode === 409
+              ? "DUPLICATE_RECORD"
+              : err?.statusCode === 422
+              ? "CONFLICT"
+              : err?.statusCode === 400
+              ? "VALIDATION_ERROR"
+              : err?.statusCode === 0
+              ? "NETWORK_ERROR"
+              : "SERVER_ERROR"),
+          message: err?.detail || err?.message || "Gagal menyimpan data order baru ke server.",
+          field: err?.field,
+          statusCode: err?.statusCode,
+        },
+      };
+    }
+  }
+
   public deleteContractData(category: PenjualanContractCategory, id: number | string): boolean {
     if (category === "belum-kurang-bayar" || category === "profit-terpending" || category === "cashback-terpending") {
       console.warn(`[FinanceStore] Penghapusan dilarang pada submenu ${category}. Gunakan alur operasional resmi.`);
@@ -3195,7 +4017,7 @@ class FinanceStore {
           }
         }
         if (typeof (orderRepository as any).deleteOrder === "function") {
-          (orderRepository as any).deleteOrder(cleanOrderNo);
+          Promise.resolve((orderRepository as any).deleteOrder(cleanOrderNo)).catch(() => {});
         } else if (typeof (orderRepository as any).deleteArchivedOrder === "function") {
           (orderRepository as any).deleteArchivedOrder(cleanOrderNo);
         }
@@ -3208,24 +4030,68 @@ class FinanceStore {
     return true;
   }
 
-  public async deleteContractDataAsync(category: PenjualanContractCategory, id: number | string): Promise<boolean> {
-    const success = this.deleteContractData(category, id);
-    let cleanOrderNo: string | null = null;
-    if (typeof id === "string" && id.startsWith("ord:")) {
-      cleanOrderNo = id.slice(4).trim().toUpperCase();
-    } else if (typeof id === "string" && id.toUpperCase().startsWith("ORD-")) {
-      cleanOrderNo = id.trim().toUpperCase();
-    }
-    if (cleanOrderNo) {
-      try {
-        if (typeof (orderRepository as any).deleteOrder === "function") {
-          await (orderRepository as any).deleteOrder(cleanOrderNo);
-        }
-      } catch (err) {
-        console.warn("[FinanceStore] Error awaiting backend hard delete:", err);
+  public async deleteContractDataAsync(
+    category: PenjualanContractCategory,
+    id: number | string,
+    explicitOrderNo?: string
+  ): Promise<boolean> {
+    let cleanOrderNo: string | null = explicitOrderNo
+      ? explicitOrderNo.trim().toUpperCase()
+      : null;
+    if (!cleanOrderNo) {
+      if (typeof id === "string" && id.startsWith("ord:")) {
+        cleanOrderNo = id.slice(4).trim().toUpperCase();
+      } else if (typeof id === "string" && id.toUpperCase().startsWith("ORD-")) {
+        cleanOrderNo = id.trim().toUpperCase();
       }
     }
-    return success;
+
+    // In API mode or when deleting a persisted order row, confirm backend DELETE FIRST before purging local state
+    if (cleanOrderNo && typeof (orderRepository as any).deleteOrder === "function") {
+      await (orderRepository as any).deleteOrder(cleanOrderNo);
+    }
+
+    // Apply local cache cleanup without issuing a second/redundant backend DELETE request
+    if (cleanOrderNo) {
+      this.deletedOrderNos.add(cleanOrderNo);
+      try {
+        if (typeof window !== "undefined" && window.localStorage) {
+          const stored = JSON.parse(localStorage.getItem("sun89_deleted_order_nos") || "[]");
+          if (!stored.includes(cleanOrderNo)) {
+            stored.push(cleanOrderNo);
+            localStorage.setItem("sun89_deleted_order_nos", JSON.stringify(stored));
+          }
+        }
+      } catch {}
+    }
+
+    for (const cat of Object.keys(this.contractDatasets) as PenjualanContractCategory[]) {
+      const dataset = this.contractDatasets[cat];
+      if (Array.isArray(dataset)) {
+        this.contractDatasets[cat] = dataset.filter((d: any) => {
+          if (d.id === id || String(d.id) === String(id)) return false;
+          if (cleanOrderNo) {
+            const rowOrderNo = (d.orderNo || d["Nomor Order"] || d["No Order"] || "").toUpperCase();
+            if (rowOrderNo === cleanOrderNo) return false;
+          }
+          return true;
+        });
+      }
+    }
+
+    if (cleanOrderNo) {
+      this.invoices = this.invoices.filter((inv) => {
+        if (inv.id === id || String(inv.id) === String(id)) return false;
+        if ((inv.orderNo || "").toUpperCase() === cleanOrderNo) return false;
+        if ((inv.invoiceNo || "").toUpperCase() === cleanOrderNo) return false;
+        return true;
+      });
+    } else {
+      this.invoices = this.invoices.filter((inv) => inv.id !== id && String(inv.id) !== String(id));
+    }
+
+    this.notify();
+    return true;
   }
 
   public async cancelSalesOrder(orderNo: string, reason?: string): Promise<boolean> {
@@ -3575,7 +4441,9 @@ export function useFinanceStore() {
     // Contract Data for DataPenjualan
     getContractData: financeStore.getContractData.bind(financeStore),
     updateContractData: financeStore.updateContractData.bind(financeStore),
+    updateContractDataAsync: financeStore.updateContractDataAsync.bind(financeStore),
     addContractData: financeStore.addContractData.bind(financeStore),
+    addContractDataAsync: financeStore.addContractDataAsync.bind(financeStore),
     deleteContractData: financeStore.deleteContractData.bind(financeStore),
     cancelSalesOrder: financeStore.cancelSalesOrder.bind(financeStore),
 

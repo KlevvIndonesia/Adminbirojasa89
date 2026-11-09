@@ -1,0 +1,1145 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "SUNBiroJasa Customer Public API Foundation",
+    "description": "Spesifikasi resmi Public API untuk Customer Website SUNBiroJasa.\nEndpoint di bawah namespace `/api/v1/public/*` ini dirancang khusus untuk pelanggan eksternal tanpa memerlukan autentikasi login atau pembuatan akun pada tahap awal.\n\nFitur Utama:\n1. Public Master Data: Layanan aktif, kantor Samsat resmi, dan estimasi harga aman tanpa kebocoran margin finansial internal.\n2. Customer Order Creation: Pembuatan order dengan anti-tampering harga/tahap, proteksi idempotensi, rate limiting, dan upload berkas persyaratan.\n3. Customer Order Tracking: Pelacakan progres berdasarkan Nomor Polisi (nopol) dan timeline detail dengan sanitasi privasi ketat (Zero PII leak).\n",
+    "version": "1.0.0",
+    "contact": {
+      "name": "SUNBiroJasa Engineering Team",
+      "email": "admin@sunbirojasa.com"
+    }
+  },
+  "servers": [
+    {
+      "url": "http://localhost:3001/api/v1/public",
+      "description": "Development / Local Server (Port 3001)"
+    },
+    {
+      "url": "https://api.sunbirojasa.com/api/v1/public",
+      "description": "Production Environment"
+    }
+  ],
+  "paths": {
+    "/services": {
+      "get": {
+        "summary": "Ambil Daftar Layanan Aktif",
+        "description": "Mengambil seluruh master data layanan biro jasa yang berstatus aktif dan tersedia untuk dipesan oleh pelanggan.\nLayanan internal atau nonaktif disaring secara otomatis.\n",
+        "operationId": "getPublicServices",
+        "responses": {
+          "200": {
+            "description": "Berhasil mengambil daftar layanan aktif.",
+            "headers": {
+              "X-RateLimit-Limit": {
+                "schema": {
+                  "type": "integer",
+                  "example": 300
+                }
+              },
+              "X-RateLimit-Remaining": {
+                "schema": {
+                  "type": "integer",
+                  "example": 299
+                }
+              },
+              "X-RateLimit-Reset": {
+                "schema": {
+                  "type": "integer",
+                  "example": 900
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PublicServicesResponse"
+                },
+                "example": {
+                  "success": true,
+                  "message": "Daftar layanan aktif berhasil diambil.",
+                  "data": [
+                    {
+                      "serviceId": "svc-perp-1th",
+                      "serviceName": "Perpanjangan 1 Tahun",
+                      "kodeLayanan": "svc-perp-1th",
+                      "kategori": "Layanan Standar",
+                      "memerlukanSamsatTujuan": false,
+                      "deskripsi": "Layanan perpanjangan STNK tahunan resmi Samsat tanpa antre.",
+                      "persyaratan": [
+                        "KTP Asli Pemilik",
+                        "STNK Asli"
+                      ]
+                    }
+                  ],
+                  "timestamp": "2026-11-08T14:30:00.000Z"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limit terlampaui (maks 300 request / 15 menit per IP).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/samsat": {
+      "get": {
+        "summary": "Ambil Daftar Kantor Samsat Resmi",
+        "description": "Mengambil daftar kantor Samsat terverifikasi dan aktif di seluruh Indonesia.\nMendukung query parameter pencarian teks dan filter provinsi.\n",
+        "operationId": "getPublicSamsatOffices",
+        "parameters": [
+          {
+            "name": "search",
+            "in": "query",
+            "required": false,
+            "description": "Kata kunci pencarian nama Samsat, wilayah, atau kabupaten/kota.",
+            "schema": {
+              "type": "string",
+              "example": "Jakarta"
+            }
+          },
+          {
+            "name": "provinsi",
+            "in": "query",
+            "required": false,
+            "description": "Filter berdasarkan nama provinsi.",
+            "schema": {
+              "type": "string",
+              "example": "DKI Jakarta"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Berhasil mengambil daftar kantor Samsat.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PublicSamsatResponse"
+                },
+                "example": {
+                  "success": true,
+                  "message": "Daftar kantor Samsat resmi berhasil diambil.",
+                  "data": [
+                    {
+                      "samsatId": "samsat-jakarta-timur",
+                      "namaSamsat": "Samsat Jakarta Timur",
+                      "wilayah": "Jakarta Timur",
+                      "alamat": "Jl. DI Panjaitan No. 22",
+                      "kabupatenKota": "Kota Jakarta Timur",
+                      "provinsi": "DKI Jakarta"
+                    }
+                  ],
+                  "timestamp": "2026-11-08T14:30:00.000Z"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limit terlampaui (maks 300 request / 15 menit per IP).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/pricing": {
+      "get": {
+        "summary": "Ambil Estimasi Biaya Layanan Aman",
+        "description": "Menghasilkan estimasi biaya jasa dan antar-jemput yang aman ditampilkan kepada pelanggan.\nTidak membocorkan data margin profit, komisi mitra, atau rincian kas internal.\nJika `serviceId` diisi, mengembalikan rincian estimasi spesifik layanan dan kantor Samsat.\nJika `serviceId` tidak diisi, mengembalikan katalog dasar seluruh layanan aktif.\n",
+        "operationId": "getPublicPricingEstimate",
+        "parameters": [
+          {
+            "name": "serviceId",
+            "in": "query",
+            "required": false,
+            "description": "ID canonical layanan yang dipilih (contoh svc-perp-1th).",
+            "schema": {
+              "type": "string",
+              "example": "svc-perp-1th"
+            }
+          },
+          {
+            "name": "samsatId",
+            "in": "query",
+            "required": false,
+            "description": "ID canonical kantor Samsat (contoh samsat-jakarta-timur).",
+            "schema": {
+              "type": "string",
+              "example": "samsat-jakarta-timur"
+            }
+          },
+          {
+            "name": "metodeLayanan",
+            "in": "query",
+            "required": false,
+            "description": "Metode pengurusan dokumen (Antar Jemput atau Datang Langsung).",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "Antar Jemput",
+                "Datang Langsung"
+              ],
+              "default": "Antar Jemput"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Estimasi biaya layanan berhasil dihitung.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PublicPricingResponse"
+                },
+                "example": {
+                  "success": true,
+                  "message": "Estimasi biaya layanan berhasil diambil.",
+                  "data": {
+                    "serviceId": "svc-perp-1th",
+                    "serviceName": "Perpanjangan 1 Tahun",
+                    "samsatId": "samsat-jakarta-timur",
+                    "namaSamsat": "Samsat Jakarta Timur",
+                    "metodeLayanan": "Antar Jemput",
+                    "estimasiBiayaJasa": 125000,
+                    "estimasiBiayaAntarJemput": 50000,
+                    "totalEstimasiAwal": 175000,
+                    "catatan": "Estimasi biaya jasa belum termasuk Pajak Kendaraan Bermotor (PKB), SWDKLLJ, dan denda resmi Samsat yang tertera pada notice pajak."
+                  },
+                  "timestamp": "2026-11-08T14:30:00.000Z"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Parameter query tidak valid, atau kantor Samsat tujuan tidak valid atau nonaktif.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Layanan tidak ditemukan atau nonaktif.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limit terlampaui (maks 300 request / 15 menit per IP).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/orders": {
+      "post": {
+        "summary": "Buat Order Baru (Customer Portal)",
+        "description": "Membuat order baru secara aman dari Customer Website.\nMendukung format JSON maupun `multipart/form-data` dengan upload berkas dokumen.\nMenerapkan anti-tampering server-side (kalkulasi harga otomatis oleh backend, manipulasi client diabaikan).\nMenerapkan proteksi idempotensi via header `X-Idempotency-Key` atau `clientRequestId`.\n",
+        "operationId": "createPublicOrder",
+        "headers": {
+          "X-Idempotency-Key": {
+            "schema": {
+              "type": "string"
+            },
+            "required": false,
+            "description": "UUID / Unique key dari browser untuk mencegah pembuatan order duplikat jika request dikirim ulang."
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreatePublicOrderRequest"
+              }
+            },
+            "multipart/form-data": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "customer": {
+                    "type": "string"
+                  },
+                  "nomorHP": {
+                    "type": "string"
+                  },
+                  "serviceId": {
+                    "type": "string"
+                  },
+                  "nopol": {
+                    "type": "string"
+                  },
+                  "wilayahSamsatAsal": {
+                    "type": "string"
+                  },
+                  "wilayahSamsatTujuan": {
+                    "type": "string"
+                  },
+                  "tipeKendaraan": {
+                    "type": "string"
+                  },
+                  "metodeLayanan": {
+                    "type": "string"
+                  },
+                  "alamatPenjemputan": {
+                    "type": "string"
+                  },
+                  "catatan": {
+                    "type": "string"
+                  },
+                  "clientRequestId": {
+                    "type": "string"
+                  },
+                  "files": {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "format": "binary"
+                    },
+                    "description": "File dokumen pendukung (JPEG, PNG, PDF maks 10MB per file)."
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Order berhasil dibuat atau terdaftar via idempotency.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CreatePublicOrderResponse"
+                },
+                "example": {
+                  "success": true,
+                  "message": "Order berhasil dibuat.",
+                  "data": {
+                    "orderNo": "ORD-1126-005",
+                    "noInvoice": "INV-1126-005",
+                    "customer": "Ahmad Dahlan",
+                    "nomorHP": "081234567890",
+                    "layanan": "Perpanjangan 1 Tahun",
+                    "nopol": "B 1001 KZZ",
+                    "tipeKendaraan": "Mobil",
+                    "samsatAsal": "Jakarta Timur",
+                    "samsatTujuan": "-",
+                    "metodeLayanan": "Antar Jemput",
+                    "currentStageName": "Verifikasi",
+                    "currentStep": 1,
+                    "estimasiBiayaJasa": 125000,
+                    "estimasiBiayaAntarJemput": 50000,
+                    "totalEstimasiAwal": 175000,
+                    "paymentStatus": "Belum Lunas",
+                    "documentsAttached": 1,
+                    "createdAt": "2026-11-08"
+                  },
+                  "timestamp": "2026-11-08T14:30:00.000Z"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Validasi input gagal, layanan nonaktif, Samsat tidak valid, atau file dilarang.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Idempotency conflict (kunci idempotency digunakan kembali dengan data order yang berbeda).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limit terlampaui (maks 30 order / 15 menit per IP).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Gagal mengunggah berkas dokumen sehingga pembuatan order dibatalkan (fail-closed compensation).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/orders/tracking": {
+      "get": {
+        "summary": "Lacak Order Berdasarkan Nomor Polisi (Nopol)",
+        "description": "Mencari order terkait nomor polisi tertentu tanpa login.\nSistem menormalisasi variasi format nomor polisi (spasi, tanda strip, huruf besar/kecil).\nPencarian dieksekusi dengan Parameterized SQL aman (bebas SQL Injection).\nMendukung beberapa riwayat order untuk satu kendaraan (diurutkan terbaru terlebih dahulu).\nJika nopol tidak ditemukan, mengembalikan array kosong konsisten tanpa membocorkan data.\nSeluruh data pribadi (NIK, telepon lengkap, alamat detail, catatan internal, nama karyawan) disanitasi ketat.\n",
+        "operationId": "trackOrderByNopol",
+        "parameters": [
+          {
+            "name": "nopol",
+            "in": "query",
+            "required": true,
+            "description": "Nomor polisi kendaraan yang ingin dilacak (contoh B 1234 ABC, b1234abc, B-1234-ABC).",
+            "schema": {
+              "type": "string",
+              "example": "B 1001 KZZ"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Hasil pelacakan order berdasarkan nomor polisi.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PublicTrackingListResponse"
+                },
+                "example": {
+                  "success": true,
+                  "message": "Ditemukan 1 order untuk nomor polisi 'B 1001 KZZ'.",
+                  "data": [
+                    {
+                      "orderNo": "ORD-1126-005",
+                      "nopol": "B 1001 KZZ",
+                      "layanan": "Perpanjangan 1 Tahun",
+                      "tipeKendaraan": "Mobil",
+                      "samsatAsal": "Jakarta Timur",
+                      "samsatTujuan": "-",
+                      "metodeLayanan": "Antar Jemput",
+                      "currentStep": 1,
+                      "currentStageName": "Verifikasi",
+                      "publicStageName": "Verifikasi",
+                      "statusPengerjaan": "Diproses",
+                      "paymentStatus": "Belum Lunas",
+                      "tanggalOrder": "2026-11-08",
+                      "lastUpdated": "2026-11-08T14:30:00.000Z",
+                      "isCompleted": false,
+                      "isCancelled": false
+                    }
+                  ],
+                  "timestamp": "2026-11-08T14:30:00.000Z"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Parameter query nopol kosong atau format tidak valid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limit terlampaui (maks 60 request / 15 menit per IP).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/orders/{orderNo}/tracking": {
+      "get": {
+        "summary": "Detail Progres dan Timeline Riwayat Order",
+        "description": "Menampilkan rincian progres tahapan pengerjaan order (Step 1-6) beserta riwayat transisi waktu.\nData disanitasi penuh: tidak menyertakan catatan staf, ID kurir/pegawai, profit margin, atau tautan berkas privat.\nWajib menyertakan parameter nopol untuk verifikasi otorisasi pelacakan (anti-enumeration).\n",
+        "operationId": "getPublicOrderDetailTracking",
+        "parameters": [
+          {
+            "name": "orderNo",
+            "in": "path",
+            "required": true,
+            "description": "Nomor referensi order resmi (contoh ORD-1126-005).",
+            "schema": {
+              "type": "string",
+              "example": "ORD-1126-005"
+            }
+          },
+          {
+            "name": "nopol",
+            "in": "query",
+            "required": true,
+            "description": "Nomor polisi kendaraan untuk verifikasi otorisasi pelacakan order (anti-enumeration).",
+            "schema": {
+              "type": "string",
+              "example": "B 1001 KZZ"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Detail timeline progres order berhasil diambil.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PublicOrderDetailResponse"
+                },
+                "example": {
+                  "success": true,
+                  "message": "Detail progres order berhasil diambil.",
+                  "data": {
+                    "orderNo": "ORD-1126-005",
+                    "nopol": "B 1001 KZZ",
+                    "layanan": "Perpanjangan 1 Tahun",
+                    "tipeKendaraan": "Mobil",
+                    "samsatAsal": "Jakarta Timur",
+                    "samsatTujuan": "-",
+                    "metodeLayanan": "Antar Jemput",
+                    "statusPengerjaan": "Diproses",
+                    "currentStep": 1,
+                    "currentStageName": "Verifikasi",
+                    "publicStageName": "Verifikasi",
+                    "paymentStatus": "Belum Lunas",
+                    "tanggalOrder": "2026-11-08",
+                    "isCompleted": false,
+                    "isCancelled": false,
+                    "timeline": [
+                      {
+                        "step": 1,
+                        "stageName": "Verifikasi",
+                        "label": "Verifikasi Order",
+                        "status": "IN_PROGRESS",
+                        "waktuSelesai": null
+                      },
+                      {
+                        "step": 2,
+                        "stageName": "Penjadwalan",
+                        "label": "Penjemputan Berkas",
+                        "status": "WAITING",
+                        "waktuSelesai": null
+                      },
+                      {
+                        "step": 3,
+                        "stageName": "Verifikasi Dokumen",
+                        "label": "Pemeriksaan Dokumen Fisik",
+                        "status": "WAITING",
+                        "waktuSelesai": null
+                      },
+                      {
+                        "step": 4,
+                        "stageName": "Proses Samsat",
+                        "label": "Pengurusan Loket Samsat",
+                        "status": "WAITING",
+                        "waktuSelesai": null
+                      },
+                      {
+                        "step": 5,
+                        "stageName": "Pengantaran",
+                        "label": "Pengantaran Dokumen Selesai",
+                        "status": "WAITING",
+                        "waktuSelesai": null
+                      },
+                      {
+                        "step": 6,
+                        "stageName": "Dokumen Telah Diterima",
+                        "label": "Order Selesai",
+                        "status": "WAITING",
+                        "waktuSelesai": null
+                      }
+                    ]
+                  },
+                  "timestamp": "2026-11-08T14:30:00.000Z"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Parameter query nopol wajib disertakan untuk verifikasi pelacakan order.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Order tidak ditemukan atau informasi verifikasi nomor polisi tidak sesuai.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "example": {
+                  "success": false,
+                  "error": {
+                    "code": "ORDER_NOT_FOUND",
+                    "message": "Order tidak ditemukan atau informasi verifikasi nomor polisi tidak sesuai."
+                  },
+                  "timestamp": "2026-11-08T14:30:00.000Z"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limit terlampaui (maks 60 request / 15 menit per IP).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "PublicServicesResponse": {
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "example": true
+          },
+          "message": {
+            "type": "string"
+          },
+          "data": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "serviceId": {
+                  "type": "string"
+                },
+                "serviceName": {
+                  "type": "string"
+                },
+                "kodeLayanan": {
+                  "type": "string"
+                },
+                "kategori": {
+                  "type": "string"
+                },
+                "memerlukanSamsatTujuan": {
+                  "type": "boolean"
+                },
+                "deskripsi": {
+                  "type": "string"
+                },
+                "persyaratan": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          },
+          "timestamp": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "PublicSamsatResponse": {
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "example": true
+          },
+          "message": {
+            "type": "string"
+          },
+          "data": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "samsatId": {
+                  "type": "string"
+                },
+                "namaSamsat": {
+                  "type": "string"
+                },
+                "wilayah": {
+                  "type": "string"
+                },
+                "alamat": {
+                  "type": "string"
+                },
+                "kabupatenKota": {
+                  "type": "string"
+                },
+                "provinsi": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "timestamp": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "PublicPricingResponse": {
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "example": true
+          },
+          "message": {
+            "type": "string"
+          },
+          "data": {
+            "type": "object",
+            "properties": {
+              "serviceId": {
+                "type": "string"
+              },
+              "serviceName": {
+                "type": "string"
+              },
+              "samsatId": {
+                "type": "string",
+                "nullable": true
+              },
+              "namaSamsat": {
+                "type": "string",
+                "nullable": true
+              },
+              "metodeLayanan": {
+                "type": "string"
+              },
+              "estimasiBiayaJasa": {
+                "type": "number"
+              },
+              "estimasiBiayaAntarJemput": {
+                "type": "number"
+              },
+              "totalEstimasiAwal": {
+                "type": "number"
+              },
+              "catatan": {
+                "type": "string"
+              }
+            }
+          },
+          "timestamp": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "CreatePublicOrderRequest": {
+        "type": "object",
+        "required": [
+          "customer",
+          "nomorHP",
+          "nopol",
+          "serviceId",
+          "wilayahSamsatAsal"
+        ],
+        "properties": {
+          "customer": {
+            "type": "string",
+            "minLength": 3,
+            "maxLength": 100,
+            "description": "Nama lengkap pemesan.",
+            "example": "Ahmad Dahlan"
+          },
+          "nomorHP": {
+            "type": "string",
+            "description": "Nomor WhatsApp pemesan (format Indonesia).",
+            "example": "081234567890"
+          },
+          "email": {
+            "type": "string",
+            "format": "email",
+            "description": "Alamat email pemesan (opsional).",
+            "example": "ahmad@example.com"
+          },
+          "serviceId": {
+            "type": "string",
+            "description": "ID canonical layanan master.",
+            "example": "svc-perp-1th"
+          },
+          "nopol": {
+            "type": "string",
+            "description": "Nomor polisi kendaraan (contoh B 1234 ABC).",
+            "example": "B 1001 KZZ"
+          },
+          "tipeKendaraan": {
+            "type": "string",
+            "enum": [
+              "Motor",
+              "Mobil"
+            ],
+            "default": "Mobil"
+          },
+          "wilayahSamsatAsal": {
+            "type": "string",
+            "description": "Kantor / Wilayah Samsat asal kendaraan.",
+            "example": "Jakarta Timur"
+          },
+          "samsatAsalId": {
+            "type": "string",
+            "description": "Canonical Samsat ID asal (opsional).",
+            "example": "samsat-jakarta-timur"
+          },
+          "wilayahSamsatTujuan": {
+            "type": "string",
+            "description": "Kantor / Wilayah Samsat tujuan (wajib jika layanan mutasi).",
+            "example": "-"
+          },
+          "samsatTujuanId": {
+            "type": "string",
+            "description": "Canonical Samsat ID tujuan (opsional).",
+            "example": "-"
+          },
+          "metodeLayanan": {
+            "type": "string",
+            "enum": [
+              "Antar Jemput",
+              "Datang Langsung"
+            ],
+            "default": "Antar Jemput"
+          },
+          "alamatPenjemputan": {
+            "type": "string",
+            "description": "Alamat penjemputan berkas.",
+            "example": "Jl. Tebet Barat Dalam No. 12"
+          },
+          "catatan": {
+            "type": "string",
+            "maxLength": 500,
+            "description": "Catatan tambahan dari pelanggan.",
+            "example": "Harap hubungi sebelum penjemputan."
+          },
+          "clientRequestId": {
+            "type": "string",
+            "description": "Token idempotency dari browser klien.",
+            "example": "client-req-uuid-12345"
+          }
+        }
+      },
+      "CreatePublicOrderResponse": {
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "example": true
+          },
+          "message": {
+            "type": "string"
+          },
+          "data": {
+            "type": "object",
+            "properties": {
+              "orderNo": {
+                "type": "string"
+              },
+              "noInvoice": {
+                "type": "string"
+              },
+              "customer": {
+                "type": "string"
+              },
+              "nomorHP": {
+                "type": "string"
+              },
+              "layanan": {
+                "type": "string"
+              },
+              "nopol": {
+                "type": "string"
+              },
+              "tipeKendaraan": {
+                "type": "string"
+              },
+              "samsatAsal": {
+                "type": "string"
+              },
+              "samsatTujuan": {
+                "type": "string"
+              },
+              "metodeLayanan": {
+                "type": "string"
+              },
+              "currentStageName": {
+                "type": "string"
+              },
+              "currentStep": {
+                "type": "integer"
+              },
+              "estimasiBiayaJasa": {
+                "type": "number"
+              },
+              "estimasiBiayaAntarJemput": {
+                "type": "number"
+              },
+              "totalEstimasiAwal": {
+                "type": "number"
+              },
+              "paymentStatus": {
+                "type": "string"
+              },
+              "documentsAttached": {
+                "type": "integer"
+              },
+              "createdAt": {
+                "type": "string"
+              }
+            }
+          },
+          "timestamp": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "PublicTrackingListResponse": {
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "example": true
+          },
+          "message": {
+            "type": "string"
+          },
+          "data": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "orderNo": {
+                  "type": "string"
+                },
+                "nopol": {
+                  "type": "string"
+                },
+                "layanan": {
+                  "type": "string"
+                },
+                "tipeKendaraan": {
+                  "type": "string"
+                },
+                "samsatAsal": {
+                  "type": "string"
+                },
+                "samsatTujuan": {
+                  "type": "string"
+                },
+                "metodeLayanan": {
+                  "type": "string"
+                },
+                "currentStep": {
+                  "type": "integer"
+                },
+                "currentStageName": {
+                  "type": "string"
+                },
+                "publicStageName": {
+                  "type": "string",
+                  "description": "Deskripsi tahapan ramah pelanggan hasil pemetaan kanonikal (PUB-01).",
+                  "example": "Verifikasi"
+                },
+                "statusPengerjaan": {
+                  "type": "string",
+                  "enum": [
+                    "Diproses",
+                    "Selesai",
+                    "Dibatalkan"
+                  ]
+                },
+                "paymentStatus": {
+                  "type": "string"
+                },
+                "tanggalOrder": {
+                  "type": "string"
+                },
+                "lastUpdated": {
+                  "type": "string"
+                },
+                "isCompleted": {
+                  "type": "boolean"
+                },
+                "isCancelled": {
+                  "type": "boolean"
+                }
+              }
+            }
+          },
+          "timestamp": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "PublicOrderDetailResponse": {
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "example": true
+          },
+          "message": {
+            "type": "string"
+          },
+          "data": {
+            "type": "object",
+            "properties": {
+              "orderNo": {
+                "type": "string"
+              },
+              "nopol": {
+                "type": "string"
+              },
+              "layanan": {
+                "type": "string"
+              },
+              "tipeKendaraan": {
+                "type": "string"
+              },
+              "samsatAsal": {
+                "type": "string"
+              },
+              "samsatTujuan": {
+                "type": "string"
+              },
+              "metodeLayanan": {
+                "type": "string"
+              },
+              "statusPengerjaan": {
+                "type": "string"
+              },
+              "currentStep": {
+                "type": "integer"
+              },
+              "currentStageName": {
+                "type": "string"
+              },
+              "publicStageName": {
+                "type": "string",
+                "description": "Deskripsi tahapan ramah pelanggan hasil pemetaan kanonikal (PUB-01).",
+                "example": "Verifikasi"
+              },
+              "paymentStatus": {
+                "type": "string"
+              },
+              "tanggalOrder": {
+                "type": "string"
+              },
+              "isCompleted": {
+                "type": "boolean"
+              },
+              "isCancelled": {
+                "type": "boolean"
+              },
+              "timeline": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "step": {
+                      "type": "integer"
+                    },
+                    "stageName": {
+                      "type": "string"
+                    },
+                    "label": {
+                      "type": "string"
+                    },
+                    "status": {
+                      "type": "string",
+                      "enum": [
+                        "WAITING",
+                        "IN_PROGRESS",
+                        "COMPLETED",
+                        "CANCELLED"
+                      ]
+                    },
+                    "waktuSelesai": {
+                      "type": "string",
+                      "nullable": true
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "timestamp": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "ErrorResponse": {
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "example": false
+          },
+          "error": {
+            "type": "object",
+            "properties": {
+              "code": {
+                "type": "string",
+                "example": "VALIDATION_ERROR"
+              },
+              "message": {
+                "type": "string",
+                "example": "Data yang dikirim tidak valid."
+              }
+            }
+          },
+          "timestamp": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      }
+    }
+  }
+}

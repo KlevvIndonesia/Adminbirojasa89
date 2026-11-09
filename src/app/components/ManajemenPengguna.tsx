@@ -9,7 +9,8 @@ import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, 
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "./ui/select";
 import { TablePagination } from "./ui/TablePagination";
 import { EmptyState } from "./ui/empty-state";
-import { Search, Eye, KeyRound, CheckCircle2, UserCheck, UserX, Shield, Copy, Check, RotateCcw, AlertTriangle, RefreshCw, Loader2 } from "lucide-react";
+import { Search, Eye, KeyRound, CheckCircle2, UserCheck, UserX, Shield, Copy, Check, RotateCcw, AlertTriangle, RefreshCw, Loader2, Trash2 } from "lucide-react";
+import { PermanentErasureDialog } from "./PermanentErasureDialog";
 import { toast } from "sonner";
 import { useKaryawanPengguna, PenggunaRecord, karyawanPenggunaAdapter } from "../data/karyawanPenggunaAdapter";
 import { cn } from "./ui/utils";
@@ -28,8 +29,26 @@ export function ManajemenPengguna() {
   const [isViewDialogOpen, setIsViewDialogOpen] = useState(false);
   const [isDeactivateDialogOpen, setIsDeactivateDialogOpen] = useState(false);
   const [isResetPasswordDialogOpen, setIsResetPasswordDialogOpen] = useState(false);
+  const [isErasureDialogOpen, setIsErasureDialogOpen] = useState(false);
+  const [selectedUserForErasure, setSelectedUserForErasure] = useState<PenggunaRecord | null>(null);
   const [resetSuccessData, setResetSuccessData] = useState<{ user: PenggunaRecord; newPassword: string } | null>(null);
   const [copiedPassword, setCopiedPassword] = useState(false);
+
+  const isAdministrator = useMemo(() => {
+    try {
+      const stored = localStorage.getItem("auth_user");
+      const authUser = stored ? JSON.parse(stored) : null;
+      const role = (authUser?.role || authUser?.jabatan || "").toLowerCase();
+      return role === "administrator" || role === "admin" || !stored;
+    } catch {
+      return true;
+    }
+  }, []);
+
+  const handleOpenErasureDialog = (user: PenggunaRecord) => {
+    setSelectedUserForErasure(user);
+    setIsErasureDialogOpen(true);
+  };
 
   // DATA PIPELINE: Raw -> Filter & Search -> Pagination -> Render
   const filteredData = useMemo(() => {
@@ -38,7 +57,7 @@ export function ManajemenPengguna() {
         searchTerm === "" ||
         item.nama.toLowerCase().includes(searchTerm.toLowerCase()) ||
         item.email.toLowerCase().includes(searchTerm.toLowerCase()) ||
-        item.employeeId.toLowerCase().includes(searchTerm.toLowerCase());
+        (item.employeeId ? item.employeeId.toLowerCase().includes(searchTerm.toLowerCase()) : false);
 
       const matchStatus = filterStatus === "all" || item.statusAkun === filterStatus;
       const matchJabatan = filterJabatan === "all" || item.jabatan === filterJabatan;
@@ -282,14 +301,14 @@ export function ManajemenPengguna() {
             >
               <TableHeader className="sticky top-0 z-10 bg-card border-b border-border shadow-2xs">
                 <TableRow className="hover:bg-transparent">
-                  <TableHead className="w-[50px] text-center text-xs h-9 font-semibold text-foreground/80 bg-card">No</TableHead>
-                  <TableHead className="text-xs h-9 font-semibold text-foreground/80 bg-card">Nama</TableHead>
-                  <TableHead className="text-xs h-9 font-semibold text-foreground/80 bg-card">Jabatan</TableHead>
-                  <TableHead className="text-xs h-9 font-semibold text-foreground/80 bg-card">Username / Email</TableHead>
-                  <TableHead className="text-xs h-9 font-semibold text-foreground/80 bg-card">Role</TableHead>
-                  <TableHead className="text-center text-xs h-9 font-semibold text-foreground/80 bg-card">Status Akun</TableHead>
-                  <TableHead className="text-xs h-9 font-semibold text-foreground/80 bg-card">Terakhir Login</TableHead>
-                  <TableHead className="text-center text-xs h-9 font-semibold text-foreground/80 w-[160px] bg-card">Aksi</TableHead>
+                  <TableHead className="w-[50px] text-center text-xs h-9 font-semibold text-foreground/80 bg-card px-2">No</TableHead>
+                  <TableHead className="min-w-[170px] text-xs h-9 font-semibold text-foreground/80 bg-card px-3.5">Nama</TableHead>
+                  <TableHead className="w-[110px] text-center text-xs h-9 font-semibold text-foreground/80 bg-card px-3.5">Jabatan</TableHead>
+                  <TableHead className="min-w-[190px] text-xs h-9 font-semibold text-foreground/80 bg-card px-3.5">Username / Email</TableHead>
+                  <TableHead className="w-[100px] text-center text-xs h-9 font-semibold text-foreground/80 bg-card px-3.5">Role</TableHead>
+                  <TableHead className="w-[110px] text-center text-xs h-9 font-semibold text-foreground/80 bg-card px-3.5">Status Akun</TableHead>
+                  <TableHead className="w-[130px] text-xs h-9 font-semibold text-foreground/80 bg-card px-3.5">Terakhir Login</TableHead>
+                  <TableHead className="w-[180px] text-center text-xs h-9 font-semibold text-foreground/80 bg-card px-2">Aksi</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -301,35 +320,35 @@ export function ManajemenPengguna() {
                         key={item.id}
                         className="hover:bg-muted/30 transition-colors border-b border-border/60 last:border-0 h-10"
                       >
-                        <TableCell className="text-center text-xs text-muted-foreground font-mono">
+                        <TableCell className="w-[50px] text-center text-xs text-muted-foreground font-mono px-2 py-2 align-middle">
                           {globalIndex}
                         </TableCell>
-                        <TableCell className="text-xs font-medium text-foreground">
+                        <TableCell className="px-3.5 py-2 text-xs font-medium text-foreground align-middle">
                           <div>
                             <span>{item.nama}</span>
                             <span className="text-[10px] text-muted-foreground block font-mono">
-                              {item.employeeId}
+                              {item.employeeId || <span className="italic text-muted-foreground/60">Non-Pegawai</span>}
                             </span>
                           </div>
                         </TableCell>
-                        <TableCell className="text-xs">
+                        <TableCell className="w-[110px] px-3.5 py-2 text-xs text-center align-middle">
                           <Badge variant="outline" className="text-[10px] font-mono uppercase">
                             {item.jabatan}
                           </Badge>
                         </TableCell>
-                        <TableCell className="text-xs text-foreground/85 font-mono">
+                        <TableCell className="px-3.5 py-2 text-xs text-foreground/85 font-mono align-middle">
                           {item.email}
                         </TableCell>
-                        <TableCell className="text-xs capitalize font-medium text-foreground/80">
+                        <TableCell className="w-[100px] px-3.5 py-2 text-xs capitalize font-medium text-foreground/80 text-center align-middle">
                           {item.role}
                         </TableCell>
-                        <TableCell className="text-center text-xs">
+                        <TableCell className="w-[110px] px-3.5 py-2 text-center text-xs align-middle">
                           {getStatusBadge(item.statusAkun)}
                         </TableCell>
-                        <TableCell className="text-xs font-mono text-muted-foreground">
+                        <TableCell className="w-[130px] px-3.5 py-2 text-xs font-mono text-muted-foreground align-middle">
                           {item.terakhirLogin}
                         </TableCell>
-                        <TableCell className="text-center text-xs">
+                        <TableCell className="w-[180px] px-2 py-1.5 text-center text-xs align-middle">
                           <div className="flex items-center justify-center gap-1">
                             {/* Toggle Status Button */}
                             {item.statusAkun === "Aktif" ? (
@@ -378,6 +397,20 @@ export function ManajemenPengguna() {
                             >
                               <Eye className="w-3.5 h-3.5" />
                             </Button>
+
+                            {/* Permanent Erasure Button (Administrator Only) */}
+                            {isAdministrator && (
+                              <Button
+                                size="sm"
+                                variant="ghost"
+                                onClick={() => handleOpenErasureDialog(item)}
+                                className="h-7 px-2 text-[11px] text-destructive hover:text-destructive hover:bg-destructive/10 rounded transition-colors gap-1"
+                                title="Hapus permanen akun pengguna dan data master"
+                              >
+                                <Trash2 className="w-3.5 h-3.5" />
+                                <span className="hidden lg:inline">Hapus</span>
+                              </Button>
+                            )}
                           </div>
                         </TableCell>
                       </TableRow>
@@ -488,7 +521,7 @@ export function ManajemenPengguna() {
               </div>
               <div className="flex justify-between items-center pb-2 border-b border-border/50">
                 <span className="text-muted-foreground">ID Karyawan</span>
-                <span className="font-mono font-medium text-foreground">{resetSuccessData.user.employeeId}</span>
+                <span className="font-mono font-medium text-foreground">{resetSuccessData.user.employeeId || "-"}</span>
               </div>
               <div className="flex justify-between items-center pt-1">
                 <span className="text-muted-foreground font-medium">Password Baru (DDMMYYYY)</span>
@@ -540,7 +573,9 @@ export function ManajemenPengguna() {
                 </div>
                 <div>
                   <p className="text-[11px] text-muted-foreground">ID Karyawan</p>
-                  <p className="font-mono font-semibold text-foreground">{selectedUser.employeeId}</p>
+                  <p className="font-mono font-semibold text-foreground">
+                    {selectedUser.employeeId || <span className="text-muted-foreground font-normal italic">Tidak Terhubung (Non-Pegawai)</span>}
+                  </p>
                 </div>
                 <div>
                   <p className="text-[11px] text-muted-foreground">Nama Lengkap</p>
@@ -582,6 +617,17 @@ export function ManajemenPengguna() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {/* PERMANENT ERASURE DIALOG FOR PENGGUNA */}
+      <PermanentErasureDialog
+        open={isErasureDialogOpen}
+        onOpenChange={setIsErasureDialogOpen}
+        targetId={selectedUserForErasure?.id || selectedUserForErasure?.employeeId || null}
+        targetName={selectedUserForErasure?.nama}
+        onErasureSuccess={() => {
+          refresh();
+        }}
+      />
     </div>
   );
 }

@@ -108,7 +108,7 @@ export function MessengerProfileView({
               </Badge>
             </div>
             <p className="font-mono text-sm text-muted-foreground mt-0.5">
-              ID Karyawan: <strong className="text-foreground">{currentUser.employeeId || "EMP-MSG-001"}</strong>
+              ID Karyawan: <strong className="text-foreground">{currentUser.employeeId || "EMP-0004"}</strong>
             </p>
             <p className="text-xs text-muted-foreground mt-0.5">
               Wilayah Operasional: Jabodetabek (Bogor, Depok, Cibinong)

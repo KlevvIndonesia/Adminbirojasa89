@@ -6,6 +6,7 @@
   "scripts": {
     "build": "node -r ./scripts/patch-realpath.cjs ./node_modules/vite/bin/vite.js build",
     "dev": "node -r ./scripts/patch-realpath.cjs ./node_modules/vite/bin/vite.js --host 0.0.0.0 --port 3000",
+    "dev:all": "node scripts/dev-orchestrator.cjs",
     "server": "npx --prefer-offline tsx server/src/server.ts",
     "server:prod": "node scripts/start-production.cjs",
     "dev:server": "npx --prefer-offline tsx watch server/src/server.ts",

@@ -58,10 +58,16 @@ export class LocalDiskDocumentStorage implements IDocumentStorageAdapter {
   public async saveFile(buffer: Buffer, safeExtension: string): Promise<StoredFileResult> {
     this.ensureUploadDir();
 
-    // Sanitize extension (e.g. '.pdf', '.png', '.jpg')
-    const sanitizedExt = safeExtension.startsWith(".")
+    // Sanitize and strictly whitelist extension (e.g. '.pdf', '.png', '.jpg', '.webp')
+    const rawExt = safeExtension.startsWith(".")
       ? safeExtension.toLowerCase().replace(/[^a-z0-9.]/g, "")
       : `.${safeExtension.toLowerCase().replace(/[^a-z0-9]/g, "")}`;
+
+    const ALLOWED_STORAGE_EXTENSIONS = new Set([".pdf", ".jpg", ".jpeg", ".png", ".webp"]);
+    if (!ALLOWED_STORAGE_EXTENSIONS.has(rawExt)) {
+      throw new Error(`Security violation: Storage extension '${safeExtension}' is not allowed.`);
+    }
+    const sanitizedExt = rawExt;
 
     // Cryptographically generated storage name
     const storageName = `${crypto.randomUUID()}${sanitizedExt}`;
@@ -92,13 +98,14 @@ export class LocalDiskDocumentStorage implements IDocumentStorageAdapter {
   }
 
   public async deleteFile(storageName: string): Promise<void> {
+    const filePath = this.getFilePath(storageName);
     try {
-      const filePath = this.getFilePath(storageName);
       if (fs.existsSync(filePath)) {
         await fs.promises.unlink(filePath);
       }
     } catch (err: any) {
       if (err.code !== "ENOENT") {
+        console.error(`[LocalDiskDocumentStorage] Error unlinking file at '${filePath}':`, err);
         throw err;
       }
     }

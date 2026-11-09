@@ -36,18 +36,30 @@ export class PricingService {
     }
 
     const updated = this.getSamsatItemById(id);
+    if (!updated) {
+      throw new ApiError(404, "NOT_FOUND", `Item Samsat ${id} tidak ditemukan setelah pembaruan.`);
+    }
 
-    dbAuditRepository.save({
-      id: `log-pricing-upd-${Date.now()}`,
-      userId: user?.userId || "usr-system",
-      userName: user?.nama || "Admin API",
-      userRole: user?.role || "admin",
-      action: "UPDATE_PRICING",
-      module: "Harga Dasar Samsat",
-      details: `Memperbarui harga dasar ${updated.namaItem}: Rp ${updated.biayaDasar.toLocaleString("id-ID")}`,
-      metadata: { itemId: id, updates },
-      createdAt: new Date().toISOString(),
-    });
+    try {
+      dbAuditRepository.save({
+        id: `log-pricing-upd-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
+        userId: user?.userId || "usr-system",
+        userName: user?.nama || "Admin API",
+        userRole: user?.role || "admin",
+        action: "UPDATE",
+        module: "Master Data - Harga Dasar Samsat",
+        details: `Memperbarui harga dasar ${updated.namaItem}: Rp ${(updated.biayaDasar ?? 0).toLocaleString("id-ID")}`,
+        metadata: {
+          recordId: id,
+          itemId: id,
+          oldData: existing,
+          newData: updated,
+        },
+        createdAt: new Date().toISOString(),
+      });
+    } catch (auditErr) {
+      console.warn("[PricingService] Failed to record audit log:", auditErr);
+    }
 
     return updated;
   }
@@ -118,40 +130,64 @@ export class PricingService {
       biayaAntarJemput,
     });
 
-    dbAuditRepository.save({
-      id: `log-service-pricing-crt-${Date.now()}`,
-      userId: user?.userId || "usr-system",
-      userName: user?.nama || "Admin API",
-      userRole: user?.role || "admin",
-      action: "CREATE_SERVICE_PRICING",
-      module: "Biaya Layanan",
-      details: `Menambahkan konfigurasi biaya layanan ${serviceName} (${wilayah}): Jasa Rp ${biayaJasa.toLocaleString("id-ID")}`,
-      metadata: { id, serviceId, samsatId, wilayah, biayaJasa, biayaAntarJemput },
-      createdAt: new Date().toISOString(),
-    });
+    try {
+      dbAuditRepository.save({
+        id: `log-service-pricing-crt-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
+        userId: user?.userId || "usr-system",
+        userName: user?.nama || "Admin API",
+        userRole: user?.role || "admin",
+        action: "CREATE",
+        module: "Master Data - Biaya Layanan",
+        details: `Menambahkan konfigurasi biaya layanan ${serviceName} (${wilayah}): Jasa Rp ${biayaJasa.toLocaleString("id-ID")}`,
+        metadata: {
+          recordId: id,
+          id,
+          serviceId,
+          samsatId,
+          wilayah,
+          oldData: null,
+          newData: created,
+        },
+        createdAt: new Date().toISOString(),
+      });
+    } catch (auditErr) {
+      console.warn("[PricingService] Failed to record audit log:", auditErr);
+    }
 
     return created;
   }
 
   public updateServicePricing(id: string, config: any, user?: TokenPayload | null): any {
+    const existing = dbPricingRepository.getServicePricingById(id);
     const success = dbPricingRepository.upsertServicePricing(id, config);
     if (!success) {
       throw new ApiError(500, "UPDATE_FAILED", `Gagal memperbarui konfigurasi biaya layanan '${id}'`);
     }
 
-    dbAuditRepository.save({
-      id: `log-service-pricing-${Date.now()}`,
-      userId: user?.userId || "usr-system",
-      userName: user?.nama || "Admin API",
-      userRole: user?.role || "admin",
-      action: "UPDATE_SERVICE_PRICING",
-      module: "Biaya Layanan",
-      details: `Memperbarui biaya layanan ${id}: Jasa Rp ${Number(config.biayaJasa || 0).toLocaleString("id-ID")}`,
-      metadata: { id, config },
-      createdAt: new Date().toISOString(),
-    });
+    const updated = dbPricingRepository.getServicePricingById(id);
 
-    return dbPricingRepository.getServicePricingById(id);
+    try {
+      dbAuditRepository.save({
+        id: `log-service-pricing-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
+        userId: user?.userId || "usr-system",
+        userName: user?.nama || "Admin API",
+        userRole: user?.role || "admin",
+        action: "UPDATE",
+        module: "Master Data - Biaya Layanan",
+        details: `Memperbarui biaya layanan ${id}: Jasa Rp ${Number(config.biayaJasa || 0).toLocaleString("id-ID")}`,
+        metadata: {
+          recordId: id,
+          id,
+          oldData: existing || null,
+          newData: updated || config,
+        },
+        createdAt: new Date().toISOString(),
+      });
+    } catch (auditErr) {
+      console.warn("[PricingService] Failed to record audit log:", auditErr);
+    }
+
+    return updated;
   }
 
   public deleteServicePricing(id: string, user?: TokenPayload | null): boolean {
@@ -165,17 +201,26 @@ export class PricingService {
       throw new ApiError(500, "DELETE_FAILED", `Gagal menghapus konfigurasi biaya layanan '${id}'.`);
     }
 
-    dbAuditRepository.save({
-      id: `log-service-pricing-del-${Date.now()}`,
-      userId: user?.userId || "usr-system",
-      userName: user?.nama || "Admin API",
-      userRole: user?.role || "admin",
-      action: "DELETE_SERVICE_PRICING",
-      module: "Biaya Layanan",
-      details: `Menghapus konfigurasi biaya layanan ${existing.serviceName || id} (${existing.wilayah || ""})`,
-      metadata: { id, serviceName: existing.serviceName, wilayah: existing.wilayah },
-      createdAt: new Date().toISOString(),
-    });
+    try {
+      dbAuditRepository.save({
+        id: `log-service-pricing-del-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
+        userId: user?.userId || "usr-system",
+        userName: user?.nama || "Admin API",
+        userRole: user?.role || "admin",
+        action: "DELETE",
+        module: "Master Data - Biaya Layanan",
+        details: `Menghapus konfigurasi biaya layanan ${existing.serviceName || id} (${existing.wilayah || ""})`,
+        metadata: {
+          recordId: id,
+          id,
+          oldData: existing,
+          newData: null,
+        },
+        createdAt: new Date().toISOString(),
+      });
+    } catch (auditErr) {
+      console.warn("[PricingService] Failed to record audit log:", auditErr);
+    }
 
     return true;
   }
@@ -298,20 +343,32 @@ export class PricingService {
       throw new ApiError(404, "PRICING_ITEM_NOT_FOUND", `Komponen tarif '${pricingItemId}' tidak terdaftar dalam Katalog Nasional Samsat.`);
     }
 
+    const previous = dbSamsatTariffRepository.getByOfficeAndItem(samsatId.trim(), pricingItemId.trim(), false);
     const actorEmployeeId = resolveCanonicalActorEmployeeId(user);
     const saved = dbSamsatTariffRepository.upsert(samsatId.trim(), pricingItemId.trim(), num, actorEmployeeId);
 
-    dbAuditRepository.save({
-      id: `log-samsat-tariff-${Date.now()}`,
-      userId: user?.userId || "usr-system",
-      userName: user?.nama || "Admin API",
-      userRole: user?.role || "admin",
-      action: "UPDATE_SAMSAT_TARIFF",
-      module: "Harga Dasar Samsat",
-      details: `Mengatur tarif override ${masterItem.namaItem || pricingItemId} untuk ${office.name}: Rp ${Math.round(num).toLocaleString("id-ID")}`,
-      metadata: { samsatId, pricingItemId, nominal: Math.round(num) },
-      createdAt: new Date().toISOString(),
-    });
+    try {
+      dbAuditRepository.save({
+        id: `log-samsat-tariff-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
+        userId: user?.userId || "usr-system",
+        userName: user?.nama || "Admin API",
+        userRole: user?.role || "admin",
+        action: previous ? "UPDATE" : "CREATE",
+        module: "Master Data - Harga Dasar Samsat",
+        details: `Mengatur tarif override ${masterItem.namaItem || pricingItemId} untuk ${office.name}: Rp ${Math.round(num).toLocaleString("id-ID")}`,
+        metadata: {
+          recordId: saved?.id || `${samsatId}:${pricingItemId}`,
+          samsatId,
+          pricingItemId,
+          nominal: Math.round(num),
+          oldData: previous || null,
+          newData: saved,
+        },
+        createdAt: new Date().toISOString(),
+      });
+    } catch (auditErr) {
+      console.warn("[PricingService] Failed to record audit log:", auditErr);
+    }
 
     return saved;
   }
@@ -421,17 +478,28 @@ export class PricingService {
       throw new ApiError(500, "DELETE_FAILED", "Gagal mereset tarif override ke default nasional.");
     }
 
-    dbAuditRepository.save({
-      id: `log-samsat-tariff-del-${Date.now()}`,
-      userId: user?.userId || "usr-system",
-      userName: user?.nama || "Admin API",
-      userRole: user?.role || "admin",
-      action: "RESET_SAMSAT_TARIFF_TO_DEFAULT",
-      module: "Harga Dasar Samsat",
-      details: `Mereset tarif override ${existingRecord.pricing_item_id} pada ${existingRecord.samsat_id} ke default nasional (Rp ${fallbackDefault?.toLocaleString("id-ID") ?? "0"})`,
-      metadata: { samsatId: existingRecord.samsat_id, pricingItemId: existingRecord.pricing_item_id, fallbackDefault },
-      createdAt: new Date().toISOString(),
-    });
+    try {
+      dbAuditRepository.save({
+        id: `log-samsat-tariff-del-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
+        userId: user?.userId || "usr-system",
+        userName: user?.nama || "Admin API",
+        userRole: user?.role || "admin",
+        action: "DELETE",
+        module: "Master Data - Harga Dasar Samsat",
+        details: `Mereset tarif override ${existingRecord.pricing_item_id} pada ${existingRecord.samsat_id} ke default nasional (Rp ${fallbackDefault?.toLocaleString("id-ID") ?? "0"})`,
+        metadata: {
+          recordId: existingRecord.id,
+          samsatId: existingRecord.samsat_id,
+          pricingItemId: existingRecord.pricing_item_id,
+          oldData: existingRecord,
+          newData: null,
+          fallbackDefault,
+        },
+        createdAt: new Date().toISOString(),
+      });
+    } catch (auditErr) {
+      console.warn("[PricingService] Failed to record audit log:", auditErr);
+    }
 
     return {
       success: true,

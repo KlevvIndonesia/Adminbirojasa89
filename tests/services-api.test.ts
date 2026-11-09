@@ -26,14 +26,14 @@ test("Services API - Master Layanan Integration & Invariant Tests", async (t) =>
 
   try {
     const adminToken = generateToken({
-      userId: "usr-admin-01",
+      userId: "2",
       email: "admin@birojasa.com",
       nama: "Admin Operasional",
       role: "admin",
     });
 
     const svpToken = generateToken({
-      userId: "usr-svp-01",
+      userId: "1",
       email: "svp@birojasa.com",
       nama: "Supervisor Operasional",
       role: "svp",

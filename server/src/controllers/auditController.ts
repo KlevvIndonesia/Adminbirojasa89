@@ -30,3 +30,18 @@ export async function recordAuditLog(req: AuthenticatedRequest, res: Response, n
     next(err);
   }
 }
+
+export async function clearAuditLogs(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
+  try {
+    const ip = (req.headers["x-forwarded-for"] as string) || req.socket.remoteAddress || "";
+    const result = auditService.clearLogs(req.user, ip);
+    res.json({
+      success: true,
+      message: `Riwayat aktivitas berhasil dibersihkan (${result.deletedCount} log dihapus).`,
+      data: result,
+      timestamp: new Date().toISOString(),
+    });
+  } catch (err) {
+    next(err);
+  }
+}

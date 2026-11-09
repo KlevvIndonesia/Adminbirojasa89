@@ -3,10 +3,69 @@
  * Admin SUN89 — Biro Jasa Management System
  */
 
-import { dbUserRepository } from "../repositories/dbUserRepository";
+import { dbUserRepository, UserEntity } from "../repositories/dbUserRepository";
 import { verifyPassword, hashPassword, needsRehash, generateToken, TokenPayload } from "../utils/crypto";
 import { ApiError } from "../middleware/errorHandler";
 import { dbAuditRepository } from "../repositories/dbAuditRepository";
+import { db } from "../database/db";
+
+/**
+ * Validates and resolves the canonical employee identity for a messenger account.
+ * Rejects unmapped accounts, inactive employees, or accounts missing valid employee links.
+ */
+function resolveAndVerifyMessengerEmployee(userEntity: UserEntity): {
+  ok: true;
+  employeeId: string;
+} | {
+  ok: false;
+  status: number;
+  code: string;
+  message: string;
+} {
+  let empId = userEntity.employee_id ? String(userEntity.employee_id).trim() : null;
+
+  // 1. If userEntity has no employee_id, attempt fallback lookup by name in employees
+  if (!empId && userEntity.nama) {
+    try {
+      const empByName = db.prepare("SELECT id FROM employees WHERE LOWER(nama_lengkap) = LOWER(?)").get(userEntity.nama) as { id: string } | undefined;
+      if (empByName && empByName.id) {
+        empId = empByName.id;
+      }
+    } catch {}
+  }
+
+  // 2. Reject if still no employee_id
+  if (!empId) {
+    return {
+      ok: false,
+      status: 403,
+      code: "MESSENGER_NO_EMPLOYEE_ID",
+      message: "Akun messenger tidak memiliki identitas karyawan yang terdaftar.",
+    };
+  }
+
+  // 3. Verify empId against employees table
+  let empRecord: { id: string; status_karyawan: string } | undefined;
+  try {
+    const empStmt = db.prepare("SELECT id, status_karyawan FROM employees WHERE id = ?");
+    empRecord = empStmt.get(empId) as any;
+  } catch (err) {}
+
+  if (empRecord) {
+    if (empRecord.status_karyawan === "NONAKTIF" || empRecord.status_karyawan === "Nonaktif") {
+      return { ok: false, status: 403, code: "EMPLOYEE_INACTIVE", message: "Status karyawan messenger nonaktif." };
+    }
+  } else {
+    return {
+      ok: false,
+      status: 403,
+      code: "EMPLOYEE_NOT_FOUND",
+      message: "Identitas karyawan messenger tidak ditemukan dalam sistem.",
+    };
+  }
+
+  return { ok: true, employeeId: empId };
+}
 
 export class AuthService {
   public async login(email?: string, password?: string): Promise<{ token: string; user: any }> {
@@ -54,12 +113,28 @@ export class AuthService {
     };
     const role = roleMap[userEntity.jabatan] || "admin";
 
+    let resolvedEmployeeId: string | undefined = userEntity.employee_id || undefined;
+    if (role === "messenger") {
+      const empRes = resolveAndVerifyMessengerEmployee(userEntity);
+      if (empRes.ok === true) {
+        resolvedEmployeeId = empRes.employeeId;
+      } else {
+        throw new ApiError(empRes.status, empRes.code, empRes.message);
+      }
+    }
+
+    // Update last_login_at
+    try {
+      db.prepare("UPDATE users SET last_login_at = datetime('now') WHERE id = ?").run(userEntity.id);
+    } catch {}
+
     const token = generateToken({
       userId: `usr-${userEntity.id}`,
       email: userEntity.email,
       nama: userEntity.nama,
       jabatan: userEntity.jabatan,
       role,
+      employeeId: resolvedEmployeeId,
     });
 
     // Record login audit log
@@ -83,6 +158,7 @@ export class AuthService {
         nama: userEntity.nama,
         jabatan: userEntity.jabatan,
         role,
+        employeeId: resolvedEmployeeId,
         status: userEntity.status,
       },
     };
@@ -93,6 +169,113 @@ export class AuthService {
     return {
       ...userPayload,
       ...(user || {}),
+    };
+  }
+
+  /**
+   * Secure self-service password change
+   * Verifies current password, enforces minimum complexity, and stores modern hash.
+   */
+  public async changePassword(
+    payload: { oldPassword?: string; newPassword?: string; confirmPassword?: string },
+    userPayload: TokenPayload
+  ): Promise<{ success: boolean; message: string; token: string }> {
+    const { oldPassword, newPassword, confirmPassword } = payload || {};
+
+    // 1. Strict validation of payload
+    if (!oldPassword || typeof oldPassword !== "string" || !oldPassword.trim()) {
+      throw new ApiError(400, "VALIDATION_ERROR", "Kata sandi saat ini wajib diisi.");
+    }
+
+    if (!newPassword || typeof newPassword !== "string" || !newPassword.trim()) {
+      throw new ApiError(400, "VALIDATION_ERROR", "Kata sandi baru wajib diisi.");
+    }
+
+    if (!confirmPassword || typeof confirmPassword !== "string" || !confirmPassword.trim()) {
+      throw new ApiError(400, "VALIDATION_ERROR", "Konfirmasi kata sandi baru wajib diisi.");
+    }
+
+    const trimmedNew = newPassword.trim();
+    if (trimmedNew.length < 8) {
+      throw new ApiError(400, "VALIDATION_ERROR", "Kata sandi baru minimal 8 karakter.");
+    }
+
+    if (newPassword !== confirmPassword) {
+      throw new ApiError(400, "VALIDATION_ERROR", "Konfirmasi kata sandi baru tidak cocok.");
+    }
+
+    if (oldPassword === newPassword) {
+      throw new ApiError(400, "VALIDATION_ERROR", "Kata sandi baru tidak boleh sama dengan kata sandi saat ini.");
+    }
+
+    // 2. Fetch user strictly by authenticated token identity (Prevents IDOR)
+    const rawId = userPayload.userId.replace("usr-", "");
+    const user = dbUserRepository.getByIdWithCredentials(rawId) || dbUserRepository.getByEmailWithCredentials(userPayload.email);
+    if (!user) {
+      throw new ApiError(404, "USER_NOT_FOUND", "Data akun pengguna tidak ditemukan.");
+    }
+
+    if (user.status !== "Aktif") {
+      throw new ApiError(403, "ACCOUNT_INACTIVE", "Akun Anda tidak aktif.");
+    }
+
+    // 3. Verify current password
+    const isOldValid = verifyPassword(oldPassword, user.password_hash, user.password_salt);
+    if (!isOldValid) {
+      throw new ApiError(400, "INVALID_CURRENT_PASSWORD", "Kata sandi saat ini salah.");
+    }
+
+    // 4. Hash new password with modern PBKDF2 SHA-512 (600,000 iterations)
+    const { hash: newHash, salt: newSalt } = hashPassword(newPassword);
+    const updated = dbUserRepository.updateCredentials(user.id, newHash, newSalt);
+    if (!updated) {
+      throw new ApiError(500, "DATABASE_ERROR", "Gagal memperbarui kata sandi di database.");
+    }
+
+    // 5. Generate fresh token
+    const roleMap: Record<string, 'administrator' | 'finance' | 'admin' | 'messenger'> = {
+      SVP: "administrator",
+      ADMIN: "admin",
+      FINANCE: "finance",
+      MESSENGER: "messenger",
+    };
+    const role = roleMap[user.jabatan] || "admin";
+
+    let resolvedEmployeeId: string | undefined = user.employee_id || undefined;
+    if (role === "messenger") {
+      const empRes = resolveAndVerifyMessengerEmployee(user);
+      if (empRes.ok === true) {
+        resolvedEmployeeId = empRes.employeeId;
+      } else {
+        throw new ApiError(empRes.status, empRes.code, empRes.message);
+      }
+    }
+
+    const freshToken = generateToken({
+      userId: `usr-${user.id}`,
+      email: user.email,
+      nama: user.nama,
+      jabatan: user.jabatan,
+      role,
+      employeeId: resolvedEmployeeId,
+    });
+
+    // 6. Record security audit log (WITHOUT revealing any password)
+    dbAuditRepository.save({
+      id: `log-pwd-${Date.now()}`,
+      userId: `usr-${user.id}`,
+      userName: user.nama,
+      userRole: role,
+      action: "CHANGE_PASSWORD",
+      module: "Authentication",
+      details: `Pengguna ${user.nama} (${role}) berhasil mengubah kata sandi akunnya.`,
+      createdAt: new Date().toISOString(),
+    });
+
+    return {
+      success: true,
+      message: "Kata sandi berhasil diperbarui. Perubahan berlaku pada sesi berikutnya.",
+      token: freshToken,
     };
   }
 }

@@ -3,6 +3,7 @@
  * Admin SUN89 — Biro Jasa Management System
  */
 
+import crypto from "node:crypto";
 import { dbOrderRepository } from "../repositories/dbOrderRepository";
 import { dbFinanceRepository } from "../repositories/dbFinanceRepository";
 import { dbAuditRepository } from "../repositories/dbAuditRepository";
@@ -10,7 +11,9 @@ import { dbDocumentRepository } from "../repositories/dbDocumentRepository";
 import { dbNotificationSettingsRepository } from "../repositories/dbNotificationSettingsRepository";
 import { notificationConfigService } from "./notificationConfigService";
 import { OperationalOrder, StageName, STAGES, getDefaultSamsatProcesses, ServiceRequirementsSnapshot } from "../../../src/domain/order/types";
-import { serviceRepository } from "../repositories/dbServiceRepository";
+import { serviceRepository, ServiceEntity } from "../repositories/dbServiceRepository";
+import { dbWilayahRepository } from "../repositories/dbWilayahRepository";
+import { dbPaymentMethodRepository } from "../repositories/dbPaymentMethodRepository";
 import { buildServiceRequirementsSnapshot } from "../utils/serviceSnapshot";
 import { ApiError } from "../middleware/errorHandler";
 import { TokenPayload } from "../utils/crypto";
@@ -78,15 +81,33 @@ export function resolveServiceIdentity(
   layananInput?: string | null
 ): { serviceId: string | null; namaLayanan: string } {
   const normSvcId = (serviceIdInput || "").trim().toLowerCase();
-  if (normSvcId && CANONICAL_SERVICES_MAP[normSvcId]) {
-    const match = CANONICAL_SERVICES_MAP[normSvcId];
-    return { serviceId: match.id, namaLayanan: match.nama };
+  if (normSvcId) {
+    // 1. Check database first
+    const dbSvc = serviceRepository.getById(normSvcId);
+    if (dbSvc) {
+      return { serviceId: dbSvc.id, namaLayanan: dbSvc.nama_layanan };
+    }
+    // 2. Check canonical map
+    if (CANONICAL_SERVICES_MAP[normSvcId]) {
+      const match = CANONICAL_SERVICES_MAP[normSvcId];
+      return { serviceId: match.id, namaLayanan: match.nama };
+    }
   }
 
   const normLayanan = (layananInput || "").trim().toLowerCase();
-  if (normLayanan && CANONICAL_SERVICES_MAP[normLayanan]) {
-    const match = CANONICAL_SERVICES_MAP[normLayanan];
-    return { serviceId: match.id, namaLayanan: match.nama };
+  if (normLayanan) {
+    // Check database by name or code
+    const allDb = serviceRepository.getAll();
+    const dbMatch = allDb.find(
+      (s) => s.nama_layanan.toLowerCase() === normLayanan || s.kode_layanan.toLowerCase() === normLayanan
+    );
+    if (dbMatch) {
+      return { serviceId: dbMatch.id, namaLayanan: dbMatch.nama_layanan };
+    }
+    if (CANONICAL_SERVICES_MAP[normLayanan]) {
+      const match = CANONICAL_SERVICES_MAP[normLayanan];
+      return { serviceId: match.id, namaLayanan: match.nama };
+    }
   }
 
   return {
@@ -386,6 +407,16 @@ export class OrderService {
     return dbOrderRepository.getAllFlat(archived);
   }
 
+  public getOrdersPaginated(options: {
+    page?: number;
+    pageSize?: number;
+    archived?: boolean;
+    stage?: string;
+    search?: string;
+  }) {
+    return dbOrderRepository.getOrdersPaginated(options);
+  }
+
   public getByOrderNo(orderNo: string): OperationalOrder {
     const order = dbOrderRepository.getByOrderNo(orderNo);
     if (!order) {
@@ -404,23 +435,100 @@ export class OrderService {
     idempotencyKey?: string
   ): { order: OperationalOrder; isExisting: boolean } {
     const resolvedKey = (idempotencyKey || data.clientRequestId || data.idempotencyKey)?.trim();
+    let requestHash = "";
+
     if (resolvedKey) {
-      if (this.idempotencyCache.has(resolvedKey)) {
-        const cached = this.idempotencyCache.get(resolvedKey)!;
-        const existing = dbOrderRepository.getByOrderNo(cached.order.orderNo);
-        if (existing) {
-          return { order: existing, isExisting: true };
+      const canonicalPayload = {
+        customer: String(data.customer || "").trim(),
+        nomorHP: String(data.nomorHP || "").trim(),
+        layanan: String(data.layanan || "").trim(),
+        nopol: String(data.nopol || "").trim().toUpperCase().replace(/[\s\-\.]/g, ""),
+        wilayahSamsatAsal: String(data.wilayahSamsatAsal || data.samsatAsalId || "").trim(),
+        totalEstimasi: Number(data.totalEstimasi || data.payment?.totalBiaya || 0),
+      };
+      requestHash = crypto.createHash("sha256").update(JSON.stringify(canonicalPayload)).digest("hex");
+
+      try {
+        const getStmt = db.prepare("SELECT key, scope, user_id, request_hash, resource_id, response_json FROM idempotency_keys WHERE key = ? AND scope = 'CREATE_ORDER'");
+        let record = getStmt.get(resolvedKey) as { key: string; scope: string; user_id: string | null; request_hash: string; resource_id: string | null; response_json: string } | undefined;
+
+        if (record) {
+          if (record.request_hash !== requestHash) {
+            throw new ApiError(422, "IDEMPOTENCY_CONFLICT", "Idempotency key sudah digunakan untuk permintaan order dengan data yang berbeda.");
+          }
+          if (record.resource_id && record.resource_id !== "IN_PROGRESS") {
+            const existing = dbOrderRepository.getByOrderNo(record.resource_id);
+            if (existing) {
+              this.idempotencyCache.set(resolvedKey, { order: existing, timestamp: Date.now() });
+              return { order: existing, isExisting: true };
+            }
+          }
+          // If IN_PROGRESS, wait for concurrent request to finish
+          if (record.resource_id === "IN_PROGRESS") {
+            const startWait = Date.now();
+            while (Date.now() - startWait < 3000) {
+              Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 100);
+              const polled = getStmt.get(resolvedKey) as any;
+              if (polled && polled.resource_id && polled.resource_id !== "IN_PROGRESS") {
+                const existing = dbOrderRepository.getByOrderNo(polled.resource_id);
+                if (existing) {
+                  this.idempotencyCache.set(resolvedKey, { order: existing, timestamp: Date.now() });
+                  return { order: existing, isExisting: true };
+                }
+              }
+            }
+          }
+        } else {
+          // Reserve the key atomically using SQLite PRIMARY KEY constraint
+          try {
+            const reserveStmt = db.prepare(`
+              INSERT INTO idempotency_keys (key, scope, user_id, request_hash, resource_id, response_json, created_at)
+              VALUES (?, 'CREATE_ORDER', ?, ?, 'IN_PROGRESS', '{}', datetime('now'))
+            `);
+            reserveStmt.run(resolvedKey, user?.userId || "usr-system", requestHash);
+          } catch (reserveErr: any) {
+            // Concurrent race condition: another request inserted between get and insert
+            const raced = getStmt.get(resolvedKey) as any;
+            if (raced) {
+              if (raced.request_hash !== requestHash) {
+                throw new ApiError(422, "IDEMPOTENCY_CONFLICT", "Idempotency key sudah digunakan untuk permintaan order dengan data yang berbeda.");
+              }
+              const startWait = Date.now();
+              while (Date.now() - startWait < 3000) {
+                Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 100);
+                const polled = getStmt.get(resolvedKey) as any;
+                if (polled && polled.resource_id && polled.resource_id !== "IN_PROGRESS") {
+                  const existing = dbOrderRepository.getByOrderNo(polled.resource_id);
+                  if (existing) {
+                    this.idempotencyCache.set(resolvedKey, { order: existing, timestamp: Date.now() });
+                    return { order: existing, isExisting: true };
+                  }
+                }
+              }
+            }
+          }
+        }
+      } catch (err: any) {
+        if (err instanceof ApiError) throw err;
+        // In case idempotency_keys table has any issue, fall back to memory / flat search safely
+        if (this.idempotencyCache.has(resolvedKey)) {
+          const cached = this.idempotencyCache.get(resolvedKey)!;
+          const existing = dbOrderRepository.getByOrderNo(cached.order.orderNo);
+          if (existing) return { order: existing, isExisting: true };
         }
       }
+
+      // Backward compatibility fallback for legacy orders without idempotency_keys entry
       const allRecent = dbOrderRepository.getAllFlat(false);
-      const existing = allRecent.find((o) => (o as any).clientRequestId === resolvedKey);
-      if (existing) {
-        this.idempotencyCache.set(resolvedKey, { order: existing, timestamp: Date.now() });
-        return { order: existing, isExisting: true };
+      const legacyExisting = allRecent.find((o) => (o as any).clientRequestId === resolvedKey);
+      if (legacyExisting) {
+        this.idempotencyCache.set(resolvedKey, { order: legacyExisting, timestamp: Date.now() });
+        return { order: legacyExisting, isExisting: true };
       }
     }
 
-    // Canonicalize incoming fields and resolve alias conflicts
+    try {
+      // Canonicalize incoming fields and resolve alias conflicts
     normalizeOrderPayload(data);
 
     if (!data.customer || !data.nomorHP || !data.layanan || !data.nopol) {
@@ -482,6 +590,9 @@ export class OrderService {
         // safe fallback
       }
     }
+    if (isTaken && (data as any).rejectDuplicateOrder) {
+      throw new ApiError(409, "DUPLICATE_RECORD", `Nomor order '${orderNo}' sudah terdaftar.`);
+    }
     if (!orderNo || !orderPattern.test(orderNo) || isTaken) {
       let maxSeq = 0;
       try {
@@ -508,9 +619,33 @@ export class OrderService {
       ? data.noInvoice
       : (data.payment?.invoiceNo !== undefined ? data.payment.invoiceNo : undefined);
 
-    const resolvedNoInvoice = (rawNoInvoice && String(rawNoInvoice).trim() && !String(rawNoInvoice).startsWith("INV-2026"))
+    let resolvedNoInvoice = (rawNoInvoice && String(rawNoInvoice).trim() && !String(rawNoInvoice).startsWith("INV-2026"))
       ? String(rawNoInvoice).trim()
       : matchingInvoiceNo;
+
+    // [DEF-FIN-001 REMEDIATION] Collision prevention for newly assigned invoices
+    // If resolvedNoInvoice is already claimed by a different order, prevent collision
+    if (resolvedNoInvoice) {
+      const existingInv = dbFinanceRepository.getInvoiceByNo(resolvedNoInvoice);
+      if (existingInv && existingInv.orderNo !== orderNo) {
+        if ((data as any).rejectDuplicateInvoice) {
+          throw new ApiError(409, "DUPLICATE_RECORD", `Nomor invoice '${resolvedNoInvoice}' sudah digunakan.`);
+        }
+        const matchingInv = dbFinanceRepository.getInvoiceByNo(matchingInvoiceNo);
+        if (!matchingInv || matchingInv.orderNo === orderNo) {
+          resolvedNoInvoice = matchingInvoiceNo;
+        } else {
+          const currentOrderSeq = parseInt(seqSuffix, 10) || 1;
+          let candidateSeq = currentOrderSeq;
+          let candidateNo = `INV-${targetMMYY}-${String(candidateSeq).padStart(3, "0")}`;
+          while (dbFinanceRepository.getInvoiceByNo(candidateNo)) {
+            candidateSeq++;
+            candidateNo = `INV-${targetMMYY}-${String(candidateSeq).padStart(3, "0")}`;
+          }
+          resolvedNoInvoice = candidateNo;
+        }
+      }
+    }
 
     const resolvedMetodeLayanan = data.metodeLayanan || data.costSnapshot?.metodeLayanan || "Antar Jemput";
     const isDatangLangsung = resolvedMetodeLayanan === "Datang Langsung";
@@ -519,16 +654,114 @@ export class OrderService {
 
     const resolvedStatusPengerjaan = data.salesSnapshotStatus || data.statusPengerjaan;
 
-    const resolvedSvc = resolveServiceIdentity((data as any).service_id || (data as any).serviceId, data.layanan);
-    const resolvedLayanan = resolvedSvc.namaLayanan;
-    const resolvedServiceId = resolvedSvc.serviceId;
-    const resolvedSamsatAsal = (data as any).samsat_asal || (data as any).samsatAsal || data.wilayahSamsatAsal || "Jakarta Timur";
-    const resolvedSamsatTujuan = (data as any).samsat_tujuan || (data as any).samsatTujuan || data.wilayahSamsatTujuan || "-";
+    // Service Validation & Canonical Resolution (Phase B)
+    const rawServiceId = (data as any).service_id || (data as any).serviceId;
+    let masterService: ServiceEntity | undefined = undefined;
 
-    // Service Requirements Snapshot Resolution (Patch D)
-    let masterService = resolvedServiceId ? serviceRepository.getById(resolvedServiceId) : undefined;
-    if (!masterService && resolvedLayanan) {
-      masterService = serviceRepository.getByKode(resolvedLayanan) || serviceRepository.getAll().find((s) => s.nama_layanan.toLowerCase() === resolvedLayanan.toLowerCase());
+    if (rawServiceId && String(rawServiceId).trim()) {
+      const cleanId = String(rawServiceId).trim();
+      masterService = serviceRepository.getById(cleanId);
+      if (!masterService) {
+        throw new ApiError(400, "INVALID_SERVICE", `Layanan dengan ID '${cleanId}' tidak ditemukan di database.`);
+      }
+      if (Number(masterService.status_aktif) !== 1) {
+        throw new ApiError(400, "SERVICE_INACTIVE", `Layanan '${masterService.nama_layanan}' sedang nonaktif dan tidak dapat digunakan untuk order baru.`);
+      }
+    } else {
+      const resolvedSvc = resolveServiceIdentity(null, data.layanan);
+      if (resolvedSvc.serviceId) {
+        masterService = serviceRepository.getById(resolvedSvc.serviceId);
+      }
+      if (!masterService && data.layanan) {
+        masterService = serviceRepository.getByKode(data.layanan) ||
+          serviceRepository.getAll().find((s) => s.nama_layanan.toLowerCase() === String(data.layanan).toLowerCase());
+      }
+    }
+
+    const resolvedLayanan = masterService ? masterService.nama_layanan : (data.layanan || "Layanan Standar");
+    const resolvedServiceId = masterService ? masterService.id : (rawServiceId || null);
+
+    // Samsat Asal Validation & Canonical Resolution (Phase C)
+    const rawSamsatAsalId = (data as any).samsat_asal_id || (data as any).samsatAsalId;
+    let resolvedSamsatAsalId: string | null = null;
+    let resolvedSamsatAsal: string = (data as any).samsat_asal || (data as any).samsatAsal || data.wilayahSamsatAsal || "Jakarta Timur";
+
+    if (rawSamsatAsalId && String(rawSamsatAsalId).trim()) {
+      const cleanAsalId = String(rawSamsatAsalId).trim();
+      const officeAsal = dbWilayahRepository.getSamsatOfficeById(cleanAsalId);
+      if (!officeAsal) {
+        throw new ApiError(400, "INVALID_SAMSAT", `Samsat Asal dengan ID '${cleanAsalId}' tidak ditemukan di database.`);
+      }
+      if (Number(officeAsal.status_aktif) === 0) {
+        throw new ApiError(400, "SAMSAT_INACTIVE", `Samsat Asal '${officeAsal.name}' sedang nonaktif.`);
+      }
+      resolvedSamsatAsalId = officeAsal.id;
+      resolvedSamsatAsal = officeAsal.wilayah || officeAsal.name;
+    } else if (resolvedSamsatAsal) {
+      const allOffices = dbWilayahRepository.getAllSamsatOffices();
+      const matched = allOffices.find(
+        (o) => o.wilayah.toLowerCase() === resolvedSamsatAsal.toLowerCase() || o.name.toLowerCase() === resolvedSamsatAsal.toLowerCase()
+      );
+      if (matched) {
+        resolvedSamsatAsalId = matched.id;
+      }
+    }
+
+    // Samsat Tujuan Validation & Canonical Resolution (Phase C)
+    const requiresSamsatTujuan = masterService
+      ? Number(masterService.memerlukan_samsat_tujuan) === 1
+      : resolvedLayanan.toLowerCase().includes("mutasi");
+
+    const rawSamsatTujuanId = (data as any).samsat_tujuan_id || (data as any).samsatTujuanId;
+    let resolvedSamsatTujuanId: string = "-";
+    let resolvedSamsatTujuan: string = (data as any).samsat_tujuan || (data as any).samsatTujuan || data.wilayahSamsatTujuan || "-";
+
+    if (requiresSamsatTujuan) {
+      if (rawSamsatTujuanId && rawSamsatTujuanId !== "-") {
+        const cleanTujuanId = String(rawSamsatTujuanId).trim();
+        const officeTujuan = dbWilayahRepository.getSamsatOfficeById(cleanTujuanId);
+        if (!officeTujuan) {
+          throw new ApiError(400, "INVALID_SAMSAT", `Samsat Tujuan dengan ID '${cleanTujuanId}' tidak ditemukan di database.`);
+        }
+        if (Number(officeTujuan.status_aktif) === 0) {
+          throw new ApiError(400, "SAMSAT_INACTIVE", `Samsat Tujuan '${officeTujuan.name}' sedang nonaktif.`);
+        }
+        resolvedSamsatTujuanId = officeTujuan.id;
+        resolvedSamsatTujuan = officeTujuan.wilayah || officeTujuan.name;
+      } else if (resolvedSamsatTujuan && resolvedSamsatTujuan !== "-") {
+        const allOffices = dbWilayahRepository.getAllSamsatOffices();
+        const matched = allOffices.find(
+          (o) => o.wilayah.toLowerCase() === resolvedSamsatTujuan.toLowerCase() || o.name.toLowerCase() === resolvedSamsatTujuan.toLowerCase()
+        );
+        if (matched) {
+          resolvedSamsatTujuanId = matched.id;
+        }
+      }
+    }
+
+    // Payment Method Validation (Phase F)
+    const incomingPaymentMethod = data.payment?.metodePembayaran || data.metodePembayaran;
+    if (incomingPaymentMethod && typeof incomingPaymentMethod === "string") {
+      const cleanPm = incomingPaymentMethod.trim();
+      const isCashOrDeferred = cleanPm === "Tunai" || cleanPm === "Cash" || cleanPm.includes("Cash") || cleanPm.includes("Bayar di Akhir");
+      if (!isCashOrDeferred) {
+        const activePms = dbPaymentMethodRepository.getActive();
+        const pmMatched = activePms.find(
+          (m) => m.nama_metode.toLowerCase() === cleanPm.toLowerCase() ||
+                 (m.bank && cleanPm.toLowerCase().includes(m.bank.toLowerCase()))
+        );
+        const allPms = dbPaymentMethodRepository.getAll();
+        const inactiveMatch = allPms.find(
+          (m) => (m.nama_metode.toLowerCase() === cleanPm.toLowerCase() ||
+                 (m.bank && cleanPm.toLowerCase().includes(m.bank.toLowerCase()))) && m.status === "Nonaktif"
+        );
+        if (inactiveMatch) {
+          throw new ApiError(400, "PAYMENT_METHOD_INACTIVE", `Metode pembayaran '${incomingPaymentMethod}' sedang nonaktif.`);
+        }
+        if (!pmMatched) {
+          throw new ApiError(400, "PAYMENT_METHOD_INACTIVE", `Metode pembayaran '${incomingPaymentMethod}' tidak valid atau sedang nonaktif.`);
+        }
+      }
     }
 
     let serviceRequirementsSnapshot: ServiceRequirementsSnapshot | undefined = undefined;
@@ -560,6 +793,10 @@ export class OrderService {
       samsat_asal: resolvedSamsatAsal,
       wilayahSamsatTujuan: resolvedSamsatTujuan,
       samsat_tujuan: resolvedSamsatTujuan,
+      samsatAsalId: resolvedSamsatAsalId || undefined,
+      samsat_asal_id: resolvedSamsatAsalId || undefined,
+      samsatTujuanId: resolvedSamsatTujuanId,
+      samsat_tujuan_id: resolvedSamsatTujuanId,
       metodeLayanan: resolvedMetodeLayanan,
       serviceRequirementsSnapshot,
       currentStep: data.currentStep !== undefined ? data.currentStep : initialStep,
@@ -702,6 +939,18 @@ export class OrderService {
       });
 
       if (resolvedKey) {
+        try {
+          const updateStmt = db.prepare(`
+            UPDATE idempotency_keys
+            SET resource_id = ?, response_json = ?
+            WHERE key = ? AND scope = 'CREATE_ORDER'
+          `);
+          updateStmt.run(
+            newOrder.orderNo,
+            JSON.stringify({ orderNo: newOrder.orderNo, noInvoice: newOrder.noInvoice, customer: newOrder.customer }),
+            resolvedKey
+          );
+        } catch {}
         this.idempotencyCache.set(resolvedKey, { order: newOrder, timestamp: Date.now() });
       }
 
@@ -716,6 +965,18 @@ export class OrderService {
     }
 
     return result;
+    } catch (createErr) {
+      if (resolvedKey) {
+        try {
+          const deleteReservation = db.prepare(`
+            DELETE FROM idempotency_keys
+            WHERE key = ? AND scope = 'CREATE_ORDER' AND resource_id = 'IN_PROGRESS'
+          `);
+          deleteReservation.run(resolvedKey);
+        } catch {}
+      }
+      throw createErr;
+    }
   }
 
   private triggerOrderNotification(order: OperationalOrder, eventType: "ORDER_CREATE" | "ORDER_UPDATE", extraDetail?: string): void {
@@ -985,6 +1246,16 @@ export class OrderService {
 
     const safeUpdates: Partial<OperationalOrder> = { ...updates };
 
+    // Duplicate Invoice Check (Data Penjualan Mutation Integrity)
+    const incomingInvNo = (safeUpdates as any).noInvoice ?? (safeUpdates as any).invoiceNo ?? safeUpdates.payment?.invoiceNo;
+    if (incomingInvNo && typeof incomingInvNo === "string" && incomingInvNo.trim()) {
+      const cleanInv = incomingInvNo.trim();
+      const existingInv = dbFinanceRepository.getInvoiceByNo(cleanInv);
+      if (existingInv && existingInv.orderNo !== orderNo) {
+        throw new ApiError(409, "DUPLICATE_RECORD", `Nomor invoice '${cleanInv}' sudah digunakan.`);
+      }
+    }
+
     // Enforcement: For role messenger, preserve historical notes and strip forbidden note fields
     if (user && user.role === "messenger") {
       if (safeUpdates.pickupProof && typeof safeUpdates.pickupProof === "object") {
@@ -1155,90 +1426,173 @@ export class OrderService {
   }
 
   public advanceOrder(orderNo: string, targetStage: StageName, updates: Partial<OperationalOrder> = {}, user?: TokenPayload | null): OperationalOrder {
-    const existing = this.getByOrderNo(orderNo);
-    if ((existing as any).isCancelled || existing.currentStageName === "Dibatalkan" || (existing as any).status === "Dibatalkan") {
-      throw new ApiError(400, "ORDER_CANCELLED", `Order '${orderNo}' sudah dibatalkan dan tidak dapat diproses lebih lanjut.`);
+    if (!orderNo || typeof orderNo !== "string") {
+      throw new ApiError(400, "VALIDATION_ERROR", "Nomor order wajib diisi.");
     }
     if (!(STAGES as readonly string[]).includes(targetStage)) {
       throw new ApiError(400, "INVALID_STAGE", `Target stage '${targetStage}' tidak valid.`);
-    }
-
-    if (existing.currentStageName === "Supervisi") {
-      if (user && user.role !== "administrator" && user.jabatan !== "SVP") {
-        throw new ApiError(403, "FORBIDDEN", "Hanya Supervisor / SVP yang berwenang melakukan supervisi Stage 6.");
-      }
-    }
-
-    // Gating 4.5: Stage 4 -> Stage 5 Samsat Components Completion Gating
-    const stageListAdvance = STAGES as readonly string[];
-    const advanceCurrentStep = existing.currentStep !== undefined
-      ? Number(existing.currentStep)
-      : (existing.currentStageName ? stageListAdvance.indexOf(existing.currentStageName as any) + 1 : 0);
-    const advanceTargetStep = stageListAdvance.indexOf(targetStage) + 1;
-
-    if (advanceCurrentStep === 4 && advanceTargetStep >= 5) {
-      const valResult = validateSamsatCompletion(existing);
-      if (!valResult.allowed) {
-        throw new ApiError(
-          400,
-          valResult.code || "SAMSAT_COMPONENTS_INCOMPLETE",
-          valResult.error || "Seluruh tahapan komponen loket Samsat wajib berstatus Selesai (COMPLETED) sebelum order dapat dilanjutkan."
-        );
-      }
-    }
-
-    // Persetujuan dokumen Stage 5 gating (Verifikasi Ulang -> Supervisi)
-    if (existing.currentStageName === "Verifikasi Ulang" && targetStage === "Supervisi") {
-      const isApproved =
-        updates.documentApproval?.stage5Verified ||
-        existing.documentApproval?.stage5Verified ||
-        updates.documentsVerified ||
-        existing.documentsVerified;
-      if (!isApproved) {
-        throw new ApiError(
-          400,
-          "DOCUMENTS_NOT_VERIFIED",
-          "Dokumen berkas Samsat wajib diperiksa dan disetujui terlebih dahulu sebelum order diajukan ke Supervisi."
-        );
-      }
-    }
-
-    // Persetujuan dokumen Stage 6 gating (Supervisi -> Pengantaran)
-    if (existing.currentStageName === "Supervisi" && targetStage === "Pengantaran") {
-      const isApproved =
-        existing.documentApproval?.stage6Approved ||
-        existing.approvedBySpv;
-      if (!isApproved) {
-        throw new ApiError(
-          400,
-          "DOCUMENTS_NOT_APPROVED",
-          "Dokumen hasil Samsat wajib disetujui oleh Supervisor / SVP terlebih dahulu melalui persetujuan dokumen resmi sebelum order dilanjutkan ke Pengantaran."
-        );
-      }
-    }
-
-    // Sanitize advance updates: prevent non-supervisor callers from forging supervisor identity
-    const safeAdvanceUpdates: Partial<OperationalOrder> = { ...updates };
-    const isSpvCaller = user && (user.role === "administrator" || user.jabatan === "SVP" || user.role === "svp");
-    if (!isSpvCaller) {
-      delete (safeAdvanceUpdates as any).approvedBySpv;
-      delete (safeAdvanceUpdates as any).spvName;
-      delete (safeAdvanceUpdates as any).spvApprovedAt;
-      delete (safeAdvanceUpdates as any).spvNotes;
-      if (safeAdvanceUpdates.documentApproval) {
-        delete (safeAdvanceUpdates.documentApproval as any).stage6Approved;
-        delete (safeAdvanceUpdates.documentApproval as any).stage6ApprovedBy;
-        delete (safeAdvanceUpdates.documentApproval as any).stage6ApprovedAt;
-      }
-    } else if (safeAdvanceUpdates.approvedBySpv) {
-      safeAdvanceUpdates.spvName = user.nama;
-      safeAdvanceUpdates.spvApprovedAt = new Date().toISOString();
     }
 
     // Resolve canonical actor employee identity from authenticated server context
     const actorEmployeeId = resolveCanonicalActorEmployeeId(user);
 
     const updated = runInTransaction(() => {
+      const existing = this.getByOrderNo(orderNo);
+      if (!existing) {
+        throw new ApiError(404, "ORDER_NOT_FOUND", `Order '${orderNo}' tidak ditemukan.`);
+      }
+
+      if ((existing as any).isCancelled || existing.currentStageName === "Dibatalkan" || (existing as any).status === "Dibatalkan") {
+        throw new ApiError(400, "ORDER_CANCELLED", `Order '${orderNo}' sudah dibatalkan dan tidak dapat diproses lebih lanjut.`);
+      }
+      if ((existing as any).isArchived) {
+        throw new ApiError(400, "ORDER_ARCHIVED", `Order '${orderNo}' sudah diarsipkan dan tidak dapat diubah tahapan.`);
+      }
+
+      const stageList = STAGES as readonly string[];
+      const currentStep = existing.currentStep !== undefined && Number(existing.currentStep) >= 1 && Number(existing.currentStep) <= 8
+        ? Number(existing.currentStep)
+        : (existing.currentStageName ? stageList.indexOf(existing.currentStageName as any) + 1 : 1);
+      const targetStep = stageList.indexOf(targetStage) + 1;
+
+      // Terminal step guard: order completed at Step 8 cannot advance
+      if (currentStep === 8 || existing.currentStageName === "Dokumen Telah Diterima") {
+        if (targetStage !== "Dokumen Telah Diterima") {
+          throw new ApiError(
+            400,
+            "INVALID_STAGE_TRANSITION",
+            `Order '${orderNo}' sudah berada pada tahap selesai (Dokumen Telah Diterima) dan tidak dapat dimajukan lagi.`
+          );
+        }
+      }
+
+      // Backward transition guard: advance endpoint cannot move backwards
+      if (targetStep < currentStep) {
+        throw new ApiError(
+          400,
+          "INVALID_STAGE_TRANSITION",
+          `Transisi mundur dari '${existing.currentStageName}' (Step ${currentStep}) ke '${targetStage}' (Step ${targetStep}) tidak dapat dilakukan melalui endpoint /advance. Gunakan endpoint /rollback.`
+        );
+      }
+
+      const isDatangLangsung =
+        existing.metodeLayanan === "Datang Langsung" ||
+        updates.metodeLayanan === "Datang Langsung" ||
+        existing.costSnapshot?.metodeLayanan === "Datang Langsung";
+
+      // Forward transition guard: sequential enforcement and Datang Langsung shortcut
+      if (targetStep > currentStep) {
+        const isNormalNextStep = targetStep === currentStep + 1;
+        const isDatangLangsungShortcut = currentStep === 1 && targetStep === 3 && isDatangLangsung;
+
+        if (!isNormalNextStep && !isDatangLangsungShortcut) {
+          throw new ApiError(
+            400,
+            "INVALID_STAGE_TRANSITION",
+            `Transisi tahapan tidak valid: Order tidak dapat melompat dari '${existing.currentStageName}' (Step ${currentStep}) ke '${targetStage}' (Step ${targetStep}). Urutan tahapan harus diproses secara sekuensial.`
+          );
+        }
+      }
+
+      // Role authority check: Supervisi Stage 6 requires Supervisor / SVP
+      if (existing.currentStageName === "Supervisi" && targetStage !== "Supervisi") {
+        if (user && user.role !== "administrator" && user.jabatan !== "SVP") {
+          throw new ApiError(403, "FORBIDDEN", "Hanya Supervisor / SVP yang berwenang melakukan supervisi Stage 6.");
+        }
+      }
+
+      // Gating 2 -> 3: Penjadwalan -> Verifikasi Dokumen (Pickup completed required for non-walk-in orders)
+      if (currentStep === 2 && targetStep === 3) {
+        const isPickupDone =
+          isDatangLangsung ||
+          updates.pickupCompleted ||
+          existing.pickupCompleted ||
+          updates.messengerTaskStatus === "Dokumen Sudah Tersedia" ||
+          existing.messengerTaskStatus === "Dokumen Sudah Tersedia";
+        if (!isPickupDone) {
+          throw new ApiError(
+            400,
+            "PREREQUISITE_NOT_MET",
+            "Penjemputan berkas oleh kurir belum selesai. Order belum dapat dimajukan ke Verifikasi Dokumen."
+          );
+        }
+      }
+
+      // Gating 3 -> 4: Verifikasi Dokumen -> Proses Samsat (Physical documents verified required)
+      if (currentStep === 3 && targetStep === 4) {
+        const isDocsDone =
+          updates.documentsVerified ||
+          existing.documentsVerified;
+        if (!isDocsDone) {
+          throw new ApiError(
+            400,
+            "PREREQUISITE_NOT_MET",
+            "Verifikasi kelengkapan berkas fisik wajib disetujui terlebih dahulu sebelum order dapat diproses ke Samsat."
+          );
+        }
+      }
+
+      // Gating 4.5: Stage 4 -> Stage 5 Samsat Components Completion Gating
+      if (currentStep === 4 && targetStep >= 5) {
+        const valResult = validateSamsatCompletion(existing);
+        if (!valResult.allowed && valResult.code !== "SAMSAT_COMPONENTS_REQUIRED") {
+          throw new ApiError(
+            400,
+            valResult.code || "SAMSAT_COMPONENTS_INCOMPLETE",
+            valResult.error || "Seluruh tahapan komponen loket Samsat wajib berstatus Selesai (COMPLETED) sebelum order dapat dilanjutkan."
+          );
+        }
+      }
+
+      // Persetujuan dokumen Stage 5 gating (Verifikasi Ulang -> Supervisi)
+      if (existing.currentStageName === "Verifikasi Ulang" && targetStage === "Supervisi") {
+        const isApproved =
+          updates.documentApproval?.stage5Verified ||
+          existing.documentApproval?.stage5Verified ||
+          updates.documentsVerified ||
+          existing.documentsVerified;
+        if (!isApproved) {
+          throw new ApiError(
+            400,
+            "DOCUMENTS_NOT_VERIFIED",
+            "Dokumen berkas Samsat wajib diperiksa dan disetujui terlebih dahulu sebelum order diajukan ke Supervisi."
+          );
+        }
+      }
+
+      // Sanitize advance updates: prevent non-supervisor callers from forging supervisor identity
+      const isSpvCaller = user && (user.role === "administrator" || user.jabatan === "SVP" || user.role === "svp");
+      const safeAdvanceUpdates: Partial<OperationalOrder> = { ...updates };
+      if (!isSpvCaller) {
+        delete (safeAdvanceUpdates as any).approvedBySpv;
+        delete (safeAdvanceUpdates as any).spvName;
+        delete (safeAdvanceUpdates as any).spvApprovedAt;
+        delete (safeAdvanceUpdates as any).spvNotes;
+        if (safeAdvanceUpdates.documentApproval) {
+          delete (safeAdvanceUpdates.documentApproval as any).stage6Approved;
+          delete (safeAdvanceUpdates.documentApproval as any).stage6ApprovedBy;
+          delete (safeAdvanceUpdates.documentApproval as any).stage6ApprovedAt;
+        }
+      } else if (safeAdvanceUpdates.approvedBySpv) {
+        safeAdvanceUpdates.spvName = user.nama;
+        safeAdvanceUpdates.spvApprovedAt = new Date().toISOString();
+      }
+
+      // Persetujuan dokumen Stage 6 gating (Supervisi -> Pengantaran)
+      if (existing.currentStageName === "Supervisi" && targetStage === "Pengantaran") {
+        const isApproved =
+          (isSpvCaller && (safeAdvanceUpdates.documentApproval?.stage6Approved || safeAdvanceUpdates.approvedBySpv)) ||
+          existing.documentApproval?.stage6Approved ||
+          existing.approvedBySpv;
+        if (!isApproved) {
+          throw new ApiError(
+            400,
+            "DOCUMENTS_NOT_APPROVED",
+            "Dokumen hasil Samsat wajib disetujui oleh Supervisor / SVP terlebih dahulu melalui persetujuan dokumen resmi sebelum order dilanjutkan ke Pengantaran."
+          );
+        }
+      }
+
       const success = dbOrderRepository.advanceOrder(orderNo, targetStage, safeAdvanceUpdates, actorEmployeeId);
       if (!success) {
         throw new ApiError(500, "ADVANCE_FAILED", `Gagal memajukan order ${orderNo} ke stage ${targetStage}`);
@@ -1270,9 +1624,8 @@ export class OrderService {
   }
 
   public rollbackOrder(orderNo: string, targetStage: StageName, updates: Partial<OperationalOrder> = {}, user?: TokenPayload | null): OperationalOrder {
-    const existing = this.getByOrderNo(orderNo);
-    if ((existing as any).isCancelled || existing.currentStageName === "Dibatalkan" || (existing as any).status === "Dibatalkan") {
-      throw new ApiError(400, "ORDER_CANCELLED", `Order '${orderNo}' sudah dibatalkan dan tidak dapat di-rollback.`);
+    if (!orderNo || typeof orderNo !== "string") {
+      throw new ApiError(400, "VALIDATION_ERROR", "Nomor order wajib diisi.");
     }
     if (!(STAGES as readonly string[]).includes(targetStage)) {
       throw new ApiError(400, "INVALID_STAGE", `Target stage rollback '${targetStage}' tidak valid.`);
@@ -1286,22 +1639,35 @@ export class OrderService {
       throw new ApiError(403, "FORBIDDEN", "Finance tidak berwenang mengubah tahapan operasional order.");
     }
 
-    const stageList = STAGES as readonly string[];
-    const currentStep = stageList.indexOf(existing.currentStageName) + 1;
-    const targetStep = stageList.indexOf(targetStage) + 1;
-
-    if (targetStep >= currentStep) {
-      throw new ApiError(
-        400,
-        "INVALID_ROLLBACK",
-        `Tahapan tujuan rollback '${targetStage}' (Step ${targetStep}) harus mendahului tahapan saat ini '${existing.currentStageName}' (Step ${currentStep}).`
-      );
-    }
-
     // Resolve canonical actor employee identity from authenticated server context
     const actorEmployeeId = resolveCanonicalActorEmployeeId(user);
 
     const updated = runInTransaction(() => {
+      const existing = this.getByOrderNo(orderNo);
+      if (!existing) {
+        throw new ApiError(404, "ORDER_NOT_FOUND", `Order '${orderNo}' tidak ditemukan.`);
+      }
+
+      if ((existing as any).isCancelled || existing.currentStageName === "Dibatalkan" || (existing as any).status === "Dibatalkan") {
+        throw new ApiError(400, "ORDER_CANCELLED", `Order '${orderNo}' sudah dibatalkan dan tidak dapat di-rollback.`);
+      }
+      if ((existing as any).isArchived) {
+        throw new ApiError(400, "ORDER_ARCHIVED", `Order '${orderNo}' sudah diarsipkan dan tidak dapat di-rollback.`);
+      }
+
+      const stageList = STAGES as readonly string[];
+      const currentStep = existing.currentStep !== undefined && Number(existing.currentStep) >= 1 && Number(existing.currentStep) <= 8
+        ? Number(existing.currentStep)
+        : (existing.currentStageName ? stageList.indexOf(existing.currentStageName as any) + 1 : 1);
+      const targetStep = stageList.indexOf(targetStage) + 1;
+
+      if (targetStep >= currentStep) {
+        throw new ApiError(
+          400,
+          "INVALID_ROLLBACK",
+          `Tahapan tujuan rollback '${targetStage}' (Step ${targetStep}) harus mendahului tahapan saat ini '${existing.currentStageName}' (Step ${currentStep}).`
+        );
+      }
       const revokedApproval = { ...((existing as any).documentApproval || {}) };
       const revokedFields: string[] = [];
       const rollbackUpdates: Partial<OperationalOrder> = { ...updates };

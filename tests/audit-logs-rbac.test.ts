@@ -24,38 +24,46 @@ test("Audit Log RBAC - Verification of Access Control", async (t) => {
   const baseUrl = `http://127.0.0.1:${address.port}`;
 
   try {
-    // Generate valid tokens for each role
+    const { getDb } = await import("../server/src/database/db");
+    const testDb = getDb();
+    const rows = testDb.prepare("SELECT id, email, jabatan FROM users").all() as any[];
+    const adminUser = rows.find((r: any) => r.jabatan === "ADMIN") || rows[0];
+    const svpUser = rows.find((r: any) => r.jabatan === "SVP") || rows[0];
+    const finUser = rows.find((r: any) => r.jabatan === "FINANCE") || rows[0];
+    const msgUser = rows.find((r: any) => r.jabatan === "MESSENGER") || rows[0];
+
+    // Generate valid tokens for each role using active SQLite users
     const adminToken = generateToken({
-      userId: "usr-admin-01",
-      email: "admin@birojasa.com",
+      userId: String(adminUser.id),
+      email: adminUser.email,
       nama: "Admin Operasional",
       role: "admin",
     });
 
     const svpToken = generateToken({
-      userId: "usr-svp-01",
-      email: "svp@birojasa.com",
+      userId: String(svpUser.id),
+      email: svpUser.email,
       nama: "Supervisor Operasional",
       role: "svp",
     });
 
     const administratorToken = generateToken({
-      userId: "usr-super-01",
-      email: "super@birojasa.com",
+      userId: String(svpUser.id),
+      email: svpUser.email,
       nama: "Super Admin",
       role: "administrator",
     });
 
     const financeToken = generateToken({
-      userId: "usr-fin-01",
-      email: "finance@birojasa.com",
+      userId: String(finUser.id),
+      email: finUser.email,
       nama: "Staf Finance",
       role: "finance",
     });
 
     const messengerToken = generateToken({
-      userId: "usr-msg-01",
-      email: "kurir@birojasa.com",
+      userId: String(msgUser.id),
+      email: msgUser.email,
       nama: "Kurir Lapangan",
       role: "messenger",
     });

@@ -8,14 +8,15 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from ".
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "./ui/table";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "./ui/dialog";
 import { Label } from "./ui/label";
-import { Search, Eye, FileDown, FileText, Printer, Activity, RotateCcw, AlertTriangle, RefreshCw, Loader2 } from "lucide-react";
+import { Search, Eye, FileDown, FileText, Printer, RotateCcw, AlertTriangle, RefreshCw, Loader2, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import { auditLog, AuditLogEntry } from "../utils/auditLog";
+import { exportToCSV, exportToPrintablePDF } from "../utils/exportUtils";
 import { TablePagination } from "./ui/TablePagination";
 import { EmptyState } from "./ui/empty-state";
 
 interface AuditLogProps {
-  currentUserRole: 'administrator' | 'finance' | 'admin' | 'messenger';
+  currentUserRole: 'administrator' | 'finance' | 'admin' | 'messenger' | 'svp' | string;
 }
 
 export function AuditLog({ currentUserRole }: AuditLogProps) {
@@ -30,6 +31,11 @@ export function AuditLog({ currentUserRole }: AuditLogProps) {
   const [isDocumentViewOpen, setIsDocumentViewOpen] = useState(false);
   const [isInvoiceViewOpen, setIsInvoiceViewOpen] = useState(false);
   const [auditTick, setAuditTick] = useState(0);
+
+  // Clear History Modal States
+  const [isClearHistoryOpen, setIsClearHistoryOpen] = useState(false);
+  const [clearConfirmationInput, setClearConfirmationInput] = useState("");
+  const [isClearingHistory, setIsClearingHistory] = useState(false);
 
   // Subscribe to auditLog for real-time reactivity
   useEffect(() => {
@@ -46,7 +52,7 @@ export function AuditLog({ currentUserRole }: AuditLogProps) {
 
   const hasActiveFilters = Boolean(searchTerm || filterRole !== "all" || filterModule !== "all" || filterAction !== "all");
 
-  // Get filtered logs
+  // Get filtered logs (Full dataset scope based on active filters & search)
   const filteredLogs = useMemo(() => {
     let logs = auditLog.getLogs();
 
@@ -73,7 +79,8 @@ export function AuditLog({ currentUserRole }: AuditLogProps) {
 
     return logs;
   }, [searchTerm, filterRole, filterModule, filterAction, auditTick]);
-  const totalPages = Math.ceil(filteredLogs.length / itemsPerPage);
+
+  const totalPages = Math.max(1, Math.ceil(filteredLogs.length / itemsPerPage));
   const startIndex = (currentPage - 1) * itemsPerPage;
   const paginatedLogs = filteredLogs.slice(startIndex, startIndex + itemsPerPage);
 
@@ -85,12 +92,94 @@ export function AuditLog({ currentUserRole }: AuditLogProps) {
     return <span className="text-xs font-medium text-foreground/80">{action}</span>;
   };
 
+  // Full dataset CSV Export with Formula Injection Protection & UTF-8 BOM
   const handleExportCSV = () => {
-    toast.success("Data audit log berhasil diekspor ke CSV!");
+    if (filteredLogs.length === 0) {
+      toast.error("Tidak ada data riwayat untuk diekspor.");
+      return;
+    }
+    const today = new Date().toISOString().split("T")[0];
+    exportToCSV({
+      filename: `riwayat-aktivitas-${today}.csv`,
+      columns: [
+        { header: "No", format: (_, idx) => idx + 1 },
+        { 
+          header: "Waktu", 
+          format: (log) => {
+            const d = log.timestamp instanceof Date ? log.timestamp : new Date(log.timestamp);
+            return `${d.toLocaleDateString('id-ID', { day: '2-digit', month: '2-digit', year: 'numeric' })} ${d.toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}`;
+          }
+        },
+        { header: "Pengguna", key: "userName" },
+        { header: "ID Pengguna", key: "userId" },
+        { header: "Jabatan", key: "userRole" },
+        { header: "Jenis Aksi", key: "action" },
+        { header: "Modul", key: "module" },
+        { header: "Detail Aktivitas", key: "details" },
+      ],
+      data: filteredLogs,
+    });
+    toast.success(`Berhasil mengekspor seluruh ${filteredLogs.length} catatan riwayat ke CSV.`);
   };
 
+  // Official Landscape Print / PDF Export with Repeated Header & Full Filtered Scope
   const handleExportPDF = () => {
-    toast.success("Data audit log berhasil diekspor ke PDF!");
+    if (filteredLogs.length === 0) {
+      toast.error("Tidak ada data riwayat untuk diekspor.");
+      return;
+    }
+    try {
+      exportToPrintablePDF({
+        title: "LAPORAN RIWAYAT AKTIVITAS",
+        subtitle: "Rekam jejak operasional, audit trail, dan aktivitas keamanan sistem",
+        metadata: [
+          { label: "Total Record", value: `${filteredLogs.length} Aktivitas` },
+          { label: "Filter Jabatan", value: filterRole === "all" ? "Semua Jabatan" : filterRole },
+          { label: "Filter Aksi", value: filterAction === "all" ? "Semua Aksi" : filterAction },
+          { label: "Filter Modul", value: filterModule === "all" ? "Semua Modul" : filterModule },
+          { label: "Pencarian", value: searchTerm || "Semua Data" },
+        ],
+        columns: [
+          { header: "No", width: "40px", align: "center", format: (_, idx) => idx + 1 },
+          { 
+            header: "Waktu", 
+            width: "130px",
+            format: (log) => {
+              const d = log.timestamp instanceof Date ? log.timestamp : new Date(log.timestamp);
+              return `${d.toLocaleDateString('id-ID', { day: '2-digit', month: 'short', year: 'numeric' })} ${d.toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' })}`;
+            }
+          },
+          { header: "Pengguna", width: "135px", key: "userName" },
+          { header: "Jabatan", width: "100px", align: "center", format: (log) => `<span class="badge">${log.userRole}</span>` },
+          { header: "Aksi", width: "85px", align: "center", format: (log) => `<span class="badge">${log.action}</span>` },
+          { header: "Modul", width: "115px", key: "module" },
+          { header: "Detail Aktivitas", key: "details" },
+        ],
+        data: filteredLogs,
+      });
+      toast.success(`Membuka dokumen cetak untuk ${filteredLogs.length} catatan riwayat...`);
+    } catch (err: any) {
+      toast.error(err?.message || "Gagal membuka jendela cetak PDF.");
+    }
+  };
+
+  // Permanent Clear History Execution
+  const isClearConfirmationValid = clearConfirmationInput === "Hapus riwayat aktivitas";
+
+  const handleExecuteClearHistory = async () => {
+    if (!isClearConfirmationValid) return;
+    setIsClearingHistory(true);
+    try {
+      const res = await auditLog.clearLogsOnServer();
+      toast.success(res.message || "Riwayat aktivitas berhasil dibersihkan secara permanen.");
+      setIsClearHistoryOpen(false);
+      setClearConfirmationInput("");
+      setCurrentPage(1);
+    } catch (err: any) {
+      toast.error(err?.message || "Gagal membersihkan riwayat aktivitas dari database.");
+    } finally {
+      setIsClearingHistory(false);
+    }
   };
 
   const handleViewDocument = () => {
@@ -168,7 +257,8 @@ export function AuditLog({ currentUserRole }: AuditLogProps) {
             </Button>
           </div>
         )}
-        {/* Filters and Export Toolbar */}
+
+        {/* Filters, Search, and Action Toolbar */}
         <div className="flex flex-col lg:flex-row gap-2.5 justify-between items-stretch lg:items-center shrink-0">
           <div className="flex items-center gap-2 flex-wrap">
             <Select 
@@ -222,15 +312,44 @@ export function AuditLog({ currentUserRole }: AuditLogProps) {
               </Button>
             )}
 
-            <div className="flex gap-1.5">
-              <Button variant="outline" size="sm" onClick={handleExportCSV} className="border-border text-xs h-8 px-2.5 gap-1.5">
+            <div className="flex items-center gap-1.5">
+              <Button 
+                variant="outline" 
+                size="sm" 
+                onClick={handleExportCSV} 
+                className="border-border text-xs h-8 px-2.5 gap-1.5"
+                title="Ekspor seluruh record hasil filter ke CSV"
+              >
                 <FileDown className="w-3.5 h-3.5" />
                 <span>CSV</span>
               </Button>
-              <Button variant="outline" size="sm" onClick={handleExportPDF} className="border-border text-xs h-8 px-2.5 gap-1.5">
+              <Button 
+                variant="outline" 
+                size="sm" 
+                onClick={handleExportPDF} 
+                className="border-border text-xs h-8 px-2.5 gap-1.5"
+                title="Cetak atau simpan seluruh record ke dokumen PDF resmi"
+              >
                 <FileDown className="w-3.5 h-3.5" />
                 <span>PDF</span>
               </Button>
+
+              {/* Permanent Clear History Button (Administrator & SVP) */}
+              {(currentUserRole === "administrator" || currentUserRole === "svp") && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => {
+                    setClearConfirmationInput("");
+                    setIsClearHistoryOpen(true);
+                  }}
+                  className="border-rose-500/30 text-rose-600 dark:text-rose-400 hover:bg-rose-500/10 hover:text-rose-700 text-xs h-8 px-2.5 gap-1.5 shrink-0"
+                  title="Hapus riwayat aktivitas secara permanen dari database"
+                >
+                  <Trash2 className="w-3.5 h-3.5" />
+                  <span>Clear Riwayat</span>
+                </Button>
+              )}
             </div>
           </div>
 
@@ -248,91 +367,192 @@ export function AuditLog({ currentUserRole }: AuditLogProps) {
           </div>
         </div>
 
-        {/* Table */}
+        {/* Standardized Table View */}
         <div className="rounded-lg border border-border bg-card overflow-hidden shadow-2xs flex-1 flex flex-col min-h-0">
           <div className="w-full flex-1 flex flex-col min-h-0">
             <Table 
               containerClassName="overflow-y-auto overflow-x-auto max-h-[calc(100vh-270px)] sm:max-h-[calc(100vh-280px)] min-h-[160px]"
-              className={`w-full min-w-[700px] ${paginatedLogs.length === 0 ? "h-full" : ""}`}
+              className={`w-full min-w-[780px] ${paginatedLogs.length === 0 ? "h-full" : ""}`}
             >
               <TableHeader className="sticky top-0 z-10 bg-card border-b border-border shadow-2xs">
                 <TableRow className="hover:bg-transparent">
-                  <TableHead className="h-9 px-3.5 text-xs font-semibold text-foreground/80 min-w-[110px] bg-card">Waktu</TableHead>
-                  <TableHead className="h-9 px-3.5 text-xs font-semibold text-foreground/80 bg-card">Pengguna</TableHead>
-                  <TableHead className="h-9 px-3.5 text-xs font-semibold text-foreground/80 text-center bg-card">Jabatan</TableHead>
-                  <TableHead className="h-9 px-3.5 text-xs font-semibold text-foreground/80 text-center bg-card">Jenis Aksi</TableHead>
-                  <TableHead className="h-9 px-3.5 text-xs font-semibold text-foreground/80 bg-card">Modul</TableHead>
-                  <TableHead className="h-9 px-3.5 text-xs font-semibold text-foreground/80 bg-card">Detail</TableHead>
-                  <TableHead className="h-9 px-2 text-xs font-semibold text-foreground/80 text-center w-[75px] bg-card">Aksi</TableHead>
+                  <TableHead className="w-[50px] text-center text-xs h-9 font-semibold text-foreground/80 bg-card px-2">No</TableHead>
+                  <TableHead className="w-[135px] text-xs h-9 font-semibold text-foreground/80 bg-card px-3.5">Waktu</TableHead>
+                  <TableHead className="w-[145px] text-xs h-9 font-semibold text-foreground/80 bg-card px-3.5">Pengguna</TableHead>
+                  <TableHead className="w-[105px] text-center text-xs h-9 font-semibold text-foreground/80 bg-card px-3.5">Jabatan</TableHead>
+                  <TableHead className="w-[95px] text-center text-xs h-9 font-semibold text-foreground/80 bg-card px-3.5">Jenis Aksi</TableHead>
+                  <TableHead className="w-[125px] text-xs h-9 font-semibold text-foreground/80 bg-card px-3.5">Modul</TableHead>
+                  <TableHead className="min-w-[220px] text-xs h-9 font-semibold text-foreground/80 bg-card px-3.5">Detail</TableHead>
+                  <TableHead className="w-[65px] text-center text-xs h-9 font-semibold text-foreground/80 bg-card px-2">Aksi</TableHead>
                 </TableRow>
               </TableHeader>
-            <TableBody>
-              {paginatedLogs.length > 0 ? (
-                paginatedLogs.map((log) => (
-                  <TableRow key={log.id} className="hover:bg-muted/30 transition-colors border-b border-border/60 last:border-0 h-10">
-                    <TableCell className="px-3.5 py-2 text-xs text-muted-foreground whitespace-nowrap">
-                      <span className="font-normal text-foreground/90">
-                        {log.timestamp.toLocaleDateString('id-ID', { day: '2-digit', month: 'short', year: 'numeric' })}
-                      </span>
-                      {" "}
-                      <span className="text-[11px] text-muted-foreground/75 font-mono">
-                        {log.timestamp.toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' })}
-                      </span>
-                    </TableCell>
-                    <TableCell className="px-3.5 py-2 text-xs font-normal text-foreground/90">{log.userName}</TableCell>
-                    <TableCell className="px-3.5 py-2 text-xs text-center">{getRoleBadge(log.userRole)}</TableCell>
-                    <TableCell className="px-3.5 py-2 text-xs text-center">{getActionBadge(log.action)}</TableCell>
-                    <TableCell className="px-3.5 py-2 text-xs font-normal text-foreground/90">{log.module}</TableCell>
-                    <TableCell className="px-3.5 py-2 text-xs max-w-xs truncate text-muted-foreground">{log.details}</TableCell>
-                    <TableCell className="px-2 py-1.5 text-center">
-                      <div className="flex items-center justify-center">
-                        <Button
-                          size="sm"
-                          variant="ghost"
-                          className="h-7 w-7 p-0 text-muted-foreground hover:text-foreground hover:bg-secondary/50 rounded transition-colors"
-                          onClick={() => {
-                            setSelectedLog(log);
-                            setIsViewDialogOpen(true);
-                          }}
-                          title="Lihat Detail"
-                          aria-label="Lihat detail"
-                        >
-                          <Eye className="w-3.5 h-3.5" />
-                        </Button>
-                      </div>
+              <TableBody>
+                {paginatedLogs.length > 0 ? (
+                  paginatedLogs.map((log, idx) => {
+                    const globalIndex = startIndex + idx + 1;
+                    const logDate = log.timestamp instanceof Date ? log.timestamp : new Date(log.timestamp);
+                    return (
+                      <TableRow key={log.id} className="hover:bg-muted/30 transition-colors border-b border-border/60 last:border-0 h-10">
+                        <TableCell className="w-[50px] text-center text-xs text-muted-foreground font-mono px-2 py-2 align-middle">
+                          {globalIndex}
+                        </TableCell>
+                        <TableCell className="w-[135px] px-3.5 py-2 text-xs text-muted-foreground whitespace-nowrap align-middle">
+                          <span className="font-normal text-foreground/90">
+                            {logDate.toLocaleDateString('id-ID', { day: '2-digit', month: 'short', year: 'numeric' })}
+                          </span>
+                          {" "}
+                          <span className="text-[11px] text-muted-foreground/75 font-mono">
+                            {logDate.toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' })}
+                          </span>
+                        </TableCell>
+                        <TableCell className="w-[145px] px-3.5 py-2 text-xs font-normal text-foreground/90 align-middle">
+                          {log.userName}
+                        </TableCell>
+                        <TableCell className="w-[105px] px-3.5 py-2 text-xs text-center align-middle">
+                          {getRoleBadge(log.userRole)}
+                        </TableCell>
+                        <TableCell className="w-[95px] px-3.5 py-2 text-xs text-center align-middle">
+                          {getActionBadge(log.action)}
+                        </TableCell>
+                        <TableCell className="w-[125px] px-3.5 py-2 text-xs font-normal text-foreground/90 align-middle">
+                          {log.module}
+                        </TableCell>
+                        <TableCell className="min-w-[220px] px-3.5 py-2 text-xs text-foreground/80 align-middle break-words">
+                          {log.details}
+                        </TableCell>
+                        <TableCell className="w-[65px] px-2 py-1.5 text-center align-middle">
+                          <div className="flex items-center justify-center">
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              className="h-7 w-7 p-0 text-muted-foreground hover:text-foreground hover:bg-secondary/50 rounded transition-colors"
+                              onClick={() => {
+                                setSelectedLog(log);
+                                setIsViewDialogOpen(true);
+                              }}
+                              title="Lihat Detail"
+                              aria-label="Lihat detail aktivitas"
+                            >
+                              <Eye className="w-3.5 h-3.5" />
+                            </Button>
+                          </div>
+                        </TableCell>
+                      </TableRow>
+                    );
+                  })
+                ) : (
+                  <TableRow className="h-full hover:bg-transparent">
+                    <TableCell colSpan={8} className="text-center py-8 align-middle p-0">
+                      <EmptyState
+                        title="Tidak ada data aktivitas"
+                        description="Belum ada riwayat aktivitas yang cocok dengan pencarian atau filter saat ini."
+                      />
                     </TableCell>
                   </TableRow>
-                ))
-              ) : (
-                <TableRow className="h-full hover:bg-transparent">
-                  <TableCell colSpan={7} className="text-center py-8 align-middle p-0">
-                    <EmptyState
-                      title="Tidak ada data aktivitas"
-                      description="Belum ada riwayat aktivitas yang cocok dengan pencarian atau filter saat ini."
-                    />
-                  </TableCell>
-                </TableRow>
-              )}
-            </TableBody>
-          </Table>
-        </div>
+                )}
+              </TableBody>
+            </Table>
+          </div>
 
-        {/* Standardized Table Pagination */}
-        <div className="border-t border-border/80 p-3 bg-card shrink-0 mt-auto">
-          <TablePagination
-            currentPage={currentPage}
-            totalItems={filteredLogs.length}
-            itemsPerPage={itemsPerPage}
-            onPageChange={setCurrentPage}
-            onItemsPerPageChange={(newSize) => {
-              setItemsPerPage(newSize);
-              setCurrentPage(1);
-            }}
-            pageSizeOptions={[10, 25, 50, 100]}
-          />
+          {/* Standardized Table Pagination */}
+          <div className="border-t border-border/80 p-3 bg-card shrink-0 mt-auto">
+            <TablePagination
+              currentPage={currentPage}
+              totalItems={filteredLogs.length}
+              itemsPerPage={itemsPerPage}
+              onPageChange={setCurrentPage}
+              onItemsPerPageChange={(newSize) => {
+                setItemsPerPage(newSize);
+                setCurrentPage(1);
+              }}
+              pageSizeOptions={[10, 25, 50, 100]}
+            />
+          </div>
         </div>
-      </div>
       </Card>
+
+      {/* Permanent Clear History Confirmation Dialog */}
+      <Dialog open={isClearHistoryOpen} onOpenChange={setIsClearHistoryOpen}>
+        <DialogContent className="border-border sm:max-w-md">
+          <DialogHeader>
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-full bg-rose-500/10 flex items-center justify-center text-rose-600 dark:text-rose-400 shrink-0">
+                <AlertTriangle className="w-5 h-5" />
+              </div>
+              <div>
+                <DialogTitle className="text-base font-semibold text-rose-600 dark:text-rose-400">
+                  Hapus Permanen Riwayat Aktivitas
+                </DialogTitle>
+                <DialogDescription className="text-xs text-muted-foreground">
+                  Tindakan ini tidak dapat dibatalkan
+                </DialogDescription>
+              </div>
+            </div>
+          </DialogHeader>
+
+          <div className="space-y-4 py-2">
+            <div className="p-3 bg-rose-500/10 border border-rose-500/20 rounded-lg text-xs space-y-1.5 text-rose-700 dark:text-rose-400">
+              <p className="font-semibold flex items-center gap-1.5">
+                <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
+                Peringatan Kerusakan Permanen
+              </p>
+              <p className="text-[11px] leading-relaxed text-muted-foreground">
+                Seluruh {filteredLogs.length} catatan riwayat aktivitas operasional akan dihapus permanen dari database SQLite. Tindakan ini tidak dapat dipulihkan atau di-undo.
+              </p>
+            </div>
+
+            <div className="space-y-2">
+              <Label htmlFor="confirm-clear" className="text-xs font-medium text-foreground">
+                Ketik <span className="font-mono font-bold text-foreground bg-muted px-1 py-0.5 rounded border border-border">Hapus riwayat aktivitas</span> untuk mengonfirmasi:
+              </Label>
+              <Input
+                id="confirm-clear"
+                placeholder="Hapus riwayat aktivitas"
+                value={clearConfirmationInput}
+                onChange={(e) => setClearConfirmationInput(e.target.value)}
+                className="h-8 text-xs bg-background border-border font-medium"
+                autoComplete="off"
+              />
+            </div>
+          </div>
+
+          <DialogFooter className="mt-2 gap-2 flex justify-end">
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={() => {
+                setIsClearHistoryOpen(false);
+                setClearConfirmationInput("");
+              }}
+              disabled={isClearingHistory}
+              className="h-8 text-xs border-border"
+            >
+              Batal
+            </Button>
+            <Button
+              type="button"
+              variant="destructive"
+              size="sm"
+              disabled={!isClearConfirmationValid || isClearingHistory}
+              onClick={handleExecuteClearHistory}
+              className="h-8 text-xs bg-rose-600 hover:bg-rose-700 text-white gap-1.5 font-medium"
+            >
+              {isClearingHistory ? (
+                <>
+                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                  <span>Membersihkan...</span>
+                </>
+              ) : (
+                <>
+                  <Trash2 className="w-3.5 h-3.5" />
+                  <span>Hapus Riwayat Sekarang</span>
+                </>
+              )}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       {/* View Log Detail Dialog */}
       <Dialog open={isViewDialogOpen} onOpenChange={setIsViewDialogOpen}>
@@ -348,10 +568,10 @@ export function AuditLog({ currentUserRole }: AuditLogProps) {
                 <div className="space-y-1">
                   <Label className="text-xs font-medium text-foreground/80">Waktu</Label>
                   <p className="text-xs text-foreground/90 font-medium">
-                    {selectedLog.timestamp.toLocaleDateString('id-ID', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}
+                    {(selectedLog.timestamp instanceof Date ? selectedLog.timestamp : new Date(selectedLog.timestamp)).toLocaleDateString('id-ID', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}
                     <br />
                     <span className="text-muted-foreground font-mono">
-                      {selectedLog.timestamp.toLocaleTimeString('id-ID')}
+                      {(selectedLog.timestamp instanceof Date ? selectedLog.timestamp : new Date(selectedLog.timestamp)).toLocaleTimeString('id-ID')}
                     </span>
                   </p>
                 </div>
@@ -467,7 +687,6 @@ export function AuditLog({ currentUserRole }: AuditLogProps) {
             <DialogDescription className="text-xs text-muted-foreground">Cetak invoice untuk customer</DialogDescription>
           </DialogHeader>
 
-          {/* Invoice Content */}
           <div className="bg-white text-black p-6 rounded-lg border border-border mt-3" id="invoice-content">
             <div className="flex justify-between mb-4">
               <div>

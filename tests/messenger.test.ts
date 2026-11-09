@@ -13,8 +13,8 @@ test("Messenger - karyawanPenggunaAdapter returns active messengers", () => {
     .map((k) => k.nama);
 
   assert.ok(activeMessengers.length > 0, "Should have active messengers");
-  assert.ok(activeMessengers.includes("Rudi Hartono"), "Rudi Hartono should be an active messenger");
-  assert.ok(activeMessengers.includes("Joko Prasetyo"), "Joko Prasetyo should be an active messenger");
+  assert.ok(activeMessengers.includes("Budi Santoso"), "Budi Santoso should be an active messenger");
+  assert.ok(activeMessengers.includes("Andi Pratama"), "Andi Pratama should be an active messenger");
 });
 
 test("Messenger - KNOWN_MESSENGERS fallback contains predefined messengers", () => {

@@ -56,6 +56,8 @@ import { usePaymentMethods } from "../data/paymentMethodStore";
 import { pricingStore, usePricingStore } from "../data/pricingStore";
 import { WILAYAH_ADMINISTRATIF_LIST } from "../../domain/pricing/wilayahIndonesiaData";
 import { cn } from "./ui/utils";
+import { APP_CONFIG } from "../config/appConfig";
+import { classifyActionError } from "../utils/actionErrorClassifier";
 
 export interface FieldConfig {
   key: string;
@@ -130,7 +132,7 @@ interface FinanceAddPageProps {
   category?: string;
   fields?: FieldConfig[];
   onBack: () => void;
-  onSubmit: (rows: any[]) => void;
+  onSubmit: (rows: any[]) => Promise<any> | void;
   isEdit?: boolean;
   initialData?: any;
 }
@@ -441,6 +443,8 @@ export function FinanceAddPage({
   const [validationErrors, setValidationErrors] = useState<string[]>([]);
   const [isValidationAlertOpen, setIsValidationAlertOpen] = useState(false);
   const [isSaveConfirmOpen, setIsSaveConfirmOpen] = useState(false);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const isSubmittingRef = useRef(false);
 
   // Address completion toggle per row (State: hasAddress, default: false unless address already exists)
   const [hasAddress, setHasAddress] = useState<Record<number, boolean>>(() => {
@@ -854,7 +858,11 @@ export function FinanceAddPage({
               fileUrl = uploaded.fileUrl || fileUrl;
             }
           } catch (uploadErr) {
-            console.warn("[FinanceAddPage] Server upload fallback to local preview:", uploadErr);
+            if (APP_CONFIG.dataProvider === "api") {
+              const classified = classifyActionError(uploadErr, { entityLabel: "Dokumen" });
+              throw new Error(`${file.name}: ${classified.message}`);
+            }
+            console.warn("[FinanceAddPage] Server upload fallback to local preview (mock mode):", uploadErr);
           }
         }
 
@@ -879,7 +887,8 @@ export function FinanceAddPage({
         `${files.length} berkas ${isAwal ? "Dokumen Masuk (INBOUND)" : "Dokumen Keluar (OUTBOUND)"} berhasil ditambahkan.`
       );
     } catch (err: any) {
-      toast.error(err?.message || `Gagal memproses berkas dokumen`);
+      const classified = classifyActionError(err, { entityLabel: "Dokumen" });
+      toast.error(classified.message || "Gagal mengunggah berkas dokumen ke server.");
     } finally {
       setUploading((prev) => ({ ...prev, [rowIndex]: false }));
     }
@@ -937,15 +946,20 @@ export function FinanceAddPage({
 
   const handleRemoveDoc = async (rowIndex: number, type: "dokumenAwal" | "dokumenAkhir", docId: string) => {
     const currentList = Array.isArray(rows[rowIndex][type]) ? rows[rowIndex][type] : [];
-    const updated = currentList.filter((d: UploadedDocItem) => d.id !== docId);
-    handleFieldChange(rowIndex, type, updated);
     if (docId && !docId.startsWith("doc-") && !docId.startsWith("data:")) {
       try {
         await documentRepository.deleteDocument(docId);
       } catch (err) {
-        console.warn("[FinanceAddPage] Server document delete non-fatal error:", err);
+        if (APP_CONFIG.dataProvider === "api") {
+          const classified = classifyActionError(err, { entityLabel: "Dokumen" });
+          toast.error(classified.message || "Gagal menghapus dokumen dari server.");
+          return;
+        }
+        console.warn("[FinanceAddPage] Server document delete non-fatal error (mock mode):", err);
       }
     }
+    const updated = currentList.filter((d: UploadedDocItem) => d.id !== docId);
+    handleFieldChange(rowIndex, type, updated);
     toast.success("Berkas dokumen dihapus dari daftar");
   };
 
@@ -986,8 +1000,10 @@ export function FinanceAddPage({
     document.body.removeChild(a);
   };
 
-  const executeActualSubmit = () => {
-    setIsSaveConfirmOpen(false);
+  const executeActualSubmit = async () => {
+    if (isSubmitting || isSubmittingRef.current) return;
+    isSubmittingRef.current = true;
+    setIsSubmitting(true);
 
     // Format all date fields and compile structured addresses
     const formattedRows = rows.map((row, idx) => {
@@ -1161,13 +1177,29 @@ export function FinanceAddPage({
       return formatted;
     });
 
-    setCustomHeader(null);
-    setNavigationGuard(null);
-    onSubmit(formattedRows);
+    try {
+      const result = await onSubmit(formattedRows);
+      if (result === false || (result && typeof result === "object" && result.success === false)) {
+        // Mutation failed on backend or store validation: close confirmation modal
+        // while keeping the form open and all user inputs preserved.
+        setIsSaveConfirmOpen(false);
+        return;
+      }
+
+      setIsSaveConfirmOpen(false);
+      setCustomHeader(null);
+      setNavigationGuard(null);
+    } catch {
+      setIsSaveConfirmOpen(false);
+    } finally {
+      isSubmittingRef.current = false;
+      setIsSubmitting(false);
+    }
   };
 
   const handleSubmit = (e?: React.FormEvent) => {
     if (e) e.preventDefault();
+    if (isSubmitting || isSubmittingRef.current) return;
 
     const errors: string[] = [];
     for (let i = 0; i < rows.length; i++) {
@@ -2789,6 +2821,7 @@ export function FinanceAddPage({
               type="button"
               variant="outline"
               size="sm"
+              disabled={isSubmitting}
               onClick={handleCancelClick}
               className="text-xs h-9 px-3.5 w-full sm:w-auto gap-1.5"
             >
@@ -2800,6 +2833,7 @@ export function FinanceAddPage({
                 type="button"
                 variant="outline"
                 size="sm"
+                disabled={isSubmitting}
                 onClick={handleAddRow}
                 className="border-dashed border-primary/40 text-primary hover:bg-primary/5 text-xs h-9 px-3.5 flex items-center gap-1.5 font-medium w-full sm:w-auto"
               >
@@ -2812,11 +2846,21 @@ export function FinanceAddPage({
           <div className="flex items-center gap-2.5 w-full sm:w-auto">
             <Button
               type="submit"
+              disabled={isSubmitting}
               onClick={handleSubmit}
-              className="w-full sm:w-auto bg-primary text-primary-foreground hover:bg-primary/90 text-xs h-9 px-5 font-semibold shadow-xs flex items-center justify-center gap-1.5"
+              className="w-full sm:w-auto bg-primary text-primary-foreground hover:bg-primary/90 text-xs h-9 px-5 font-semibold shadow-xs flex items-center justify-center gap-1.5 disabled:opacity-60 disabled:cursor-not-allowed"
             >
-              <CheckCircle2 className="w-4 h-4" />
-              <span>{isEdit ? "Simpan Perubahan" : "Simpan Data Penjualan"}</span>
+              {isSubmitting ? (
+                <>
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                  <span>Menyimpan...</span>
+                </>
+              ) : (
+                <>
+                  <CheckCircle2 className="w-4 h-4" />
+                  <span>{isEdit ? "Simpan Perubahan" : "Simpan Data Penjualan"}</span>
+                </>
+              )}
             </Button>
           </div>
         </div>
@@ -2887,7 +2931,12 @@ export function FinanceAddPage({
       </AlertDialog>
 
       {/* Save Confirmation Dialog */}
-      <AlertDialog open={isSaveConfirmOpen} onOpenChange={setIsSaveConfirmOpen}>
+      <AlertDialog
+        open={isSaveConfirmOpen}
+        onOpenChange={(open) => {
+          if (!isSubmitting) setIsSaveConfirmOpen(open);
+        }}
+      >
         <AlertDialogContent className="border-border sm:max-w-md bg-card">
           <AlertDialogHeader>
             <AlertDialogTitle className="text-base font-semibold text-foreground flex items-center gap-2">
@@ -2900,19 +2949,30 @@ export function FinanceAddPage({
           </AlertDialogHeader>
           <AlertDialogFooter className="mt-4 gap-2 flex items-center justify-end sm:justify-end w-full">
             <Button
+              type="button"
               size="sm"
               variant="outline"
+              disabled={isSubmitting}
               className="h-8.5 text-xs font-medium"
               onClick={() => setIsSaveConfirmOpen(false)}
             >
               Batal
             </Button>
             <Button
+              type="button"
               size="sm"
-              className="h-8.5 text-xs font-semibold bg-primary hover:bg-primary/90 text-primary-foreground"
+              disabled={isSubmitting}
+              className="h-8.5 text-xs font-semibold bg-primary hover:bg-primary/90 text-primary-foreground flex items-center gap-1.5 disabled:opacity-60 disabled:cursor-not-allowed"
               onClick={executeActualSubmit}
             >
-              Ya, Simpan
+              {isSubmitting ? (
+                <>
+                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                  <span>Menyimpan...</span>
+                </>
+              ) : (
+                "Ya, Simpan"
+              )}
             </Button>
           </AlertDialogFooter>
         </AlertDialogContent>

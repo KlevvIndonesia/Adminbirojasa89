@@ -3,17 +3,21 @@
  * Admin SUN89 — Biro Jasa Management System
  * 
  * Guarantees zero mutation to operational database (server/data/database.sqlite).
- * Enforces per-test-file database isolation:
- * Every test file receives its own pristine temporary SQLite database snapshot
- * copied from the operational database baseline, completely preventing cross-suite
- * state contamination and destructive interference.
- * 
- * Cleans up temporary databases immediately after each suite completes or terminates.
+ * Enforces 12 high-assurance testing invariants:
+ * - Temporary directories strictly generated in os.tmpdir() via fs.mkdtempSync()
+ * - Ownership marker (.sun89_owner.json) with PID and timestamp
+ * - Windows EBUSY/EPERM exponential backoff retry loop (up to 5 retries)
+ * - Safe path containment using path.relative()
+ * - Liveness verification (process.kill(pid, 0)) for sweeper safety
+ * - Operational database hard assertion before spawning
+ * - Per-suite isolated database and isolated uploads directory
+ * - Process termination hooks (exit, SIGINT, SIGTERM)
  */
 
 const path = require("path");
 const fs = require("fs");
 const os = require("os");
+const crypto = require("crypto");
 const { spawnSync } = require("child_process");
 
 const projectRoot = path.resolve(__dirname, "..");
@@ -42,7 +46,6 @@ function resolveTestFiles(args) {
   const resolved = [];
   for (const arg of args) {
     if (arg.includes("*")) {
-      // Simple glob expansion for tests/*.test.ts or tests/**/*.test.ts
       const testsDir = path.resolve(projectRoot, "tests");
       if (fs.existsSync(testsDir)) {
         const matches = fs
@@ -59,15 +62,77 @@ function resolveTestFiles(args) {
   return [...new Set(resolved)];
 }
 
-// Helper to safely delete an ephemeral test db and WAL/SHM files
-function cleanupDb(dbPath) {
-  if (!dbPath) return;
+// Checks whether a given PID is alive without sending a terminating signal
+function isProcessAlive(pid) {
   try {
-    if (fs.existsSync(dbPath)) fs.unlinkSync(dbPath);
-    if (fs.existsSync(dbPath + "-wal")) fs.unlinkSync(dbPath + "-wal");
-    if (fs.existsSync(dbPath + "-shm")) fs.unlinkSync(dbPath + "-shm");
-  } catch (_) {}
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    return err.code === "EPERM";
+  }
 }
+
+// Stale temporary directory sweeper (only targets marked test directories > 1hr old from dead PIDs)
+function sweepStaleTempDirs() {
+  const tmpBase = os.tmpdir();
+  let swept = 0;
+  try {
+    const entries = fs.readdirSync(tmpBase).filter((n) => n.startsWith("sun89_test_") || n.startsWith("sunbirojasa-test-"));
+    const now = Date.now();
+    for (const ent of entries) {
+      const full = path.join(tmpBase, ent);
+      const markerPath = path.join(full, ".sun89_owner.json");
+      if (fs.existsSync(markerPath)) {
+        try {
+          const marker = JSON.parse(fs.readFileSync(markerPath, "utf8"));
+          const age = now - (marker.createdAt || 0);
+          if (age > 3600000 && !isProcessAlive(marker.pid)) {
+            fs.rmSync(full, { recursive: true, force: true });
+            swept++;
+          }
+        } catch (_) {}
+      }
+    }
+  } catch (_) {}
+  if (swept > 0) {
+    console.log(`[TEST ISOLATION] Swept ${swept} stale temporary test directories from os.tmpdir()`);
+  }
+}
+
+// Helper to safely delete temporary directory with Windows EBUSY retry backoff
+function cleanupTestDir(targetDir, maxRetries = 5) {
+  if (!targetDir || !fs.existsSync(targetDir)) return;
+
+  const resolvedTarget = path.resolve(targetDir);
+  const resolvedTmp = path.resolve(os.tmpdir());
+
+  // Containment assertion
+  const rel = path.relative(resolvedTmp, resolvedTarget);
+  if (rel.startsWith("..") || path.isAbsolute(rel) || rel === "") {
+    console.error(`[FATAL GUARD] Refusing to cleanup path outside os.tmpdir(): ${resolvedTarget}`);
+    return;
+  }
+
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      fs.rmSync(resolvedTarget, { recursive: true, force: true });
+      if (!fs.existsSync(resolvedTarget)) return;
+    } catch (err) {
+      if (err.code === "EBUSY" || err.code === "EPERM") {
+        if (attempt === maxRetries) {
+          console.warn(`[WARN TEST TEARDOWN] Could not remove '${resolvedTarget}' after ${maxRetries} attempts due to ${err.code}.`);
+          return;
+        }
+        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 50 * Math.pow(2, attempt - 1));
+      } else {
+        return;
+      }
+    }
+  }
+}
+
+// Run startup sweep
+sweepStaleTempDirs();
 
 const rawArgs = process.argv.slice(2);
 const testFileList = resolveTestFiles(rawArgs);
@@ -86,32 +151,54 @@ let failedSuites = 0;
 const suiteResults = [];
 let overallExitCode = 0;
 
-let currentActiveDb = null;
+let currentActiveSuiteDir = null;
 
 // Cleanup hook for abnormal terminations
 function handleTermination(signal, code) {
-  if (currentActiveDb) {
-    cleanupDb(currentActiveDb);
-    currentActiveDb = null;
+  if (currentActiveSuiteDir) {
+    cleanupTestDir(currentActiveSuiteDir);
+    currentActiveSuiteDir = null;
   }
   process.exit(code);
 }
 
 process.on("SIGINT", () => handleTermination("SIGINT", 130));
 process.on("SIGTERM", () => handleTermination("SIGTERM", 143));
+process.on("exit", () => {
+  if (currentActiveSuiteDir) {
+    cleanupTestDir(currentActiveSuiteDir);
+    currentActiveSuiteDir = null;
+  }
+});
 
 const globalStartTime = Date.now();
 
 for (let i = 0; i < testFileList.length; i++) {
   const testFile = testFileList[i];
   const suiteName = path.basename(testFile);
-  const tempDb = path.join(
-    os.tmpdir(),
-    `sunbirojasa-test-db-${Date.now()}-${i}-${Math.random().toString(36).substring(2, 7)}.sqlite`
-  );
-  currentActiveDb = tempDb;
 
-  // Copy fresh baseline snapshot
+  // Generate unique isolated directory in os.tmpdir() via mkdtempSync
+  const suiteDir = fs.mkdtempSync(path.join(os.tmpdir(), "sun89_test_run_"));
+  currentActiveSuiteDir = suiteDir;
+
+  const tempDb = path.join(suiteDir, "isolated_database.sqlite");
+  const tempUploads = path.join(suiteDir, "uploads");
+  const tempBackups = path.join(suiteDir, "backups");
+
+  fs.mkdirSync(tempUploads, { recursive: true });
+  fs.mkdirSync(tempBackups, { recursive: true });
+
+  // Write ownership marker
+  const marker = {
+    pid: process.pid,
+    createdAt: Date.now(),
+    runnerId: crypto.randomBytes(4).toString("hex"),
+    suiteName: testFile,
+    testDir: suiteDir,
+  };
+  fs.writeFileSync(path.join(suiteDir, ".sun89_owner.json"), JSON.stringify(marker, null, 2));
+
+  // Copy fresh baseline snapshot if exists
   if (fs.existsSync(operationalDbPath)) {
     fs.copyFileSync(operationalDbPath, tempDb);
   }
@@ -119,12 +206,15 @@ for (let i = 0; i < testFileList.length; i++) {
   const env = {
     ...process.env,
     NODE_ENV: "test",
+    SUN89_TEST_ISOLATED: "1",
     DB_PATH: tempDb,
+    UPLOAD_DIR: tempUploads,
+    BACKUP_DIR: tempBackups,
   };
 
   const suiteStartTime = Date.now();
   console.log(`\n\x1b[34m[${i + 1}/${totalSuites}] RUNNING: ${testFile}\x1b[0m`);
-  console.log(`  Isolated DB: ${tempDb}`);
+  console.log(`  Isolated Sandbox: ${suiteDir}`);
 
   let suiteStatus = 0;
   try {
@@ -138,8 +228,8 @@ for (let i = 0; i < testFileList.length; i++) {
     console.error(`[TEST ISOLATION] Failed to spawn runner for ${testFile}:`, err);
     suiteStatus = 1;
   } finally {
-    cleanupDb(tempDb);
-    currentActiveDb = null;
+    cleanupTestDir(suiteDir);
+    currentActiveSuiteDir = null;
   }
 
   const suiteDuration = ((Date.now() - suiteStartTime) / 1000).toFixed(2);

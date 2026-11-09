@@ -9,6 +9,11 @@ import { AdditionalProcessItem, CustomCostItem } from "../../domain/order/types"
 import { pricingStore, resolveSamsatId } from "./pricingStore";
 import { auditLog } from "../utils/auditLog";
 import { APP_CONFIG } from "../config/appConfig";
+import {
+  ActionApiError,
+  fetchWithTimeout,
+  parseApiErrorResponse,
+} from "../utils/actionErrorClassifier";
 
 import {
   MessengerTaskType,
@@ -750,10 +755,10 @@ export function resolveMessengerEmployeeId(messengerName?: string): string | und
   }
   const cleanName = messengerName.toLowerCase().trim();
   if (cleanName.includes("budi")) {
-    return "EMP-MSG-001";
+    return "EMP-0004";
   }
   if (cleanName.includes("andi")) {
-    return "EMP-MSG-002";
+    return "EMP-0005";
   }
   if (cleanName.includes("ahmad")) {
     return "EMP-MSG-003";
@@ -789,6 +794,15 @@ export function isTaskAssignedToMessenger(
 
   // 1. Direct employeeId match
   if (cleanEmpId && empId.toLowerCase() === cleanEmpId.toLowerCase()) {
+    return true;
+  }
+  // Canonical alias matching for couriers Budi & Andi
+  if (
+    (cleanEmpId.toLowerCase() === "emp-0004" && empId.toLowerCase() === "emp-msg-001") ||
+    (cleanEmpId.toLowerCase() === "emp-msg-001" && empId.toLowerCase() === "emp-0004") ||
+    (cleanEmpId.toLowerCase() === "emp-0005" && empId.toLowerCase() === "emp-msg-002") ||
+    (cleanEmpId.toLowerCase() === "emp-msg-002" && empId.toLowerCase() === "emp-0005")
+  ) {
     return true;
   }
   // 2. Direct userId match
@@ -2270,14 +2284,40 @@ export function reportSamsatPickupKendalaAction(
 export async function recoverSamsatPickupKendalaAction(
   orderNo: string,
   user: UserContext
-): Promise<{ success: boolean; error?: string }> {
+): Promise<{
+  success: boolean;
+  error?: string;
+  code?: string;
+  statusCode?: number;
+  errorObj?: ActionApiError;
+}> {
   const order = orderStore.getOrderByNo(orderNo);
-  if (!order) return { success: false, error: `Order ${orderNo} tidak ditemukan` };
+  if (!order) {
+    const errObj = new ActionApiError(404, "NOT_FOUND", `Order ${orderNo} tidak ditemukan.`);
+    return {
+      success: false,
+      error: errObj.message,
+      code: errObj.code,
+      statusCode: errObj.statusCode,
+      errorObj: errObj,
+    };
+  }
 
   const role = (user.role || "").toLowerCase();
   const isAdmin = role === "administrator" || role === "admin" || role === "svp";
   if (!isAdmin) {
-    return { success: false, error: "Hanya Admin atau Supervisor yang berwenang memulihkan status Kendala." };
+    const errObj = new ActionApiError(
+      403,
+      "FORBIDDEN",
+      "Hanya Admin atau Supervisor yang berwenang memulihkan status Kendala."
+    );
+    return {
+      success: false,
+      error: errObj.message,
+      code: errObj.code,
+      statusCode: errObj.statusCode,
+      errorObj: errObj,
+    };
   }
 
   // Idempotency: Already recovered
@@ -2285,45 +2325,97 @@ export async function recoverSamsatPickupKendalaAction(
     return { success: true };
   }
   if (order.samsatPickupStatus !== "Terkendala") {
-    return { success: false, error: `Order ${orderNo} tidak dalam status Terkendala.` };
+    const errObj = new ActionApiError(
+      422,
+      "BUSINESS_RULE_VIOLATION",
+      `Order ${orderNo} tidak dalam status Terkendala.`
+    );
+    return {
+      success: false,
+      error: errObj.message,
+      code: errObj.code,
+      statusCode: errObj.statusCode,
+      errorObj: errObj,
+    };
   }
 
-  // Single authoritative Backend API call
-  let backendOrder: OperationalOrder | null = null;
   const authHeaders = getAuthHeader();
-  if (authHeaders.Authorization) {
+  const shouldCallApi = APP_CONFIG.dataProvider === "api" || Boolean(authHeaders.Authorization);
+
+  if (shouldCallApi) {
     try {
-      const res = await fetch(`${APP_CONFIG.apiBaseUrl}/orders/${encodeURIComponent(orderNo)}/samsat-pickup/recover`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          ...authHeaders,
+      const res = await fetchWithTimeout(
+        `${APP_CONFIG.apiBaseUrl}/orders/${encodeURIComponent(orderNo)}/samsat-pickup/recover`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            ...authHeaders,
+          },
         },
-      });
+        15000
+      );
       if (!res.ok) {
-        const errData = await res.json().catch(() => ({}));
+        const apiErr = await parseApiErrorResponse(
+          res,
+          `Gagal memulihkan kendala order ${orderNo}.`
+        );
         return {
           success: false,
-          error: errData.error || errData.message || `Gagal memulihkan kendala (HTTP ${res.status})`,
+          error: apiErr.message,
+          code: apiErr.code,
+          statusCode: apiErr.statusCode,
+          errorObj: apiErr,
         };
       }
+
       const data = await res.json().catch(() => ({}));
-      if (data?.data) {
-        backendOrder = data.data;
+      const backendOrder: OperationalOrder | undefined = data?.data;
+      if (backendOrder && typeof backendOrder === "object") {
+        const provider: any = (orderStore as any).repository?.getProvider?.();
+        if (provider && typeof provider.applyServerOrderSnapshot === "function") {
+          provider.applyServerOrderSnapshot(orderNo, backendOrder);
+        } else {
+          orderStore.updateOrder(orderNo, backendOrder);
+        }
+        return { success: true };
       }
+
+      return { success: true };
     } catch (apiErr: any) {
-      console.warn("Backend API call failed for recoverSamsatPickupKendala:", apiErr);
-      return { success: false, error: apiErr.message || "Gagal menghubungi server untuk memulihkan kendala." };
+      if (apiErr instanceof ActionApiError || apiErr?.isActionApiError) {
+        const normalizedErr =
+          apiErr instanceof ActionApiError
+            ? apiErr
+            : new ActionApiError(
+                apiErr.statusCode ?? 500,
+                apiErr.code || "INTERNAL_SERVER_ERROR",
+                apiErr.message || `Gagal memulihkan kendala order ${orderNo}.`
+              );
+        return {
+          success: false,
+          error: normalizedErr.message,
+          code: normalizedErr.code,
+          statusCode: normalizedErr.statusCode,
+          errorObj: normalizedErr,
+        };
+      }
+      const netErr = new ActionApiError(
+        0,
+        "NETWORK_ERROR",
+        apiErr?.message || "Tidak dapat terhubung ke server untuk memulihkan kendala."
+      );
+      return {
+        success: false,
+        error: netErr.message,
+        code: netErr.code,
+        statusCode: netErr.statusCode,
+        errorObj: netErr,
+      };
     }
   }
 
-  // Update orderStore with authoritative server state (preserves server-generated timeline)
-  if (backendOrder) {
-    orderStore.updateOrder(orderNo, backendOrder);
-    return { success: true };
-  }
-
-  // Standalone / fallback mode without live backend connection (e.g. unit tests)
+  // Offline / standalone mock-mode fallback
   const nowIso = new Date().toISOString();
   const timelineEvent: MessengerTimelineEvent = {
     id: `tl-recover-pickup-${Date.now()}`,
@@ -2349,7 +2441,22 @@ export async function recoverSamsatPickupKendalaAction(
     messengerTimeline: [timelineEvent, ...(order.messengerTimeline || [])],
   } as any);
 
-  return { success, error: success ? undefined : "Gagal memulihkan kendala penjemputan hasil Samsat" };
+  if (!success) {
+    const errObj = new ActionApiError(
+      500,
+      "INTERNAL_SERVER_ERROR",
+      "Gagal memulihkan kendala penjemputan hasil Samsat."
+    );
+    return {
+      success: false,
+      error: errObj.message,
+      code: errObj.code,
+      statusCode: errObj.statusCode,
+      errorObj: errObj,
+    };
+  }
+
+  return { success: true };
 }
 
 /**

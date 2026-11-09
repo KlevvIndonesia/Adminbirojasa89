@@ -39,6 +39,7 @@ import {
   verifyDisasterRecovery,
 } from "../server/src/utils/backupRestore";
 import { initializeSchema } from "../server/src/database/schema";
+import { createIsolatedTestWorkspace } from "../server/src/testing/testIsolationHelper";
 
 function startTestServer(): Promise<{ server: http.Server; baseUrl: string }> {
   return new Promise((resolve) => {
@@ -170,12 +171,10 @@ test("Operational 3: Readiness probe validates SQLite connection and writable pe
 // Test 4: Database Atomic Backup (VACUUM INTO) and Restore Verification
 // -----------------------------------------------------------------------------
 test("Operational 4: Database backup produces verified crash-consistent snapshot and restores cleanly", () => {
-  const testBackupDir = path.resolve(process.cwd(), "server/backups_test");
-  if (!fs.existsSync(testBackupDir)) {
-    fs.mkdirSync(testBackupDir, { recursive: true });
-  }
-
+  const workspace = createIsolatedTestWorkspace("operational_4_backup");
+  const testBackupDir = workspace.backupsDir;
   const backupFile = path.join(testBackupDir, `test_db_${Date.now()}.sqlite`);
+  let restoredDb: DatabaseSync | null = null;
 
   try {
     // 1. Execute VACUUM INTO backup
@@ -191,17 +190,13 @@ test("Operational 4: Database backup produces verified crash-consistent snapshot
     assert.strictEqual(restoreRes.integrity, "ok");
 
     // 3. Inspect restored DB contents
-    const restoredDb = new DatabaseSync(tempRestorePath);
-    try {
-      const orderCount = restoredDb.prepare("SELECT COUNT(*) as cnt FROM orders").get() as { cnt: number };
-      assert.ok(orderCount.cnt > 0);
-    } finally {
-      restoredDb.close();
-    }
+    restoredDb = new DatabaseSync(tempRestorePath);
+    const orderCount = restoredDb.prepare("SELECT COUNT(*) as cnt FROM orders").get() as { cnt: number };
+    assert.ok(orderCount.cnt > 0);
+    restoredDb.close();
+    restoredDb = null;
   } finally {
-    if (fs.existsSync(testBackupDir)) {
-      fs.rmSync(testBackupDir, { recursive: true, force: true });
-    }
+    workspace.cleanupSync([restoredDb]);
   }
 });
 
@@ -209,16 +204,14 @@ test("Operational 4: Database backup produces verified crash-consistent snapshot
 // Test 5: Document Storage Backup, Restore & Disaster Recovery Verification (15-step sequence)
 // -----------------------------------------------------------------------------
 test("Operational 5: Complete 15-step isolated backup, restore and disaster recovery workflow", async () => {
-  const testIsoDir = path.resolve(process.cwd(), `server/iso_dr_${Date.now()}`);
+  const workspace = createIsolatedTestWorkspace("operational_5_disaster_recovery");
+  const testIsoDir = workspace.testDir;
   const testDbPath = path.join(testIsoDir, "origin_db.sqlite");
-  const testUploadsDir = path.join(testIsoDir, "origin_uploads");
-  const testBackupDir = path.join(testIsoDir, "backup_vault");
+  const testUploadsDir = workspace.uploadsDir;
+  const testBackupDir = workspace.backupsDir;
   const restoredDbPath = path.join(testIsoDir, "restored_db.sqlite");
   const restoredUploadsDir = path.join(testIsoDir, "restored_uploads");
 
-  fs.mkdirSync(testIsoDir, { recursive: true });
-  fs.mkdirSync(testUploadsDir, { recursive: true });
-  fs.mkdirSync(testBackupDir, { recursive: true });
   fs.mkdirSync(restoredUploadsDir, { recursive: true });
 
   const dummyContent = Buffer.from("%PDF-1.4 sample file for disaster recovery test");
@@ -227,9 +220,12 @@ test("Operational 5: Complete 15-step isolated backup, restore and disaster reco
   const storageName = `${docId}_stnk.pdf`;
   const orderNo = `ORD-DR-${Date.now()}`;
 
+  let originDb: DatabaseSync | null = null;
+  let restoredDb: DatabaseSync | null = null;
+
   try {
     // 1. Create temporary test database
-    const originDb = new DatabaseSync(testDbPath);
+    originDb = new DatabaseSync(testDbPath);
     initializeSchema(originDb);
 
     // 2. Create known application data (order)
@@ -283,6 +279,7 @@ test("Operational 5: Complete 15-step isolated backup, restore and disaster reco
     const dbBackupFile = path.join(testBackupDir, "db_snapshot.sqlite");
     originDb.exec(`VACUUM INTO '${dbBackupFile.replace(/'/g, "''")}';`);
     originDb.close();
+    originDb = null;
 
     const uploadsBackupDir = path.join(testBackupDir, "uploads");
     fs.mkdirSync(uploadsBackupDir, { recursive: true });
@@ -311,53 +308,46 @@ test("Operational 5: Complete 15-step isolated backup, restore and disaster reco
     assert.strictEqual(drCheck.missingFiles.length, 0);
     assert.strictEqual(drCheck.mismatchedHashes.length, 0);
 
-    const restoredDb = new DatabaseSync(restoredDbPath);
-    try {
-      // 11. Retrieve restored order
-      const restoredOrder = restoredDb.prepare("SELECT * FROM orders WHERE order_no = ?").get(orderNo) as any;
-      assert.ok(restoredOrder, "Restored order must exist");
-      assert.strictEqual(restoredOrder.order_no, orderNo);
-      assert.strictEqual(restoredOrder.customer, "Budi Santoso DR");
+    restoredDb = new DatabaseSync(restoredDbPath);
 
-      // 12. Retrieve restored document metadata
-      const restoredDoc = restoredDb.prepare("SELECT * FROM documents WHERE id = ?").get(docId) as any;
-      assert.ok(restoredDoc, "Restored document metadata must exist");
-      assert.strictEqual(restoredDoc.id, docId);
-      assert.strictEqual(restoredDoc.order_no, orderNo);
-      assert.strictEqual(restoredDoc.sha256, dummySha);
+    // 11. Retrieve restored order
+    const restoredOrder = restoredDb.prepare("SELECT * FROM orders WHERE order_no = ?").get(orderNo) as any;
+    assert.ok(restoredOrder, "Restored order must exist");
+    assert.strictEqual(restoredOrder.order_no, orderNo);
+    assert.strictEqual(restoredOrder.customer, "Budi Santoso DR");
 
-      // 13. Obtain fresh document access ticket
-      const ticketService = new DocumentTicketService(60);
-      const ticketResult = ticketService.createTicket(docId, {
-        userId: "1",
-        email: "svp@birojasa.com",
-        nama: "Admin Super (SVP)",
-        jabatan: "administrator",
-      }, "preview");
-      assert.ok(ticketResult.ticket.startsWith("tkt_"));
+    // 12. Retrieve restored document metadata
+    const restoredDoc = restoredDb.prepare("SELECT * FROM documents WHERE id = ?").get(docId) as any;
+    assert.ok(restoredDoc, "Restored document metadata must exist");
+    assert.strictEqual(restoredDoc.id, docId);
+    assert.strictEqual(restoredDoc.order_no, orderNo);
+    assert.strictEqual(restoredDoc.sha256, dummySha);
 
-      const val = ticketService.validateTicket(ticketResult.ticket, docId, "preview");
-      assert.strictEqual(val.valid, true);
+    // 13. Obtain fresh document access ticket
+    const ticketService = new DocumentTicketService(60);
+    const ticketResult = ticketService.createTicket(docId, {
+      userId: "1",
+      email: "svp@birojasa.com",
+      nama: "Admin Super (SVP)",
+      jabatan: "administrator",
+    }, "preview");
+    assert.ok(ticketResult.ticket.startsWith("tkt_"));
 
-      // 14. Preview / download restored document bytes from recovered storage
-      const restoredFile = path.join(restoredUploadsDir, restoredDoc.storage_name);
-      assert.ok(fs.existsSync(restoredFile));
-      const restoredBytes = fs.readFileSync(restoredFile);
+    const val = ticketService.validateTicket(ticketResult.ticket, docId, "preview");
+    assert.strictEqual(val.valid, true);
 
-      // 15. Verify SHA-256 matches exact pre-disaster hash
-      const restoredHash = crypto.createHash("sha256").update(restoredBytes).digest("hex");
-      assert.strictEqual(restoredHash, dummySha);
-    } finally {
-      restoredDb.close();
-    }
+    // 14. Preview / download restored document bytes from recovered storage
+    const restoredFile = path.join(restoredUploadsDir, restoredDoc.storage_name);
+    assert.ok(fs.existsSync(restoredFile));
+    const restoredBytes = fs.readFileSync(restoredFile);
+
+    // 15. Verify SHA-256 matches exact pre-disaster hash
+    const restoredHash = crypto.createHash("sha256").update(restoredBytes).digest("hex");
+    assert.strictEqual(restoredHash, dummySha);
+    restoredDb.close();
+    restoredDb = null;
   } finally {
-    if (fs.existsSync(testIsoDir)) {
-      try {
-        fs.rmSync(testIsoDir, { recursive: true, force: true });
-      } catch {
-        // Safe to ignore on Windows file lock cooldown
-      }
-    }
+    await workspace.cleanup([originDb, restoredDb]);
   }
 });
 

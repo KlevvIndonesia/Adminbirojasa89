@@ -7,13 +7,13 @@ export function resolveApiBaseUrl(): string {
   if (typeof import.meta !== "undefined" && (import.meta as any).env?.VITE_API_BASE_URL) {
     return (import.meta as any).env.VITE_API_BASE_URL;
   }
+  // In browser environment: default to relative "/api" to utilize Vite proxy or same-origin serving
+  if (typeof window !== "undefined") {
+    return "/api";
+  }
+  // In Node.js / CLI / Test environments: absolute URL is required for fetch
   if (typeof process !== "undefined" && process.env?.API_BASE_URL) {
     return process.env.API_BASE_URL;
-  }
-  if (typeof window !== "undefined") {
-    if (window.location.hostname !== "localhost" && window.location.hostname !== "127.0.0.1") {
-      return "/api";
-    }
   }
   return "http://localhost:3001/api";
 }

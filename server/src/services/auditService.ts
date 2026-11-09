@@ -28,6 +28,16 @@ export class AuditService {
     dbAuditRepository.save(newLog);
     return newLog;
   }
+
+  public clearLogs(user?: TokenPayload | null, ip?: string): { deletedCount: number } {
+    const executor = {
+      userId: user ? user.userId : "usr-admin-system",
+      userName: user ? user.nama : "Administrator",
+      userRole: user ? user.role : "administrator",
+      ip: ip,
+    };
+    return dbAuditRepository.clearAllLogs(executor);
+  }
 }
 
 export const auditService = new AuditService();

@@ -32,6 +32,7 @@ export interface IOrderRepository {
   clearArchivedOrders(): boolean;
   cancelOrder?(orderNo: string, reason?: string): boolean | Promise<boolean>;
   verifyPayment(orderNo: string, verifierName?: string, confirmedAmount?: number, notes?: string, proofPayload?: any): boolean;
+  verifyPaymentAsync?(orderNo: string, verifierName?: string, confirmedAmount?: number, notes?: string, proofPayload?: any): Promise<OperationalOrder>;
   setProvider?(provider: IOrderDataProvider): void;
   getProvider?(): IOrderDataProvider;
   getIsLoading?(): boolean;
@@ -249,6 +250,26 @@ export class OrderRepository implements IOrderRepository {
         riwayatKoreksiPembayaran: riwayat,
       },
     });
+  }
+
+  public async verifyPaymentAsync(
+    orderNo: string,
+    verifierName: string = "Admin",
+    confirmedAmount?: number,
+    notes?: string,
+    proofPayload?: any
+  ): Promise<OperationalOrder> {
+    if (typeof (this.provider as any).verifyPaymentAsync === "function") {
+      return await (this.provider as any).verifyPaymentAsync(orderNo, verifierName, confirmedAmount, notes, proofPayload);
+    }
+    const ok = this.verifyPayment(orderNo, verifierName, confirmedAmount, notes, proofPayload);
+    if (!ok) {
+      const err: any = new Error(`Order '${orderNo}' tidak ditemukan.`);
+      err.statusCode = 404;
+      err.code = "NOT_FOUND";
+      throw err;
+    }
+    return this.getByOrderNo(orderNo)!;
   }
 
   public async initFromApi(): Promise<void> {

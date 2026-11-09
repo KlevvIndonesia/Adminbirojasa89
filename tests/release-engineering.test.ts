@@ -25,7 +25,9 @@ import { initializeSchema } from "../server/src/database/schema";
 import { packageRelease } from "../scripts/package-release";
 import { backupDatabase, restoreDatabase, backupUploads, restoreUploads, verifyDisasterRecovery } from "../server/src/utils/backupRestore";
 import { DocumentTicketService } from "../server/src/services/documentTicketService";
+import { getDb } from "../server/src/database/db";
 import { runSmokeTests } from "../scripts/smoke-test";
+import { createIsolatedTestWorkspace } from "../server/src/testing/testIsolationHelper";
 
 function startTestServerWithCustomApp(customApp: any): Promise<{ server: http.Server; baseUrl: string }> {
   return new Promise((resolve) => {
@@ -116,12 +118,12 @@ test("Release 2: Database and storage path resolution is strictly deterministic 
 // Test 3: Idempotent and Non-Destructive Database Schema Initialization
 // -----------------------------------------------------------------------------
 test("Release 3: Database schema initialization is idempotent and non-destructive on populated database", () => {
-  const testDir = path.resolve(process.cwd(), `server/idempotent_test_${Date.now()}`);
-  fs.mkdirSync(testDir, { recursive: true });
-  const testDbPath = path.join(testDir, "test.sqlite");
+  const workspace = createIsolatedTestWorkspace("release_3_idempotent");
+  const testDbPath = workspace.dbPath;
+  let testDb: DatabaseSync | null = null;
 
   try {
-    const testDb = new DatabaseSync(testDbPath);
+    testDb = new DatabaseSync(testDbPath);
 
     // 1. Initial schema execution
     initializeSchema(testDb);
@@ -183,16 +185,8 @@ test("Release 3: Database schema initialization is idempotent and non-destructiv
     const doc = testDb.prepare("SELECT * FROM documents WHERE id = ?").get("DOC-INIT-001") as any;
     assert.ok(doc, "Document must remain after re-running initializeSchema");
     assert.strictEqual(doc.order_no, "ORD-INIT-001");
-
-    testDb.close();
   } finally {
-    if (fs.existsSync(testDir)) {
-      try {
-        fs.rmSync(testDir, { recursive: true, force: true });
-      } catch {
-        // ignore
-      }
-    }
+    workspace.cleanupSync([testDb]);
   }
 });
 
@@ -200,22 +194,22 @@ test("Release 3: Database schema initialization is idempotent and non-destructiv
 // Test 4: Release Upgrade Simulation (Release N -> Backup -> Release N+1)
 // -----------------------------------------------------------------------------
 test("Release 4: Release upgrade simulation preserves operational data, documents, and integrity", async () => {
-  const upgradeZone = path.resolve(process.cwd(), `server/upgrade_zone_${Date.now()}`);
-  const persistentDbPath = path.join(upgradeZone, "data/database.sqlite");
-  const persistentUploadsDir = path.join(upgradeZone, "uploads");
-  const persistentBackupsDir = path.join(upgradeZone, "backups");
-
-  fs.mkdirSync(path.join(upgradeZone, "data"), { recursive: true });
-  fs.mkdirSync(persistentUploadsDir, { recursive: true });
-  fs.mkdirSync(persistentBackupsDir, { recursive: true });
+  const workspace = createIsolatedTestWorkspace("release_4_upgrade");
+  const persistentDbPath = workspace.dbPath;
+  const persistentUploadsDir = workspace.uploadsDir;
+  const persistentBackupsDir = workspace.backupsDir;
 
   const dummyPdfContent = Buffer.from("%PDF-1.4 sample file for release upgrade test");
   const dummySha = crypto.createHash("sha256").update(dummyPdfContent).digest("hex");
   const docStorageName = "upgrade_test_doc.pdf";
 
+  let dbN: DatabaseSync | null = null;
+  let preDb: DatabaseSync | null = null;
+  let dbNPlus1: DatabaseSync | null = null;
+
   try {
     // 1. Establish Release N State
-    const dbN = new DatabaseSync(persistentDbPath);
+    dbN = new DatabaseSync(persistentDbPath);
     initializeSchema(dbN);
 
     // Populate Order and Document
@@ -257,15 +251,17 @@ test("Release 4: Release upgrade simulation preserves operational data, document
       1
     );
     dbN.close();
+    dbN = null;
 
     // 2. Pre-Upgrade Backup (Standard Operating Procedure)
     const backupDbFile = path.join(persistentBackupsDir, "pre_upgrade_db.sqlite");
-    const preDb = new DatabaseSync(persistentDbPath);
+    preDb = new DatabaseSync(persistentDbPath);
     preDb.exec(`VACUUM INTO '${backupDbFile.replace(/'/g, "''")}';`);
     preDb.close();
+    preDb = null;
 
     // 3. Deploy Release N+1 (Simulate new software version starting on existing persistent datastore)
-    const dbNPlus1 = new DatabaseSync(persistentDbPath);
+    dbNPlus1 = new DatabaseSync(persistentDbPath);
     initializeSchema(dbNPlus1); // Idempotent schema run for Release N+1
 
     // 4. Verify post-upgrade data accessibility
@@ -277,6 +273,7 @@ test("Release 4: Release upgrade simulation preserves operational data, document
     assert.ok(verifiedDoc, "Document metadata must exist in Release N+1");
     assert.strictEqual(verifiedDoc.sha256, dummySha);
     dbNPlus1.close();
+    dbNPlus1 = null;
 
     // 5. Verify physical document access & ticket generation
     const ticketService = new DocumentTicketService(60);
@@ -295,13 +292,7 @@ test("Release 4: Release upgrade simulation preserves operational data, document
     const diskSha = crypto.createHash("sha256").update(fs.readFileSync(docFileOnDisk)).digest("hex");
     assert.strictEqual(diskSha, dummySha);
   } finally {
-    if (fs.existsSync(upgradeZone)) {
-      try {
-        fs.rmSync(upgradeZone, { recursive: true, force: true });
-      } catch {
-        // ignore
-      }
-    }
+    await workspace.cleanup([dbN, preDb, dbNPlus1]);
   }
 });
 
@@ -309,16 +300,17 @@ test("Release 4: Release upgrade simulation preserves operational data, document
 // Test 5: Release Rollback Simulation (Release N+1 -> Detect Failure -> Rollback)
 // -----------------------------------------------------------------------------
 test("Release 5: Release rollback simulation successfully reverts to previous artifact and snapshot on failure", () => {
-  const rollbackZone = path.resolve(process.cwd(), `server/rollback_zone_${Date.now()}`);
-  const persistentDbPath = path.join(rollbackZone, "database.sqlite");
-  const backupSnapshotPath = path.join(rollbackZone, "snapshot_release_n.sqlite");
-  const failedDbPath = path.join(rollbackZone, "corrupted_release_n_plus_1.sqlite");
+  const workspace = createIsolatedTestWorkspace("release_5_rollback");
+  const persistentDbPath = workspace.dbPath;
+  const backupSnapshotPath = path.join(workspace.backupsDir, "snapshot_release_n.sqlite");
+  const failedDbPath = path.join(workspace.backupsDir, "corrupted_release_n_plus_1.sqlite");
 
-  fs.mkdirSync(rollbackZone, { recursive: true });
+  let dbN: DatabaseSync | null = null;
+  let rolledBackDb: DatabaseSync | null = null;
 
   try {
     // 1. Release N: Initial healthy database
-    const dbN = new DatabaseSync(persistentDbPath);
+    dbN = new DatabaseSync(persistentDbPath);
     initializeSchema(dbN);
     dbN.prepare(`
       INSERT INTO orders (order_no, customer, nomor_hp, layanan, nopol, current_step, current_stage_name, payment_status, total_biaya, is_archived, data_json, samsat_tujuan_id)
@@ -328,6 +320,7 @@ test("Release 5: Release rollback simulation successfully reverts to previous ar
     // Create snapshot of Release N before attempting upgrade
     dbN.exec(`VACUUM INTO '${backupSnapshotPath.replace(/'/g, "''")}';`);
     dbN.close();
+    dbN = null;
 
     // 2. Simulate failed upgrade Release N+1 that corrupted the active database
     fs.writeFileSync(persistentDbPath, Buffer.from("CRITICAL_ERROR_CORRUPTED_DATABASE_DURING_FAILED_MIGRATION"));
@@ -342,19 +335,14 @@ test("Release 5: Release rollback simulation successfully reverts to previous ar
     assert.strictEqual(restoreRes.integrity, "ok");
 
     // 4. Restart against restored Release N database
-    const rolledBackDb = new DatabaseSync(persistentDbPath);
+    rolledBackDb = new DatabaseSync(persistentDbPath);
     const restoredOrder = rolledBackDb.prepare("SELECT * FROM orders WHERE order_no = ?").get("ORD-STABLE-001") as any;
     assert.ok(restoredOrder, "Stable order ORD-STABLE-001 must be intact after rollback");
     assert.strictEqual(restoredOrder.customer, "Stable Customer");
     rolledBackDb.close();
+    rolledBackDb = null;
   } finally {
-    if (fs.existsSync(rollbackZone)) {
-      try {
-        fs.rmSync(rollbackZone, { recursive: true, force: true });
-      } catch {
-        // ignore
-      }
-    }
+    workspace.cleanupSync([dbN, rolledBackDb]);
   }
 });
 
@@ -393,8 +381,45 @@ test("Release 6: Production failure behavior fails fast on invalid secrets and r
 // Test 7: Live Smoke Test Verification
 // -----------------------------------------------------------------------------
 test("Release 7: Post-deployment smoke test suite verifies live system availability and security boundaries", async () => {
-  // Execute smoke tests against the currently running server instances
-  const { success, results } = await runSmokeTests("http://localhost:3001", "http://localhost:3000");
-  assert.strictEqual(success, true, "All 10 smoke test steps must pass cleanly");
-  assert.strictEqual(results.length, 10);
+  // 1. Ensure upload directory and physical document files exist for smoke test streaming
+  if (!fs.existsSync(CONFIG.UPLOAD_DIR)) {
+    fs.mkdirSync(CONFIG.UPLOAD_DIR, { recursive: true });
+  }
+  const activeDb = getDb();
+  const sampleDocRows = (activeDb.prepare("SELECT storage_name, size_bytes FROM documents WHERE storage_name IS NOT NULL").all() as any[]);
+  for (const row of sampleDocRows) {
+    if (row.storage_name) {
+      const p = path.join(CONFIG.UPLOAD_DIR, row.storage_name);
+      if (!fs.existsSync(p)) {
+        fs.writeFileSync(p, Buffer.alloc(Number(row.size_bytes) || 64, 0x41));
+      }
+    }
+  }
+
+  // 2. Start an ephemeral in-process test backend server
+  const testApp = createApp();
+  const { server: bServer, baseUrl: backendUrl } = await startTestServerWithCustomApp(testApp);
+
+  // 3. Start an ephemeral static frontend server that serves SPA HTML
+  const fServer = http.createServer((req, res) => {
+    res.writeHead(200, { "Content-Type": "text/html" });
+    res.end("<!DOCTYPE html><html><head><title>Admin SUN89</title></head><body><div id='root'></div></body></html>");
+  });
+  const frontendUrl = await new Promise<string>((resolve) => {
+    fServer.listen(0, () => {
+      const addr = fServer.address();
+      const port = typeof addr === "object" && addr ? addr.port : 0;
+      resolve(`http://localhost:${port}`);
+    });
+  });
+
+  try {
+    const { success, results } = await runSmokeTests(backendUrl, frontendUrl);
+    console.log("SMOKE TEST RESULTS:\n", JSON.stringify(results, null, 2));
+    assert.strictEqual(success, true, "All 10 smoke test steps must pass cleanly");
+    assert.strictEqual(results.length, 10);
+  } finally {
+    await new Promise<void>((resolve) => bServer.close(() => resolve()));
+    await new Promise<void>((resolve) => fServer.close(() => resolve()));
+  }
 });

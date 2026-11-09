@@ -74,8 +74,8 @@ export function restoreDatabase(backupPath: string, targetPath?: string): { succ
     throw new Error(`Backup file does not exist at: ${backupPath}`);
   }
 
-  // 1. Verify backup file integrity before restoring
-  const tempDb = new DatabaseSync(backupPath);
+  // 1. Verify backup file integrity before restoring (read-only SQLite connection)
+  const tempDb = new DatabaseSync(backupPath, { readOnly: true });
   let integrity = "unknown";
   try {
     const row = tempDb.prepare("PRAGMA integrity_check;").get() as { integrity_check?: string };
@@ -185,7 +185,8 @@ export function verifyDisasterRecovery(
     throw new Error(`Uploads directory not found at: ${uploadsDirPath}`);
   }
 
-  const verifyDb = new DatabaseSync(dbFilePath);
+  // Use read-only SQLite connection for disaster recovery integrity check
+  const verifyDb = new DatabaseSync(dbFilePath, { readOnly: true });
   let dbIntegrity = "unknown";
   const missingFiles: string[] = [];
   const mismatchedHashes: string[] = [];

@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useMemo } from "react";
+import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { useParams, useNavigate, useLocation } from "react-router";
 import { Card } from "./ui/card";
 import { EnhancedTableWithDialogs, Column } from "./EnhancedTableWithDialogs";
@@ -6,6 +6,13 @@ import { FinanceAddPage } from "./FinanceAddPage";
 import { FinanceDetailPage } from "./FinanceDetailPage";
 import { InvoiceA5Dialog } from "./InvoiceA5Dialog";
 import { FinanceSummary } from "./finance/FinanceSummary";
+import {
+  MutationFeedbackDialog,
+  classifyMutationError,
+  MutationFeedbackType,
+} from "./finance/MutationFeedbackDialog";
+import { ActionInlineError } from "./ui/ActionInlineError";
+import { ClassifiedActionError, classifyActionError } from "../utils/actionErrorClassifier";
 import { toast } from "sonner";
 import { AlertTriangle, Loader2, ChevronDown, Check } from "lucide-react";
 import { formatRupiah } from "../utils/financeFormatters";
@@ -138,14 +145,30 @@ export function DataPenjualan() {
   // Central Single Source of Truth
   const {
     getContractData,
-    updateContractData,
-    addContractData,
+    updateContractDataAsync,
+    addContractDataAsync,
     deleteContractData,
   } = useFinanceStore();
+
+  const isMutatingRef = useRef(false);
+  const [feedbackDialog, setFeedbackDialog] = useState<{
+    open: boolean;
+    type: MutationFeedbackType;
+    title: string;
+    message: string;
+    field?: string;
+    code?: string;
+  }>({
+    open: false,
+    type: "success",
+    title: "",
+    message: "",
+  });
 
   const [deleteTargetItem, setDeleteTargetItem] = useState<any>(null);
   const [deleteConfirmText, setDeleteConfirmText] = useState("");
   const [isSubmittingDelete, setIsSubmittingDelete] = useState(false);
+  const [deleteError, setDeleteError] = useState<ClassifiedActionError | null>(null);
   const [isLoadingData, setIsLoadingData] = useState(false);
 
   useEffect(() => {
@@ -172,16 +195,24 @@ export function DataPenjualan() {
   const handleInitiateDelete = (item: any) => {
     setDeleteTargetItem(item);
     setDeleteConfirmText("");
+    setDeleteError(null);
   };
 
   const handleConfirmDelete = async () => {
-    if (!deleteTargetItem) return;
+    if (!deleteTargetItem || isSubmittingDelete) return;
     if (deleteConfirmText.trim() !== "HAPUS DATA") {
-      toast.error('Ketik "HAPUS DATA" untuk mengonfirmasi penghapusan.');
+      setDeleteError(
+        classifyActionError({
+          statusCode: 400,
+          code: "VALIDATION_ERROR",
+          message: 'Ketik "HAPUS DATA" sama persis untuk mengonfirmasi penghapusan.',
+        })
+      );
       return;
     }
     try {
       setIsSubmittingDelete(true);
+      setDeleteError(null);
       let orderNo: string | null =
         deleteTargetItem.orderNo ||
         deleteTargetItem["Nomor Order"] ||
@@ -205,25 +236,29 @@ export function DataPenjualan() {
 
       const cleanNo = orderNo ? orderNo.trim().toUpperCase() : String(deleteTargetItem.id);
 
-      // 1. Delete from finance store & contract datasets
+      // Single authoritative backend delete + local finance/order reconciliation
       if (typeof (financeStore as any).deleteContractDataAsync === "function") {
-        await (financeStore as any).deleteContractDataAsync(currentMeta.category, deleteTargetItem.id);
+        await (financeStore as any).deleteContractDataAsync(
+          currentMeta.category,
+          deleteTargetItem.id,
+          orderNo ? cleanNo : undefined
+        );
       } else {
         deleteContractData(currentMeta.category, deleteTargetItem.id);
-      }
-
-      // 2. Delete from order store & physically write to SQLite
-      if (typeof (orderStore as any).deleteOrder === "function") {
-        await (orderStore as any).deleteOrder(cleanNo);
-      } else if (typeof (orderStore as any).deleteArchivedOrder === "function") {
-        (orderStore as any).deleteArchivedOrder(cleanNo);
+        if (orderNo && typeof (orderStore as any).deleteOrder === "function") {
+          await (orderStore as any).deleteOrder(cleanNo);
+        } else if (typeof (orderStore as any).deleteArchivedOrder === "function") {
+          (orderStore as any).deleteArchivedOrder(cleanNo);
+        }
       }
 
       toast.success(`Data transaksi ${cleanNo} berhasil dihapus permanen.`);
       setDeleteTargetItem(null);
       setDeleteConfirmText("");
+      setDeleteError(null);
     } catch (err: any) {
-      toast.error(err?.message || "Gagal menghapus data transaksi.");
+      const classified = classifyActionError(err, { entityLabel: "Data transaksi" });
+      setDeleteError(classified);
     } finally {
       setIsSubmittingDelete(false);
     }
@@ -266,20 +301,57 @@ export function DataPenjualan() {
   const activeFilteredData = filteredPenjualanData ?? tabData;
   const totals = computeDataPenjualanTotals(activeFilteredData, activeTab);
 
-  // Handle Add Submit
-  const handleAddSubmit = useCallback((rows: any[]) => {
-    try {
-      const success = addContractData(currentMeta.category, rows);
-      if (success) {
-        setIsAdding(false);
-        toast.success(`${rows.length} order kanonis berhasil ditambahkan dan disimpan`);
-      } else {
-        toast.error("Gagal menambahkan data: Pastikan Nama Customer, Nomor Polisi, dan Nomor HP (min. 9 digit) terisi lengkap");
+  // Handle Add Submit (Awaits backend confirmation before success feedback or closing form)
+  const handleAddSubmit = useCallback(
+    async (rows: any[]) => {
+      if (isMutatingRef.current) {
+        return { success: false };
       }
-    } catch (err: any) {
-      toast.error(err?.message || "Terjadi kesalahan saat menyimpan data order");
-    }
-  }, [currentMeta.category, addContractData]);
+      isMutatingRef.current = true;
+      try {
+        const result = await addContractDataAsync(currentMeta.category, rows);
+        if (result.success) {
+          await Promise.allSettled([
+            orderStore.initFromApi(),
+            financeStore.initFromApi(),
+          ]);
+          setIsAdding(false);
+          setFeedbackDialog({
+            open: true,
+            type: "success",
+            title: "Data Berhasil Ditambahkan",
+            message: "Data penjualan berhasil ditambahkan.",
+          });
+          return { success: true };
+        } else {
+          const classified = classifyMutationError(result.error);
+          setFeedbackDialog({
+            open: true,
+            type: "error",
+            title: classified.title,
+            message: classified.message,
+            field: classified.field,
+            code: classified.code,
+          });
+          return { success: false, error: result.error };
+        }
+      } catch (err: any) {
+        const classified = classifyMutationError(err);
+        setFeedbackDialog({
+          open: true,
+          type: "error",
+          title: classified.title,
+          message: classified.message,
+          field: classified.field,
+          code: classified.code,
+        });
+        return { success: false, error: err };
+      } finally {
+        isMutatingRef.current = false;
+      }
+    },
+    [currentMeta.category, addContractDataAsync]
+  );
 
   const handleBackFromAdd = useCallback(() => {
     setIsAdding(false);
@@ -289,70 +361,119 @@ export function DataPenjualan() {
     setEditingItem(null);
   }, []);
 
-  const handleEditSubmit = useCallback((rows: any[]) => {
-    if (editingItem && rows && rows.length > 0) {
-      const success = updateContractData(editingItem.category, editingItem.item.id, rows[0]);
-      if (success) {
-        toast.success("Data transaksi berhasil diperbarui");
+  // Handle Edit Submit (Awaits backend confirmation, keeps form open with inputs preserved on failure)
+  const handleEditSubmit = useCallback(
+    async (rows: any[]) => {
+      if (!editingItem || !rows || rows.length === 0) {
+        return { success: false };
       }
+      if (isMutatingRef.current) {
+        return { success: false };
+      }
+      isMutatingRef.current = true;
+      try {
+        const result = await updateContractDataAsync(
+          editingItem.category,
+          editingItem.item.id,
+          rows[0]
+        );
+        if (result.success) {
+          await Promise.allSettled([
+            orderStore.initFromApi(),
+            financeStore.initFromApi(),
+          ]);
+          setEditingItem(null);
+          setFeedbackDialog({
+            open: true,
+            type: "success",
+            title: "Perubahan Berhasil Disimpan",
+            message: "Data penjualan berhasil diperbarui.",
+          });
+          return { success: true };
+        } else {
+          const classified = classifyMutationError(result.error);
+          setFeedbackDialog({
+            open: true,
+            type: "error",
+            title: classified.title,
+            message: classified.message,
+            field: classified.field,
+            code: classified.code,
+          });
+          return { success: false, error: result.error };
+        }
+      } catch (err: any) {
+        const classified = classifyMutationError(err);
+        setFeedbackDialog({
+          open: true,
+          type: "error",
+          title: classified.title,
+          message: classified.message,
+          field: classified.field,
+          code: classified.code,
+        });
+        return { success: false, error: err };
+      } finally {
+        isMutatingRef.current = false;
+      }
+    },
+    [editingItem, updateContractDataAsync]
+  );
+
+  const renderMainContent = () => {
+    // Detail View Full Screen
+    if (viewingItem) {
+      return (
+        <FinanceDetailPage
+          subTabTitle={viewingItem.subTabTitle}
+          item={viewingItem.item}
+          columns={viewingItem.columns}
+          onBack={() => setViewingItem(null)}
+          onEdit={() => {
+            const itemToEdit = viewingItem.item;
+            const cat = activeTab;
+            const metaTitle = currentMeta.title;
+            setViewingItem(null);
+            setEditingItem({ item: itemToEdit, category: cat, title: metaTitle });
+          }}
+        />
+      );
     }
-    setEditingItem(null);
-  }, [editingItem, updateContractData]);
 
-  // Detail View Full Screen
-  if (viewingItem) {
+    // Full-Page Edit View Full Screen
+    if (editingItem) {
+      return (
+        <FinanceAddPage
+          title={`Edit Data Penjualan — ${editingItem.item["Nomor Order"] || editingItem.item.orderNo || editingItem.item["Plat No"] || editingItem.title}`}
+          description={`Perbarui rincian transaksi data penjualan untuk kategori ${editingItem.title}`}
+          subTabName={editingItem.category}
+          category={editingItem.category}
+          fields={buildFieldsFromContract(CANONICAL_PENJUALAN_COLUMNS_CONTRACT, editingItem.category)}
+          isEdit={true}
+          initialData={editingItem.item}
+          onBack={handleBackFromEdit}
+          onSubmit={handleEditSubmit}
+        />
+      );
+    }
+
+    // Add Page Full Screen
+    if (isAdding) {
+      return (
+        <FinanceAddPage
+          title={`Tambah data ${currentMeta.title}`}
+          description={`Masukkan satu atau lebih data transaksi untuk kategori ${currentMeta.title}`}
+          subTabName={currentMeta.category}
+          category={currentMeta.category}
+          fields={currentMeta.fields}
+          onBack={handleBackFromAdd}
+          onSubmit={handleAddSubmit}
+        />
+      );
+    }
+
     return (
-      <FinanceDetailPage
-        subTabTitle={viewingItem.subTabTitle}
-        item={viewingItem.item}
-        columns={viewingItem.columns}
-        onBack={() => setViewingItem(null)}
-        onEdit={() => {
-          const itemToEdit = viewingItem.item;
-          const cat = activeTab;
-          const metaTitle = currentMeta.title;
-          setViewingItem(null);
-          setEditingItem({ item: itemToEdit, category: cat, title: metaTitle });
-        }}
-      />
-    );
-  }
-
-  // Full-Page Edit View Full Screen
-  if (editingItem) {
-    const editMeta = CANONICAL_SERVICES_METADATA[editingItem.category] || CANONICAL_SERVICES_METADATA["perpanjangan-1-tahun"];
-    return (
-      <FinanceAddPage
-        title={`Edit Data Penjualan — ${editingItem.item["Nomor Order"] || editingItem.item.orderNo || editingItem.item["Plat No"] || editingItem.title}`}
-        description={`Perbarui rincian transaksi data penjualan untuk kategori ${editingItem.title}`}
-        subTabName={editingItem.category}
-        category={editingItem.category}
-        fields={buildFieldsFromContract(CANONICAL_PENJUALAN_COLUMNS_CONTRACT, editingItem.category)}
-        isEdit={true}
-        initialData={editingItem.item}
-        onBack={handleBackFromEdit}
-        onSubmit={handleEditSubmit}
-      />
-    );
-  }
-
-  // Add Page Full Screen
-  if (isAdding) {
-    return (
-      <FinanceAddPage
-        title={`Tambah data ${currentMeta.title}`}
-        description={`Masukkan satu atau lebih data transaksi untuk kategori ${currentMeta.title}`}
-        subTabName={currentMeta.category}
-        category={currentMeta.category}
-        fields={currentMeta.fields}
-        onBack={handleBackFromAdd}
-        onSubmit={handleAddSubmit}
-      />
-    );
-  }
-
-  return (
-    <div className="flex-1 flex flex-col min-h-0 space-y-4">
+      <div className="flex-1 flex flex-col min-h-0 space-y-4">
       {/* Table Card (Maximized Viewport Height with sticky header & internal row scroll) */}
       <Card className="p-3.5 sm:p-4 border border-border bg-card shadow-xs md:h-[calc(100vh-140px)] min-h-[500px] flex flex-col shrink-0">
         {isLoadingData && tabData.length === 0 ? (
@@ -432,6 +553,7 @@ export function DataPenjualan() {
           if (!open && !isSubmittingDelete) {
             setDeleteTargetItem(null);
             setDeleteConfirmText("");
+            setDeleteError(null);
           }
         }}
       >
@@ -479,7 +601,10 @@ export function DataPenjualan() {
             <input
               type="text"
               value={deleteConfirmText}
-              onChange={(e) => setDeleteConfirmText(e.target.value)}
+              onChange={(e) => {
+                setDeleteConfirmText(e.target.value);
+                if (deleteError) setDeleteError(null);
+              }}
               placeholder="HAPUS DATA"
               className={cn(
                 "w-full px-3 py-2 rounded-md border text-xs font-mono tracking-wider uppercase text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1",
@@ -490,6 +615,15 @@ export function DataPenjualan() {
             />
           </div>
 
+          <ActionInlineError
+            error={deleteError}
+            actionKey="penjualan-delete"
+            className="mt-2"
+            onDismiss={() => setDeleteError(null)}
+            onRetry={deleteConfirmText.trim() === "HAPUS DATA" ? handleConfirmDelete : undefined}
+            isRetrying={isSubmittingDelete}
+          />
+
           <AlertDialogFooter className="mt-4 gap-2 flex items-center justify-between sm:justify-between w-full">
             <Button
               type="button"
@@ -498,6 +632,7 @@ export function DataPenjualan() {
               onClick={() => {
                 setDeleteTargetItem(null);
                 setDeleteConfirmText("");
+                setDeleteError(null);
               }}
               className="h-8 text-xs font-medium"
             >
@@ -522,5 +657,21 @@ export function DataPenjualan() {
         </AlertDialogContent>
       </AlertDialog>
     </div>
+    );
+  };
+
+  return (
+    <>
+      {renderMainContent()}
+      <MutationFeedbackDialog
+        open={feedbackDialog.open}
+        onClose={() => setFeedbackDialog((prev) => ({ ...prev, open: false }))}
+        type={feedbackDialog.type}
+        title={feedbackDialog.title}
+        message={feedbackDialog.message}
+        field={feedbackDialog.field}
+        code={feedbackDialog.code}
+      />
+    </>
   );
 }

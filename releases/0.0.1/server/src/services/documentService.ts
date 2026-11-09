@@ -13,6 +13,8 @@ import { localDiskDocumentStorage } from "../storage/localDiskDocumentStorage";
 import { DbDocumentRepository, dbDocumentRepository, DocumentEntity } from "../repositories/dbDocumentRepository";
 import { dbAuditRepository } from "../repositories/dbAuditRepository";
 import { dbOrderRepository } from "../repositories/dbOrderRepository";
+import { dbFinanceRepository } from "../repositories/dbFinanceRepository";
+import { runInTransaction } from "../database/db";
 import { validateUploadedDocument } from "../utils/fileValidation";
 import { ApiError } from "../middleware/errorHandler";
 import { TokenPayload } from "../utils/crypto";
@@ -40,18 +42,44 @@ export class DocumentService {
   public async uploadDocument(params: UploadDocumentParams): Promise<DocumentEntity> {
     const { buffer, originalName, reportedMime, documentType, orderNo, invoiceId, metadata, user } = params;
 
+    // 0. Referential integrity validation before storage persistence
+    const trimmedOrderNo = orderNo && orderNo.trim() ? orderNo.trim() : null;
+    const trimmedInvoiceId = invoiceId && invoiceId.trim() ? invoiceId.trim() : null;
+
+    if (trimmedOrderNo) {
+      const existingOrder = dbOrderRepository.getByOrderNo(trimmedOrderNo);
+      if (!existingOrder) {
+        throw new ApiError(404, "ORDER_NOT_FOUND", `Order dengan nomor '${trimmedOrderNo}' tidak ditemukan.`);
+      }
+    }
+
+    if (trimmedInvoiceId) {
+      const existingInv = dbFinanceRepository.getInvoiceByNo(trimmedInvoiceId);
+      if (!existingInv) {
+        throw new ApiError(404, "INVOICE_NOT_FOUND", `Invoice dengan nomor '${trimmedInvoiceId}' tidak ditemukan.`);
+      }
+      // Check cross-relation consistency if orderNo is also provided
+      if (trimmedOrderNo && existingInv.orderNo && existingInv.orderNo !== trimmedOrderNo) {
+        throw new ApiError(
+          400,
+          "INVOICE_ORDER_MISMATCH",
+          `Invoice '${trimmedInvoiceId}' terikat pada order '${existingInv.orderNo}', tidak sesuai dengan target order '${trimmedOrderNo}'.`
+        );
+      }
+    }
+
     // 1. Magic bytes validation & sanitization
     const validated = validateUploadedDocument(buffer, originalName, reportedMime);
 
     // 2. Persist to storage medium
     const stored = await this.storage.saveFile(buffer, validated.extension);
 
-    // 3. Persist metadata to database (atomic rollback on error)
+    // 3. Persist metadata to database inside atomic transaction
     const docId = `DOC-${crypto.randomUUID().slice(0, 8).toUpperCase()}`;
     const docEntity: DocumentEntity = {
       id: docId,
-      orderNo: orderNo || null,
-      invoiceId: invoiceId || null,
+      orderNo: trimmedOrderNo,
+      invoiceId: trimmedInvoiceId,
       documentType: documentType || "DOKUMEN_PENDUKUNG",
       originalName: validated.sanitizedOriginalName,
       storageName: stored.storageName,
@@ -66,11 +94,42 @@ export class DocumentService {
     };
 
     try {
-      this.docRepo.createDocument(docEntity);
-    } catch (dbErr) {
-      // Rollback: delete orphaned file on disk
-      await this.storage.deleteFile(stored.storageName).catch(() => {});
-      throw new ApiError(500, "STORAGE_ERROR", "Gagal menyimpan metadata dokumen ke basis data.");
+      runInTransaction(() => {
+        this.docRepo.createDocument(docEntity);
+
+        // Invalidate document approval if document uploaded for an order
+        if (trimmedOrderNo) {
+          dbOrderRepository.updateOrder(trimmedOrderNo, {
+            documentApproval: {
+              stage5Verified: false,
+              stage6Approved: false,
+              approvedDocsSnapshot: [],
+            },
+            documentsVerified: false,
+            approvedBySpv: false,
+          } as any);
+        }
+      });
+    } catch (dbErr: any) {
+      // Rollback: delete orphaned file on disk and log explicitly (Requirement #8)
+      let cleanupSuccess = false;
+      try {
+        await this.storage.deleteFile(stored.storageName);
+        cleanupSuccess = true;
+        console.warn(
+          `[DocumentService] Rollback pembersihan berhasil: Berkas fisik yatim '${stored.storageName}' di '${stored.filePath}' telah dihapus setelah penyimpanan metadata database gagal.`
+        );
+      } catch (unlinkErr) {
+        console.error(
+          `[DocumentService] CRITICAL ROLLBACK FAILURE: Gagal membersihkan berkas fisik yatim '${stored.storageName}' di '${stored.filePath}' setelah penyimpanan database gagal:`,
+          unlinkErr
+        );
+      }
+      throw new ApiError(
+        500,
+        "STORAGE_ERROR",
+        `Gagal menyimpan metadata dokumen ke basis data: ${dbErr?.message || "Kesalahan basis data"}. Status pembersihan disk: ${cleanupSuccess ? "berhasil dibersihkan" : "gagal dibersihkan (tercatat di log server)"}.`
+      );
     }
 
     // 4. Record audit trail
@@ -82,7 +141,7 @@ export class DocumentService {
         userRole: user.jabatan as any,
         action: "DOCUMENT_UPLOADED",
         module: "Dokumen",
-        details: `Upload dokumen '${docEntity.originalName}' (${docEntity.documentType}) untuk ${orderNo ? `Order ${orderNo}` : invoiceId ? `Invoice ${invoiceId}` : 'Umum'}`,
+        details: `Upload dokumen '${docEntity.originalName}' (${docEntity.documentType}) untuk ${trimmedOrderNo ? `Order ${trimmedOrderNo}` : trimmedInvoiceId ? `Invoice ${trimmedInvoiceId}` : 'Umum'}`,
         metadata: {
           documentId: docEntity.id,
           orderNo: docEntity.orderNo,
@@ -156,8 +215,32 @@ export class DocumentService {
     const role = (user.role || user.jabatan || "").toLowerCase();
     // Check order access authorization
     const order = dbOrderRepository.getByOrderNo(orderNo);
-    if (order && role === "messenger" && order.messenger && order.messenger !== user.nama) {
-      throw new ApiError(403, "FORBIDDEN", "Anda tidak berwenang melihat dokumen untuk order ini.");
+    if (order && role === "messenger") {
+      const ordMessenger = (order.messenger || (order as any).assignedMessengerName || "").toLowerCase().trim();
+      const ordPengantar = ((order as any).messengerPengantar || "").toLowerCase().trim();
+      const assignedEmpId = ((order as any).assignedMessengerId || "").toLowerCase().trim();
+      const deliveryEmpId = ((order as any).deliveryMessengerId || "").toLowerCase().trim();
+      const isUnassigned = (!ordMessenger || ordMessenger === "belum ditugaskan" || ordMessenger === "-") && !assignedEmpId && !deliveryEmpId;
+
+      const uName = (user.nama || "").toLowerCase().trim();
+      const uEmpId = ((user as any).employeeId || user.userId || "").toLowerCase().trim();
+
+      // [DEF-SEC-005 REMEDIATION] Strict Canonical ID & Exact Name Verification
+      const hasCanonicalMatch = Boolean(
+        (assignedEmpId && assignedEmpId === uEmpId) ||
+        (deliveryEmpId && deliveryEmpId === uEmpId)
+      );
+      const hasExactNameMatch = Boolean(
+        (!assignedEmpId && !deliveryEmpId) && (
+          (ordMessenger && ordMessenger === uName) ||
+          (ordPengantar && ordPengantar === uName)
+        )
+      );
+      const matches = hasCanonicalMatch || hasExactNameMatch;
+
+      if (!isUnassigned && !matches) {
+        throw new ApiError(403, "FORBIDDEN", "Anda tidak berwenang melihat dokumen untuk order ini.");
+      }
     }
 
     return this.docRepo.findByOrderNo(orderNo);
@@ -213,6 +296,23 @@ export class DocumentService {
       } catch {
         // Non-blocking
       }
+
+      // Invalidate document approval if document was linked to an order
+      if (doc.orderNo) {
+        try {
+          dbOrderRepository.updateOrder(doc.orderNo, {
+            documentApproval: {
+              stage5Verified: false,
+              stage6Approved: false,
+              approvedDocsSnapshot: [],
+            },
+            documentsVerified: false,
+            approvedBySpv: false,
+          } as any);
+        } catch {
+          // Non-blocking
+        }
+      }
     }
 
     return deleted;
@@ -225,9 +325,23 @@ export class DocumentService {
     const role = (user.role || user.jabatan || "").toLowerCase();
     const uid = String(user.userId || (user as any).id || "");
 
-    // Superadmin and Admin have unrestricted access
-    if (role === "administrator" || role === "admin" || role === "svp") {
+    // Superadmin and SVP have unrestricted access
+    if (role === "administrator" || role === "svp") {
       return;
+    }
+
+    // Operational Admin: access to operational order documents or uploads owned by this admin
+    if (role === "admin") {
+      const isOwner = doc.uploadedById === uid;
+      const isOperationalOrder = Boolean(doc.orderNo);
+      if (isOperationalOrder || isOwner) {
+        return;
+      }
+      throw new ApiError(
+        403,
+        "FORBIDDEN_DOCUMENT_ACCESS",
+        "Staf operasional hanya memiliki wewenang mengakses dokumen yang terkait order operasional atau diunggah sendiri."
+      );
     }
 
     // Uploader always has access to their own uploads
@@ -245,11 +359,42 @@ export class DocumentService {
       if (doc.orderNo) {
         const order = dbOrderRepository.getByOrderNo(doc.orderNo);
         if (order) {
-          const isAssigned =
-            order.messenger === user.nama ||
-            order.messengerPengantar === user.nama ||
-            (order.assignedMessengerId && order.assignedMessengerId === ((user as any).employeeId || user.userId));
-          if (isAssigned) {
+          const uEmpId = ((user as any).employeeId || user.userId || "").toLowerCase().trim();
+          const uNumericId = uEmpId.replace(/^usr-/, "");
+          const uPrefixedId = "usr-" + uNumericId;
+          const uName = (user.nama || "").toLowerCase().trim();
+
+          const assignedEmpId = ((order as any).assignedMessengerId || "").toLowerCase().trim();
+          const deliveryEmpId = ((order as any).deliveryMessengerId || "").toLowerCase().trim();
+          const samsatEmpId = ((order as any).samsatMessengerId || "").toLowerCase().trim();
+          const samsatPickupEmpId = ((order as any).samsatPickupMessengerId || "").toLowerCase().trim();
+
+          const ordMessenger = (order.messenger || (order as any).assignedMessengerName || "").toLowerCase().trim();
+          const ordPengantar = ((order as any).messengerPengantar || "").toLowerCase().trim();
+
+          const matchesEmp = (empId: string) => Boolean(
+            empId && (
+              empId === uEmpId ||
+              (uNumericId && empId === uNumericId) ||
+              (uNumericId && empId === uPrefixedId)
+            )
+          );
+
+          const hasCanonicalMatch = Boolean(
+            matchesEmp(assignedEmpId) ||
+            matchesEmp(deliveryEmpId) ||
+            matchesEmp(samsatEmpId) ||
+            matchesEmp(samsatPickupEmpId)
+          );
+
+          const hasExactNameMatch = Boolean(
+            (!assignedEmpId && !deliveryEmpId && !samsatEmpId && !samsatPickupEmpId) && (
+              (ordMessenger && ordMessenger === uName) ||
+              (ordPengantar && ordPengantar === uName)
+            )
+          );
+
+          if (hasCanonicalMatch || hasExactNameMatch) {
             return;
           }
         }
@@ -259,6 +404,120 @@ export class DocumentService {
     }
 
     throw new ApiError(403, "FORBIDDEN", "Akses ke dokumen ditolak.");
+  }
+
+  public linkOrder(id: string, orderNo: string, user: TokenPayload): boolean {
+    const trimmedOrderNo = orderNo && orderNo.trim() ? orderNo.trim() : "";
+    if (!trimmedOrderNo) {
+      throw new ApiError(400, "VALIDATION_ERROR", "Field 'orderNo' (atau alias 'order_no') wajib disertakan.");
+    }
+
+    // 1. Verify document exists
+    const doc = this.docRepo.findById(id);
+    if (!doc) {
+      throw new ApiError(404, "DOCUMENT_NOT_FOUND", `Dokumen '${id}' tidak ditemukan.`);
+    }
+
+    // 2. Verify target order exists
+    const targetOrder = dbOrderRepository.getByOrderNo(trimmedOrderNo);
+    if (!targetOrder) {
+      throw new ApiError(404, "ORDER_NOT_FOUND", `Target order dengan nomor '${trimmedOrderNo}' tidak ditemukan.`);
+    }
+
+    // 3. Verify cross-entity consistency with invoice if document is linked to an invoice
+    if (doc.invoiceId) {
+      const existingInv = dbFinanceRepository.getInvoiceByNo(doc.invoiceId);
+      if (existingInv && existingInv.orderNo && existingInv.orderNo !== trimmedOrderNo) {
+        throw new ApiError(
+          400,
+          "INVOICE_ORDER_MISMATCH",
+          `Dokumen terikat pada tagihan '${doc.invoiceId}' milik order '${existingInv.orderNo}', tidak sesuai dengan target order '${trimmedOrderNo}'.`
+        );
+      }
+    }
+
+    const previousOrderNo = doc.orderNo && doc.orderNo.trim() ? doc.orderNo.trim() : null;
+    const isOrderChanged = previousOrderNo !== trimmedOrderNo;
+
+    // Idempotency Guard: if relation has not changed, return true as idempotent success without side effects
+    if (!isOrderChanged) {
+      return true;
+    }
+
+    // 4. Atomic Transaction execution (Document link + Order Invalidation + Audit Trail)
+    return runInTransaction(() => {
+      // a. Update document relation in database
+      const success = this.docRepo.linkOrder(id, trimmedOrderNo);
+      if (!success) {
+        throw new ApiError(500, "DATABASE_ERROR", `Gagal memperbarui relasi order untuk dokumen '${id}'.`);
+      }
+
+      // b. Invalidate approval on previous order if relation changed
+      if (isOrderChanged && previousOrderNo) {
+        const prevUpdated = dbOrderRepository.updateOrder(previousOrderNo, {
+          documentApproval: {
+            stage5Verified: false,
+            stage6Approved: false,
+            approvedDocsSnapshot: [],
+          },
+          documentsVerified: false,
+          approvedBySpv: false,
+        } as any);
+        if (!prevUpdated) {
+          throw new ApiError(
+            500,
+            "DATABASE_ERROR",
+            `Gagal menginvalidasi persetujuan dokumen pada order lama '${previousOrderNo}'.`
+          );
+        }
+      }
+
+      // c. Invalidate approval on new target order
+      const targetUpdated = dbOrderRepository.updateOrder(trimmedOrderNo, {
+        documentApproval: {
+          stage5Verified: false,
+          stage6Approved: false,
+          approvedDocsSnapshot: [],
+        },
+        documentsVerified: false,
+        approvedBySpv: false,
+      } as any);
+      if (!targetUpdated) {
+        throw new ApiError(
+          500,
+          "DATABASE_ERROR",
+          `Gagal menginvalidasi persetujuan dokumen pada target order '${trimmedOrderNo}'.`
+        );
+      }
+
+      // d. Record audit log
+      const actorId = String(user.userId || (user as any).id || user.email || "unknown");
+      const actorRole = (user.role || user.jabatan || "admin") as any;
+      const actorName = user.nama || user.email || "System";
+      const nowIso = new Date().toISOString();
+
+      dbAuditRepository.save({
+        id: `audit-${Date.now()}-${crypto.randomBytes(3).toString("hex")}`,
+        userId: actorId,
+        userName: actorName,
+        userRole: actorRole,
+        action: "DOCUMENT_LINK_UPDATED",
+        module: "Dokumen",
+        details: `Dokumen '${doc.originalName}' (${id}) dihubungkan dari order '${previousOrderNo || "UNLINKED"}' ke order '${trimmedOrderNo}' oleh ${actorName}`,
+        metadata: {
+          documentId: id,
+          originalName: doc.originalName,
+          previousOrderNo: previousOrderNo || "UNLINKED",
+          newOrderNo: trimmedOrderNo,
+          actorId,
+          actorRole,
+          timestamp: nowIso,
+        },
+        createdAt: nowIso,
+      });
+
+      return true;
+    });
   }
 }
 

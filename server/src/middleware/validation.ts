@@ -170,6 +170,40 @@ export function validateOrderUpdatePayload(req: Request, res: Response, next: Ne
     return;
   }
 
+  // 4. Validate fundamental fields if present (cannot be empty strings)
+  if (body.customer !== undefined && (typeof body.customer !== "string" || !body.customer.trim())) {
+    res.status(400).json({
+      success: false,
+      error: { code: "VALIDATION_ERROR", message: "Nama customer tidak boleh kosong.", field: "customer" },
+      timestamp: new Date().toISOString(),
+    });
+    return;
+  }
+  if (body.nopol !== undefined && (typeof body.nopol !== "string" || !body.nopol.trim())) {
+    res.status(400).json({
+      success: false,
+      error: { code: "VALIDATION_ERROR", message: "Nomor polisi (nopol) tidak boleh kosong.", field: "nopol" },
+      timestamp: new Date().toISOString(),
+    });
+    return;
+  }
+  if (body.nomorHP !== undefined && (typeof body.nomorHP !== "string" || !body.nomorHP.trim())) {
+    res.status(400).json({
+      success: false,
+      error: { code: "VALIDATION_ERROR", message: "Nomor HP tidak boleh kosong.", field: "nomorHP" },
+      timestamp: new Date().toISOString(),
+    });
+    return;
+  }
+  if (body.layanan !== undefined && (typeof body.layanan !== "string" || !body.layanan.trim())) {
+    res.status(400).json({
+      success: false,
+      error: { code: "VALIDATION_ERROR", message: "Jenis layanan tidak boleh kosong.", field: "layanan" },
+      timestamp: new Date().toISOString(),
+    });
+    return;
+  }
+
   next();
 }
 

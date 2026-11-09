@@ -147,7 +147,7 @@ function AppContent() {
       if (savedUserStr) {
         const savedUser = JSON.parse(savedUserStr);
         const uName = (savedUser.nama || savedUser.name || "").toLowerCase();
-        const defaultMsgId = uName.includes("andi") ? 'EMP-MSG-002' : 'EMP-MSG-001';
+        const defaultMsgId = uName.includes("andi") ? 'EMP-0005' : 'EMP-0004';
         return savedUser.employeeId || (savedUser.role === 'messenger' ? defaultMsgId : '');
       }
     } catch {}
@@ -309,7 +309,7 @@ function AppContent() {
     setUserRole(role);
     setUserName(name);
     setUserId(id);
-    const defaultMsgId = name?.toLowerCase().includes("andi") ? 'EMP-MSG-002' : 'EMP-MSG-001';
+    const defaultMsgId = name?.toLowerCase().includes("andi") ? 'EMP-0005' : 'EMP-0004';
     const finalEmpId = empId || (role === 'messenger' ? defaultMsgId : '');
     setEmployeeId(finalEmpId);
     setIsAuthenticated(true);
@@ -385,7 +385,7 @@ function AppContent() {
             userId,
             userName,
             role: 'messenger',
-            employeeId: employeeId || (userName?.toLowerCase().includes("andi") ? 'EMP-MSG-002' : 'EMP-MSG-001'),
+            employeeId: employeeId || (userName?.toLowerCase().includes("andi") ? 'EMP-0005' : 'EMP-0004'),
           }}
         />
       </Suspense>

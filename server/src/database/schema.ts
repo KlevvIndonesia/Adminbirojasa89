@@ -172,18 +172,6 @@ export function initializeSchema(targetDb: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS idx_services_kode ON services(kode_layanan);
     CREATE INDEX IF NOT EXISTS idx_services_status_urutan ON services(status_aktif, urutan);
 
-    CREATE TABLE IF NOT EXISTS users (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      email TEXT UNIQUE NOT NULL,
-      password_hash TEXT NOT NULL,
-      password_salt TEXT NOT NULL,
-      nama TEXT NOT NULL,
-      jabatan TEXT NOT NULL,
-      status TEXT NOT NULL DEFAULT 'Aktif',
-      created_at TEXT NOT NULL DEFAULT (datetime('now')),
-      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
-    );
-
     CREATE TABLE IF NOT EXISTS employees (
       id TEXT PRIMARY KEY,
       nik_ktp TEXT UNIQUE NOT NULL,
@@ -193,8 +181,11 @@ export function initializeSchema(targetDb: DatabaseSync): void {
       wilayah TEXT NOT NULL,
       alamat_domisili TEXT NOT NULL,
       jabatan TEXT NOT NULL,
+      avatar_url TEXT,
       gaji_pokok REAL NOT NULL DEFAULT 0,
       status_karyawan TEXT NOT NULL DEFAULT 'TETAP',
+      tanggal_bergabung TEXT,
+      jenis_kelamin TEXT DEFAULT 'Laki-laki',
       created_at TEXT NOT NULL DEFAULT (datetime('now')),
       updated_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
@@ -203,23 +194,25 @@ export function initializeSchema(targetDb: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS idx_employees_wilayah ON employees(wilayah);
     CREATE INDEX IF NOT EXISTS idx_employees_jabatan ON employees(jabatan);
 
-    CREATE TABLE IF NOT EXISTS employee_accounts (
-      id TEXT PRIMARY KEY,
-      employee_id TEXT NOT NULL,
+    CREATE TABLE IF NOT EXISTS users (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      employee_id TEXT UNIQUE REFERENCES employees(id) ON DELETE SET NULL,
       email TEXT UNIQUE NOT NULL,
       password_hash TEXT NOT NULL,
-      password_salt TEXT,
+      password_salt TEXT NOT NULL,
+      nama TEXT NOT NULL,
+      jabatan TEXT NOT NULL DEFAULT 'ADMIN',
       role TEXT NOT NULL DEFAULT 'admin',
-      status_aktif INTEGER NOT NULL DEFAULT 1,
+      status TEXT NOT NULL DEFAULT 'Aktif',
+      avatar_url TEXT,
       last_login_at TEXT,
       created_at TEXT NOT NULL DEFAULT (datetime('now')),
-      updated_at TEXT NOT NULL DEFAULT (datetime('now')),
-      FOREIGN KEY (employee_id) REFERENCES employees(id) ON DELETE CASCADE
+      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
 
-    CREATE INDEX IF NOT EXISTS idx_employee_accounts_email ON employee_accounts(email);
-    CREATE INDEX IF NOT EXISTS idx_employee_accounts_emp ON employee_accounts(employee_id);
-    CREATE INDEX IF NOT EXISTS idx_employee_accounts_role ON employee_accounts(role);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email ON users(email);
+
+    DROP TABLE IF EXISTS employee_accounts;
 
     CREATE TABLE IF NOT EXISTS customers (
       id TEXT PRIMARY KEY,
@@ -415,6 +408,12 @@ export function initializeSchema(targetDb: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS idx_samsat_tariffs_item ON samsat_operational_tariffs(pricing_item_id);
     CREATE INDEX IF NOT EXISTS idx_samsat_tariffs_active ON samsat_operational_tariffs(is_active);
 
+    /* =========================================================================
+     * DEPRECATED / LEGACY TABLE: biaya_layanan
+     * DO NOT USE FOR NEW OPERATIONS. Canonical active table is service_pricing_configs.
+     * Retained for backward compatibility and seed scripts. Do NOT run DROP TABLE.
+     * Active modules (Biaya Layanan & Order pricing engine) read/write from service_pricing_configs.
+     * ========================================================================= */
     CREATE TABLE IF NOT EXISTS biaya_layanan (
       id TEXT PRIMARY KEY,
       service_id TEXT NOT NULL,
@@ -433,6 +432,13 @@ export function initializeSchema(targetDb: DatabaseSync): void {
 
     CREATE INDEX IF NOT EXISTS idx_biaya_layanan_svc ON biaya_layanan(service_id);
 
+    /* =========================================================================
+     * DEPRECATED / LEGACY TABLE: harga_dasar_samsat
+     * DO NOT USE FOR NEW OPERATIONS. Canonical active table is samsat_pricing.
+     * Retained for backward compatibility and seed scripts. Do NOT run DROP TABLE.
+     * Active modules (Katalog Nasional Samsat & Per-Samsat Overrides) read/write
+     * from samsat_pricing and samsat_operational_tariffs.
+     * ========================================================================= */
     CREATE TABLE IF NOT EXISTS harga_dasar_samsat (
       id TEXT PRIMARY KEY,
       nama_item TEXT NOT NULL,
@@ -565,6 +571,20 @@ export function initializeSchema(targetDb: DatabaseSync): void {
 
     CREATE INDEX IF NOT EXISTS idx_audit_created ON audit_logs(created_at);
 
+    CREATE TABLE IF NOT EXISTS security_audit_logs (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL,
+      user_name TEXT NOT NULL,
+      user_role TEXT NOT NULL,
+      action TEXT NOT NULL,
+      module TEXT NOT NULL,
+      details TEXT NOT NULL,
+      metadata_json TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_security_audit_created ON security_audit_logs(created_at);
+
     CREATE TABLE IF NOT EXISTS documents (
       id TEXT PRIMARY KEY,
       order_no TEXT,
@@ -657,7 +677,7 @@ export function initializeSchema(targetDb: DatabaseSync): void {
 
     CREATE TABLE IF NOT EXISTS messengers (
       id TEXT PRIMARY KEY,
-      employee_id TEXT UNIQUE NOT NULL REFERENCES employees(id),
+      employee_id TEXT UNIQUE REFERENCES employees(id),
       plat_motor_operasional TEXT NOT NULL,
       wilayah_tugas_utama TEXT NOT NULL,
       status_tugas TEXT DEFAULT 'STANDBY' CHECK(status_tugas IN ('STANDBY', 'ON_DUTY', 'LIBUR')),
@@ -859,6 +879,20 @@ export function initializeSchema(targetDb: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS idx_order_corrections_order ON order_corrections(order_no);
     CREATE INDEX IF NOT EXISTS idx_order_corrections_status ON order_corrections(status);
 
+    CREATE TABLE IF NOT EXISTS file_deletion_jobs (
+      id TEXT PRIMARY KEY,
+      file_path TEXT NOT NULL,
+      category TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'PENDING' CHECK(status IN ('PENDING', 'PROCESSING', 'COMPLETED', 'FAILED')),
+      retry_count INTEGER NOT NULL DEFAULT 0,
+      max_retries INTEGER NOT NULL DEFAULT 3,
+      last_error TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_file_del_status ON file_deletion_jobs(status);
+
   `);
 
   migrateDocumentsTable(targetDb);
@@ -873,6 +907,8 @@ export function initializeSchema(targetDb: DatabaseSync): void {
   migrateMessengerReimbursementsTable(targetDb);
   migrateIdempotencyKeysTable(targetDb);
   migrateSamsatOfficesTable(targetDb);
+  migrateFileDeletionJobsTable(targetDb);
+  migrateSecurityAuditLogsTable(targetDb);
   migratePricingTables(targetDb);
   cleanupLegacyStandardPricingItems(targetDb);
   migrateInternalTransfersTable(targetDb);
@@ -1263,39 +1299,165 @@ function migratePengeluaranTable(targetDb: DatabaseSync): void {
   }
 }
 
-function migrateUsersTable(targetDb: DatabaseSync): void {
+export function consolidateEmployeesAndUsersMigration(targetDb: DatabaseSync): void {
   try {
-    const tableInfo = targetDb.prepare("PRAGMA table_info(users)").all() as { name: string }[];
-    if (!tableInfo || tableInfo.length === 0) return;
+    // 1. Ensure employees table has canonical columns
+    addColumnIfNotExists(targetDb, "employees", "tanggal_bergabung", "TEXT");
+    addColumnIfNotExists(targetDb, "employees", "jenis_kelamin", "TEXT DEFAULT 'Laki-laki'");
+    addColumnIfNotExists(targetDb, "employees", "avatar_url", "TEXT");
 
-    const columnNames = new Set(tableInfo.map((c) => c.name));
-    if (!columnNames.has("phone")) {
-      targetDb.exec("ALTER TABLE users ADD COLUMN phone TEXT;");
-    }
-    if (!columnNames.has("wilayah")) {
-      targetDb.exec("ALTER TABLE users ADD COLUMN wilayah TEXT;");
-    }
-    if (!columnNames.has("employee_id")) {
-      targetDb.exec("ALTER TABLE users ADD COLUMN employee_id TEXT;");
-    }
-    if (!columnNames.has("alamat")) {
-      targetDb.exec("ALTER TABLE users ADD COLUMN alamat TEXT;");
-    }
-    if (!columnNames.has("tanggal_lahir")) {
-      targetDb.exec("ALTER TABLE users ADD COLUMN tanggal_lahir TEXT;");
-    }
-    if (!columnNames.has("gaji_pokok")) {
-      targetDb.exec("ALTER TABLE users ADD COLUMN gaji_pokok REAL DEFAULT 0;");
-    }
-    if (!columnNames.has("tanggal_bergabung")) {
-      targetDb.exec("ALTER TABLE users ADD COLUMN tanggal_bergabung TEXT;");
-    }
-    if (!columnNames.has("jenis_kelamin")) {
-      targetDb.exec("ALTER TABLE users ADD COLUMN jenis_kelamin TEXT;");
+    const userTableInfo = targetDb.prepare("PRAGMA table_info(users)").all() as { name: string }[];
+    if (!userTableInfo || userTableInfo.length === 0) return;
+
+    const userCols = new Set(userTableInfo.map((c) => c.name));
+
+    // If users table has legacy duplicate columns (phone, wilayah, alamat, etc.) or lacks role/last_login_at
+    if (userCols.has("phone") || !userCols.has("role") || !userCols.has("last_login_at")) {
+      const employees = targetDb.prepare("SELECT * FROM employees").all() as any[];
+      const empIdSet = new Set(employees.map((e) => e.id));
+
+      const eaTableExists = targetDb
+        .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='employee_accounts'")
+        .get();
+      const eaMap = new Map<string, any>();
+      if (eaTableExists) {
+        try {
+          const eaRows = targetDb.prepare("SELECT * FROM employee_accounts").all() as any[];
+          for (const ea of eaRows) {
+            if (ea.email) eaMap.set(ea.email.toLowerCase(), ea);
+          }
+        } catch (_) {}
+      }
+
+      const users = targetDb.prepare("SELECT * FROM users").all() as any[];
+
+      targetDb.exec("PRAGMA foreign_keys = OFF;");
+
+      targetDb.exec(`
+        CREATE TABLE IF NOT EXISTS users_consolidated (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          employee_id TEXT UNIQUE REFERENCES employees(id) ON DELETE SET NULL,
+          email TEXT UNIQUE NOT NULL,
+          password_hash TEXT NOT NULL,
+          password_salt TEXT NOT NULL,
+          nama TEXT NOT NULL,
+          jabatan TEXT NOT NULL DEFAULT 'ADMIN',
+          role TEXT NOT NULL DEFAULT 'admin',
+          status TEXT NOT NULL DEFAULT 'Aktif',
+          avatar_url TEXT,
+          last_login_at TEXT,
+          created_at TEXT NOT NULL DEFAULT (datetime('now')),
+          updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+      `);
+
+      const insertStmt = targetDb.prepare(`
+        INSERT INTO users_consolidated (
+          id, employee_id, email, password_hash, password_salt, nama, jabatan, role, status, avatar_url, last_login_at, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `);
+
+      for (const u of users) {
+        let mappedEmpId: string | null = u.employee_id ? String(u.employee_id).trim() : null;
+
+        const cleanEmail = (u.email || "").trim().toLowerCase();
+        if (u.id === 1 || cleanEmail === "svp@birojasa.com") mappedEmpId = "EMP-0001";
+        else if (u.id === 2 || cleanEmail === "admin@birojasa.com") mappedEmpId = "EMP-0002";
+        else if (u.id === 3 || cleanEmail === "finance@birojasa.com") mappedEmpId = "EMP-0003";
+        else if (u.id === 4 || cleanEmail === "budi.messenger@birojasa.com") mappedEmpId = "EMP-0004";
+        else if (u.id === 5 || cleanEmail === "andi.messenger@birojasa.com") mappedEmpId = "EMP-0005";
+        else if (u.id === 6 || cleanEmail === "messenger@birojasa.com") mappedEmpId = "EMP-0006";
+        else if (!mappedEmpId && eaMap.has(cleanEmail)) {
+          mappedEmpId = eaMap.get(cleanEmail).employee_id;
+        }
+
+        if (mappedEmpId && !empIdSet.has(mappedEmpId)) {
+          const numMatch = mappedEmpId.match(/^EMP-(\d+)$/i);
+          if (numMatch) {
+            const padded = `EMP-${numMatch[1].padStart(4, "0")}`;
+            if (empIdSet.has(padded)) {
+              mappedEmpId = padded;
+            } else {
+              mappedEmpId = null;
+            }
+          } else {
+            mappedEmpId = null;
+          }
+        }
+
+        const rawJabatan = (u.jabatan || "ADMIN").toUpperCase();
+        const role = (
+          u.role ||
+          (rawJabatan === "SVP"
+            ? "svp"
+            : rawJabatan === "FINANCE"
+            ? "finance"
+            : rawJabatan === "MESSENGER"
+            ? "messenger"
+            : "admin")
+        ).toLowerCase();
+
+        const ea = eaMap.get(cleanEmail);
+        const lastLogin = u.last_login_at || (ea ? ea.last_login_at : null);
+        const avatarUrl = u.avatar_url || null;
+
+        insertStmt.run(
+          u.id,
+          mappedEmpId,
+          u.email,
+          u.password_hash,
+          u.password_salt,
+          u.nama,
+          u.jabatan || "ADMIN",
+          role,
+          u.status || "Aktif",
+          avatarUrl,
+          lastLogin,
+          u.created_at || new Date().toISOString(),
+          u.updated_at || new Date().toISOString()
+        );
+
+        if (mappedEmpId && empIdSet.has(mappedEmpId)) {
+          try {
+            targetDb
+              .prepare(
+                `
+                UPDATE employees
+                SET 
+                  tanggal_bergabung = COALESCE(tanggal_bergabung, ?),
+                  jenis_kelamin = COALESCE(jenis_kelamin, ?),
+                  avatar_url = COALESCE(avatar_url, ?)
+                WHERE id = ?
+              `
+              )
+              .run(u.tanggal_bergabung || null, u.jenis_kelamin || null, avatarUrl, mappedEmpId);
+          } catch (_) {}
+        }
+      }
+
+      targetDb.exec("DROP TABLE users;");
+      targetDb.exec("ALTER TABLE users_consolidated RENAME TO users;");
+      targetDb.exec("DROP TABLE IF EXISTS employee_accounts;");
+
+      targetDb.exec(`
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email ON users(email);
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_users_employee_id ON users(employee_id);
+        CREATE INDEX IF NOT EXISTS idx_users_role ON users(role);
+        CREATE INDEX IF NOT EXISTS idx_users_status ON users(status);
+      `);
+
+      targetDb.exec("PRAGMA foreign_keys = ON;");
+    } else {
+      // Idempotent pass: ensure employee_accounts is dropped
+      targetDb.exec("DROP TABLE IF EXISTS employee_accounts;");
     }
   } catch (err) {
-    console.warn("[SUN89 Migration] Warning during users table migration:", err);
+    console.warn("[SUN89 Migration] Warning during consolidateEmployeesAndUsersMigration:", err);
   }
+}
+
+function migrateUsersTable(targetDb: DatabaseSync): void {
+  consolidateEmployeesAndUsersMigration(targetDb);
 }
 
 function migrateKasMessengerTable(targetDb: DatabaseSync): void {
@@ -1392,6 +1554,85 @@ function migrateInternalTransfersTable(targetDb: DatabaseSync): void {
     `);
   } catch (err) {
     console.warn("[SUN89 Migration] Warning during internal_transfers table migration:", err);
+  }
+}
+
+
+export function migrateFileDeletionJobsTable(targetDb: DatabaseSync): void {
+  try {
+    const tableInfo = targetDb.prepare("PRAGMA table_info(file_deletion_jobs)").all() as { name: string }[];
+    if (!tableInfo || tableInfo.length === 0) {
+      targetDb.exec(`
+        CREATE TABLE IF NOT EXISTS file_deletion_jobs (
+          id TEXT PRIMARY KEY,
+          file_path TEXT NOT NULL,
+          category TEXT NOT NULL,
+          status TEXT NOT NULL DEFAULT 'PENDING' CHECK(status IN ('PENDING', 'PROCESSING', 'COMPLETED', 'FAILED')),
+          retry_count INTEGER NOT NULL DEFAULT 0,
+          max_retries INTEGER NOT NULL DEFAULT 3,
+          last_error TEXT,
+          created_at TEXT NOT NULL DEFAULT (datetime('now')),
+          updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_file_del_status ON file_deletion_jobs(status);
+      `);
+      return;
+    }
+
+    const columnNames = new Set(tableInfo.map((c) => c.name));
+    if (columnNames.has("target_user_id")) {
+      targetDb.exec(`
+        DROP INDEX IF EXISTS idx_file_del_target;
+
+        CREATE TABLE file_deletion_jobs_new (
+          id TEXT PRIMARY KEY,
+          file_path TEXT NOT NULL,
+          category TEXT NOT NULL,
+          status TEXT NOT NULL DEFAULT 'PENDING' CHECK(status IN ('PENDING', 'PROCESSING', 'COMPLETED', 'FAILED')),
+          retry_count INTEGER NOT NULL DEFAULT 0,
+          max_retries INTEGER NOT NULL DEFAULT 3,
+          last_error TEXT,
+          created_at TEXT NOT NULL DEFAULT (datetime('now')),
+          updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+
+        INSERT INTO file_deletion_jobs_new (id, file_path, category, status, retry_count, max_retries, last_error, created_at, updated_at)
+        SELECT id, file_path, category, status, retry_count, max_retries, last_error, created_at, updated_at
+        FROM file_deletion_jobs;
+
+        DROP TABLE file_deletion_jobs;
+        ALTER TABLE file_deletion_jobs_new RENAME TO file_deletion_jobs;
+        CREATE INDEX IF NOT EXISTS idx_file_del_status ON file_deletion_jobs(status);
+      `);
+    } else {
+      targetDb.exec(`
+        DROP INDEX IF EXISTS idx_file_del_target;
+        CREATE INDEX IF NOT EXISTS idx_file_del_status ON file_deletion_jobs(status);
+      `);
+    }
+  } catch (err) {
+    console.warn("[SUN89 Migration] Warning during file_deletion_jobs table migration:", err);
+  }
+}
+
+export function migrateSecurityAuditLogsTable(targetDb: DatabaseSync): void {
+  try {
+    targetDb.exec(`
+      CREATE TABLE IF NOT EXISTS security_audit_logs (
+        id TEXT PRIMARY KEY,
+        user_id TEXT NOT NULL,
+        user_name TEXT NOT NULL,
+        user_role TEXT NOT NULL,
+        action TEXT NOT NULL,
+        module TEXT NOT NULL,
+        details TEXT NOT NULL,
+        metadata_json TEXT,
+        created_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      CREATE INDEX IF NOT EXISTS idx_security_audit_created ON security_audit_logs(created_at);
+    `);
+  } catch (err) {
+    console.warn("[SUN89 Migration] Warning during security_audit_logs table migration:", err);
   }
 }
 

@@ -57,7 +57,7 @@ export interface ResetExecutionResult {
 export const MASTER_DATA_TABLES = [
   "users",
   "employees",
-  "employee_accounts",
+
   "role_permissions",
   "messengers",
   "services",

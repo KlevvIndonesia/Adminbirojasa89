@@ -4,12 +4,12 @@
  */
 
 import { Response, NextFunction } from "express";
-import { AuthenticatedRequest } from "../middleware/auth";
+import { AuthenticatedRequest, validateTokenAndUser } from "../middleware/auth";
 import { documentService } from "../services/documentService";
 import { documentTicketService } from "../services/documentTicketService";
 import { dbDocumentRepository } from "../repositories/dbDocumentRepository";
 import { dbOrderRepository } from "../repositories/dbOrderRepository";
-import { verifyToken, TokenPayload } from "../utils/crypto";
+import { TokenPayload } from "../utils/crypto";
 import { ApiError } from "../middleware/errorHandler";
 import { normalizeDocumentUploadPayload } from "../utils/aliasNormalizer";
 
@@ -27,8 +27,8 @@ async function resolveDocumentUser(
   if (authHeader) {
     const token = authHeader.startsWith("Bearer ") ? authHeader.slice(7).trim() : authHeader.trim();
     if (token) {
-      const verified = verifyToken(token);
-      if (verified) return verified;
+      const result = validateTokenAndUser(token);
+      if (result.valid && result.userPayload) return result.userPayload;
     }
   }
 
@@ -43,6 +43,7 @@ async function resolveDocumentUser(
         nama: validation.ticketData.userName,
         jabatan: validation.ticketData.userRole,
         role: validation.ticketData.userRole as any,
+        employeeId: (validation.ticketData as any).employeeId,
         exp: Math.floor(validation.ticketData.expiresAt / 1000),
       };
     }
@@ -113,11 +114,21 @@ export async function createAccessTicket(
       const assignedEmpId = ((order as any).assignedMessengerId || "").toLowerCase().trim();
       const deliveryEmpId = ((order as any).deliveryMessengerId || "").toLowerCase().trim();
 
-      const isAssigned =
-        (ordMessenger && (ordMessenger === uName || ordMessenger.includes(uName) || uName.includes(ordMessenger))) ||
-        (ordPengantar && (ordPengantar === uName || ordPengantar.includes(uName) || uName.includes(ordPengantar))) ||
-        (assignedEmpId && (assignedEmpId === uEmpId || assignedEmpId === uName)) ||
-        (deliveryEmpId && (deliveryEmpId === uEmpId || deliveryEmpId === uName));
+      // [DEF-SEC-005 REMEDIATION] Strict Canonical ID & Exact Name Verification
+      // Elimination of substring includes() matching to prevent horizontal privilege escalation
+      const hasCanonicalMatch = Boolean(
+        (assignedEmpId && assignedEmpId === uEmpId) ||
+        (deliveryEmpId && deliveryEmpId === uEmpId)
+      );
+
+      const hasExactNameMatch = Boolean(
+        (!assignedEmpId && !deliveryEmpId) && (
+          (ordMessenger && ordMessenger === uName) ||
+          (ordPengantar && ordPengantar === uName)
+        )
+      );
+
+      const isAssigned = hasCanonicalMatch || hasExactNameMatch;
 
       if (!isAssigned) {
         throw new ApiError(

@@ -6,6 +6,7 @@
 import { DocumentItem, UploadDocumentOptions } from "../../domain/document/types";
 import { IDocumentProvider } from "../providers/documentProvider";
 import { APP_CONFIG } from "../../app/config/appConfig";
+import { fetchWithTimeout, parseApiErrorResponse } from "../../app/utils/actionErrorClassifier";
 
 export class ApiDocumentProvider implements IDocumentProvider {
   private baseUrl: string;
@@ -81,23 +82,20 @@ export class ApiDocumentProvider implements IDocumentProvider {
     if (options.invoiceId) formData.append("invoiceId", options.invoiceId);
     if (options.metadata) formData.append("metadata", JSON.stringify(options.metadata));
 
-    const res = await fetch(`${this.baseUrl}/documents/upload`, {
-      method: "POST",
-      headers: {
-        ...this.getAuthHeader(),
+    const res = await fetchWithTimeout(
+      `${this.baseUrl}/documents/upload`,
+      {
+        method: "POST",
+        headers: {
+          ...this.getAuthHeader(),
+        },
+        body: formData,
       },
-      body: formData,
-    });
+      25000
+    );
 
     if (!res.ok) {
-      let errMsg = "Gagal mengunggah dokumen.";
-      try {
-        const errorJson = await res.json();
-        errMsg = errorJson.error?.message || errMsg;
-      } catch {
-        // fallback
-      }
-      throw new Error(errMsg);
+      throw await parseApiErrorResponse(res, "Gagal mengunggah dokumen.");
     }
 
     const payload = await res.json();
@@ -132,11 +130,19 @@ export class ApiDocumentProvider implements IDocumentProvider {
   }
 
   public async deleteDocument(id: string): Promise<boolean> {
-    const res = await fetch(`${this.baseUrl}/documents/${id}`, {
-      method: "DELETE",
-      headers: { ...this.getAuthHeader() },
-    });
-    return res.ok;
+    const res = await fetchWithTimeout(
+      `${this.baseUrl}/documents/${encodeURIComponent(id)}`,
+      {
+        method: "DELETE",
+        headers: { ...this.getAuthHeader() },
+      },
+      15000
+    );
+    if (res.status === 404) return false;
+    if (!res.ok) {
+      throw await parseApiErrorResponse(res, "Gagal menghapus dokumen dari server.");
+    }
+    return true;
   }
 
   public getPreviewUrl(id: string): string {
@@ -148,24 +154,21 @@ export class ApiDocumentProvider implements IDocumentProvider {
   }
 
   public async createAccessTicket(id: string, operation: "preview" | "download" = "preview"): Promise<string> {
-    const res = await fetch(`${this.baseUrl}/documents/${encodeURIComponent(id)}/ticket`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        ...this.getAuthHeader(),
+    const res = await fetchWithTimeout(
+      `${this.baseUrl}/documents/${encodeURIComponent(id)}/ticket`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          ...this.getAuthHeader(),
+        },
+        body: JSON.stringify({ operation }),
       },
-      body: JSON.stringify({ operation }),
-    });
+      15000
+    );
 
     if (!res.ok) {
-      let errMsg = "Gagal menerbitkan tiket akses dokumen.";
-      try {
-        const errorJson = await res.json();
-        errMsg = errorJson.error?.message || errMsg;
-      } catch {
-        // fallback
-      }
-      throw new Error(errMsg);
+      throw await parseApiErrorResponse(res, "Gagal menerbitkan tiket akses dokumen.");
     }
 
     const payload = await res.json();
@@ -184,14 +187,18 @@ export class ApiDocumentProvider implements IDocumentProvider {
 
   public async linkOrder(id: string, orderNo: string): Promise<boolean> {
     try {
-      const res = await fetch(`${this.baseUrl}/documents/${encodeURIComponent(id)}/link-order`, {
-        method: "PATCH",
-        headers: {
-          "Content-Type": "application/json",
-          ...this.getAuthHeader(),
+      const res = await fetchWithTimeout(
+        `${this.baseUrl}/documents/${encodeURIComponent(id)}/link-order`,
+        {
+          method: "PATCH",
+          headers: {
+            "Content-Type": "application/json",
+            ...this.getAuthHeader(),
+          },
+          body: JSON.stringify({ orderNo }),
         },
-        body: JSON.stringify({ orderNo }),
-      });
+        15000
+      );
       return res.ok;
     } catch {
       return false;

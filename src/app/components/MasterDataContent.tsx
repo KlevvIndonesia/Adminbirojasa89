@@ -11,12 +11,14 @@ import { ManajemenPengguna } from "./ManajemenPengguna";
 import { HargaDasarSamsat } from "./HargaDasarSamsat";
 import { MetodePembayaranMaster } from "./MetodePembayaranMaster";
 import { MasterLayanan } from "./MasterLayanan";
+import { WilayahSamsatManager } from "./WilayahSamsatManager";
 import { EnhancedTable } from "./EnhancedTable";
-import { ProvinsiFilterSelect } from "./ProvinsiFilterSelect";
 import { toast } from "sonner";
 import { AlertTriangle, RefreshCw, Loader2 } from "lucide-react";
 import { pricingStore, usePricingStore } from "../data/pricingStore";
 import { useKaryawanPengguna } from "../data/karyawanPenggunaAdapter";
+import { PermanentErasureDialog } from "./PermanentErasureDialog";
+import { exportToCSV, exportToPrintablePDF } from "../utils/exportUtils";
 
 const wilayahOptions = [
   "Jakarta Timur", "Jakarta Barat", "Jakarta Selatan",
@@ -49,39 +51,6 @@ export function MasterDataContent({ tab }: MasterDataContentProps) {
     deleteKaryawan
   } = useKaryawanPengguna();
 
-  const [selectedProvinsi, setSelectedProvinsi] = useState("all");
-
-  const rawSamsatData = useMemo(() => {
-    return pricingStore
-      .getSamsats()
-      .map((s) => ({
-        id: s.id,
-        nama: s.name,
-        alamat: s.alamat,
-        wilayah: s.wilayah,
-        provinsi: s.nama_provinsi || "Belum Terpetakan",
-      }))
-      .sort((a, b) => a.nama.localeCompare(b.nama, "id", { sensitivity: "base" }));
-  }, []);
-
-  const samsatData = useMemo(() => {
-    if (selectedProvinsi === "all") return rawSamsatData;
-    if (selectedProvinsi === "unmapped") {
-      return rawSamsatData.filter(
-        (s) => s.provinsi === "Belum Terpetakan" || s.provinsi === "-" || !s.provinsi
-      );
-    }
-    return rawSamsatData.filter(
-      (s) => s.provinsi.toLowerCase() === selectedProvinsi.toLowerCase()
-    );
-  }, [rawSamsatData, selectedProvinsi]);
-
-  const [isAddSamsatOpen, setIsAddSamsatOpen] = useState(false);
-  const [isEditSamsatOpen, setIsEditSamsatOpen] = useState(false);
-  const [isDeleteSamsatOpen, setIsDeleteSamsatOpen] = useState(false);
-  const [selectedSamsat, setSelectedSamsat] = useState<any>(null);
-  const [samsatForm, setSamsatForm] = useState({ nama: "", alamat: "", wilayah: "", provinsi: "" });
-
   const [isAddKaryawanOpen, setIsAddKaryawanOpen] = useState(false);
   const [isEditKaryawanOpen, setIsEditKaryawanOpen] = useState(false);
   const [isDeleteKaryawanOpen, setIsDeleteKaryawanOpen] = useState(false);
@@ -89,59 +58,9 @@ export function MasterDataContent({ tab }: MasterDataContentProps) {
 
   const [karyawanForm, setKaryawanForm] = useState({
     nama: "", jabatan: "ADMIN" as any, email: "", wilayah: "Jakarta Timur", noHp: "", status: "Aktif" as any,
-    jenisKelamin: "Laki-laki" as any, alamat: "", gajiPokok: "", tanggalBergabung: "", tanggalLahir: "2000-01-01"
+    jenisKelamin: "Laki-laki" as any, alamat: "", gajiPokok: "", tanggalBergabung: "", tanggalLahir: "2000-01-01",
+    nikKtp: ""
   });
-
-  // Samsat handlers
-  const handleAddSamsat = async () => {
-    if (!samsatForm.nama || !samsatForm.wilayah) {
-      toast.error("Nama Samsat dan Wilayah wajib diisi!");
-      return;
-    }
-    try {
-      await pricingStore.addSamsat({
-        name: samsatForm.nama,
-        alamat: samsatForm.alamat || `Kantor Samsat ${samsatForm.wilayah}`,
-        wilayah: samsatForm.wilayah,
-        nama_provinsi: samsatForm.provinsi || undefined,
-      });
-      setSamsatForm({ nama: "", alamat: "", wilayah: "", provinsi: "" });
-      setIsAddSamsatOpen(false);
-      toast.success("Data Samsat berhasil ditambahkan!");
-    } catch (err: any) {
-      toast.error(err?.message || "Gagal menambahkan data Samsat ke server");
-    }
-  };
-
-  const handleEditSamsat = async () => {
-    if (!samsatForm.nama || !samsatForm.wilayah) {
-      toast.error("Nama Samsat dan Wilayah wajib diisi!");
-      return;
-    }
-    try {
-      await pricingStore.updateSamsat(selectedSamsat.id, {
-        name: samsatForm.nama,
-        alamat: samsatForm.alamat,
-        wilayah: samsatForm.wilayah,
-        nama_provinsi: samsatForm.provinsi || undefined,
-      });
-      setIsEditSamsatOpen(false);
-      toast.success("Data Samsat berhasil diupdate!");
-    } catch (err: any) {
-      toast.error(err?.message || "Gagal mengupdate data Samsat di server");
-    }
-  };
-
-  const handleDeleteSamsat = async () => {
-    if (!selectedSamsat) return;
-    try {
-      await pricingStore.deleteSamsat(selectedSamsat.id);
-      setIsDeleteSamsatOpen(false);
-      toast.success("Data Samsat berhasil dihapus!");
-    } catch (err: any) {
-      toast.error(err?.message || "Gagal menghapus data Samsat di server");
-    }
-  };
 
   // Karyawan handlers
   const handleAddKaryawan = () => {
@@ -161,10 +80,12 @@ export function MasterDataContent({ tab }: MasterDataContentProps) {
       gajiPokok: parseInt(karyawanForm.gajiPokok) || 0,
       tanggalBergabung: karyawanForm.tanggalBergabung || new Date().toISOString().split("T")[0],
       tanggalLahir: karyawanForm.tanggalLahir || "2000-01-01",
+      nikKtp: karyawanForm.nikKtp || undefined,
     });
     setKaryawanForm({
       nama: "", jabatan: "ADMIN", email: "", wilayah: "Jakarta Timur", noHp: "", status: "Aktif",
-      jenisKelamin: "Laki-laki", alamat: "", gajiPokok: "", tanggalBergabung: "", tanggalLahir: "2000-01-01"
+      jenisKelamin: "Laki-laki", alamat: "", gajiPokok: "", tanggalBergabung: "", tanggalLahir: "2000-01-01",
+      nikKtp: ""
     });
     setIsAddKaryawanOpen(false);
     toast.success("Data karyawan berhasil ditambahkan!");
@@ -196,170 +117,7 @@ export function MasterDataContent({ tab }: MasterDataContentProps) {
 
   // ─── Samsat Tab ───────────────────────────────────────────────────────────
   if (tab === "samsat") {
-    return (
-      <div className="flex-1 flex flex-col min-h-0 space-y-4">
-        {renderSubTabHeader("Data Samsat", "Kelola daftar Samsat dan wilayah pelayanan")}
-        <Card className="p-4 sm:p-5 border border-border/80 bg-card shadow-xs flex-1 flex flex-col min-h-0">
-          <EnhancedTable
-            columns={[
-              { key: "nama", label: "Nama Samsat" },
-              { key: "alamat", label: "Alamat" },
-              { key: "wilayah", label: "Wilayah" },
-              { key: "provinsi", label: "Provinsi" },
-            ]}
-            data={samsatData}
-            filterSlot={
-              <ProvinsiFilterSelect
-                value={selectedProvinsi}
-                onValueChange={setSelectedProvinsi}
-              />
-            }
-            onAdd={() => {
-              setSamsatForm({ nama: "", alamat: "", wilayah: "", provinsi: "" });
-              setIsAddSamsatOpen(true);
-            }}
-            onEdit={(item) => {
-              setSelectedSamsat(item);
-              setSamsatForm({
-                nama: item.nama,
-                alamat: item.alamat,
-                wilayah: item.wilayah,
-                provinsi: item.provinsi === "-" ? "" : item.provinsi,
-              });
-              setIsEditSamsatOpen(true);
-            }}
-            onDelete={(item) => {
-              setSelectedSamsat(item);
-              setIsDeleteSamsatOpen(true);
-            }}
-            onExport={(format) => toast.success(`Export ${format.toUpperCase()}`)}
-            searchPlaceholder="Cari samsat..."
-          />
-        </Card>
-
-        {/* Dialog Add Samsat */}
-        <Dialog open={isAddSamsatOpen} onOpenChange={setIsAddSamsatOpen}>
-          <DialogContent className="border-border sm:max-w-md">
-            <DialogHeader>
-              <DialogTitle>Tambah Data Samsat</DialogTitle>
-              <DialogDescription>Tambahkan kantor atau wilayah pelayanan Samsat baru</DialogDescription>
-            </DialogHeader>
-            <div className="space-y-3 mt-3">
-              <div className="space-y-1.5">
-                <Label>Nama Samsat <span className="text-destructive font-semibold">*</span></Label>
-                <Input
-                  className="bg-input-background border-border h-9 text-xs"
-                  placeholder="Contoh: Samsat Kota Bandung"
-                  value={samsatForm.nama}
-                  onChange={(e) => setSamsatForm({ ...samsatForm, nama: e.target.value })}
-                />
-              </div>
-              <div className="space-y-1.5">
-                <Label>Wilayah (Kabupaten/Kota) <span className="text-destructive font-semibold">*</span></Label>
-                <Input
-                  className="bg-input-background border-border h-9 text-xs"
-                  placeholder="Contoh: Kota Bandung"
-                  value={samsatForm.wilayah}
-                  onChange={(e) => setSamsatForm({ ...samsatForm, wilayah: e.target.value })}
-                />
-              </div>
-              <div className="space-y-1.5">
-                <Label>Provinsi</Label>
-                <Input
-                  className="bg-input-background border-border h-9 text-xs"
-                  placeholder="Contoh: Jawa Barat"
-                  value={samsatForm.provinsi}
-                  onChange={(e) => setSamsatForm({ ...samsatForm, provinsi: e.target.value })}
-                />
-              </div>
-              <div className="space-y-1.5">
-                <Label>Alamat</Label>
-                <Input
-                  className="bg-input-background border-border h-9 text-xs"
-                  placeholder="Alamat kantor Samsat"
-                  value={samsatForm.alamat}
-                  onChange={(e) => setSamsatForm({ ...samsatForm, alamat: e.target.value })}
-                />
-              </div>
-            </div>
-            <DialogFooter className="mt-4">
-              <Button variant="outline" size="sm" onClick={() => setIsAddSamsatOpen(false)}>Batal</Button>
-              <Button size="sm" onClick={handleAddSamsat}>Simpan</Button>
-            </DialogFooter>
-          </DialogContent>
-        </Dialog>
-
-        {/* Dialog Edit Samsat */}
-        <Dialog open={isEditSamsatOpen} onOpenChange={setIsEditSamsatOpen}>
-          <DialogContent className="border-border sm:max-w-md">
-            <DialogHeader>
-              <DialogTitle>Edit Data Samsat</DialogTitle>
-              <DialogDescription>Perbarui informasi kantor Samsat</DialogDescription>
-            </DialogHeader>
-            <div className="space-y-3 mt-3">
-              <div className="space-y-1.5">
-                <Label>Nama Samsat <span className="text-destructive font-semibold">*</span></Label>
-                <Input
-                  className="bg-input-background border-border h-9 text-xs"
-                  placeholder="Nama Samsat"
-                  value={samsatForm.nama}
-                  onChange={(e) => setSamsatForm({ ...samsatForm, nama: e.target.value })}
-                />
-              </div>
-              <div className="space-y-1.5">
-                <Label>Wilayah (Kabupaten/Kota) <span className="text-destructive font-semibold">*</span></Label>
-                <Input
-                  className="bg-input-background border-border h-9 text-xs"
-                  placeholder="Wilayah"
-                  value={samsatForm.wilayah}
-                  onChange={(e) => setSamsatForm({ ...samsatForm, wilayah: e.target.value })}
-                />
-              </div>
-              <div className="space-y-1.5">
-                <Label>Provinsi</Label>
-                <Input
-                  className="bg-input-background border-border h-9 text-xs"
-                  placeholder="Provinsi"
-                  value={samsatForm.provinsi}
-                  onChange={(e) => setSamsatForm({ ...samsatForm, provinsi: e.target.value })}
-                />
-              </div>
-              <div className="space-y-1.5">
-                <Label>Alamat</Label>
-                <Input
-                  className="bg-input-background border-border h-9 text-xs"
-                  placeholder="Alamat"
-                  value={samsatForm.alamat}
-                  onChange={(e) => setSamsatForm({ ...samsatForm, alamat: e.target.value })}
-                />
-              </div>
-            </div>
-            <DialogFooter className="mt-4">
-              <Button variant="outline" size="sm" onClick={() => setIsEditSamsatOpen(false)}>Batal</Button>
-              <Button size="sm" onClick={handleEditSamsat}>Simpan Perubahan</Button>
-            </DialogFooter>
-          </DialogContent>
-        </Dialog>
-
-        {/* AlertDialog Delete Samsat */}
-        <AlertDialog open={isDeleteSamsatOpen} onOpenChange={setIsDeleteSamsatOpen}>
-          <AlertDialogContent className="border-border">
-            <AlertDialogHeader>
-              <AlertDialogTitle>Hapus Samsat</AlertDialogTitle>
-              <AlertDialogDescription>
-                Apakah Anda yakin ingin menghapus "{selectedSamsat?.nama}"? Tindakan ini akan menghapus data Samsat dan konfigurasi terkait.
-              </AlertDialogDescription>
-            </AlertDialogHeader>
-            <AlertDialogFooter>
-              <AlertDialogCancel>Batal</AlertDialogCancel>
-              <AlertDialogAction onClick={handleDeleteSamsat} className="bg-red-500 hover:bg-red-600">
-                Hapus
-              </AlertDialogAction>
-            </AlertDialogFooter>
-          </AlertDialogContent>
-        </AlertDialog>
-      </div>
-    );
+    return <WilayahSamsatManager />;
   }
 
   // ─── Karyawan Tab ─────────────────────────────────────────────────────────
@@ -416,20 +174,22 @@ export function MasterDataContent({ tab }: MasterDataContentProps) {
             )}
             <EnhancedTable
               columns={[
-                { key: "id", label: "NIK / ID" },
-                { key: "nama", label: "Nama" },
-                { key: "jabatan", label: "Jabatan" },
-                { key: "email", label: "Email" },
-                { key: "wilayah", label: "Wilayah" },
-                { key: "noHp", label: "No. HP" },
-                { key: "tanggalLahir", label: "Tgl Lahir" },
-                { key: "status", label: "Status" },
+                { key: "id", label: "NIK / ID", width: "110px", align: "center" },
+                { key: "nama", label: "Nama", width: "160px" },
+                { key: "jabatan", label: "Jabatan", width: "110px", align: "center" },
+                { key: "email", label: "Email", width: "180px" },
+                { key: "wilayah", label: "Wilayah", width: "130px" },
+                { key: "noHp", label: "No. HP", width: "120px" },
+                { key: "tanggalLahir", label: "Tgl Lahir", width: "100px", align: "center" },
+                { key: "status", label: "Status", width: "100px", align: "center" },
               ]}
               data={karyawanData}
+              showRowNumber={true}
               onAdd={() => {
                 setKaryawanForm({
                   nama: "", jabatan: "ADMIN", email: "", wilayah: "Jakarta Timur", noHp: "", status: "Aktif",
-                  jenisKelamin: "Laki-laki", alamat: "", gajiPokok: "", tanggalBergabung: "", tanggalLahir: "2000-01-01"
+                  jenisKelamin: "Laki-laki", alamat: "", gajiPokok: "", tanggalBergabung: "", tanggalLahir: "2000-01-01",
+                  nikKtp: ""
                 });
                 setIsAddKaryawanOpen(true);
               }}
@@ -441,7 +201,8 @@ export function MasterDataContent({ tab }: MasterDataContentProps) {
                   jenisKelamin: item.jenisKelamin, alamat: item.alamat,
                   gajiPokok: item.gajiPokok?.toString() || "",
                   tanggalBergabung: item.tanggalBergabung,
-                  tanggalLahir: item.tanggalLahir || "2000-01-01"
+                  tanggalLahir: item.tanggalLahir || "2000-01-01",
+                  nikKtp: item.nikKtp || ""
                 });
                 setIsEditKaryawanOpen(true);
               }}
@@ -449,7 +210,54 @@ export function MasterDataContent({ tab }: MasterDataContentProps) {
                 setSelectedKaryawan(item);
                 setIsDeleteKaryawanOpen(true);
               }}
-              onExport={(format) => toast.success(`Export ${format.toUpperCase()}`)}
+              onExport={(format, dataToExport) => {
+                if (dataToExport.length === 0) {
+                  toast.error("Tidak ada data karyawan untuk diekspor");
+                  return;
+                }
+                const today = new Date().toISOString().split("T")[0];
+                if (format === "csv") {
+                  exportToCSV({
+                    filename: `data-karyawan-${today}.csv`,
+                    columns: [
+                      { header: "No", format: (_, idx) => idx + 1 },
+                      { header: "NIK / ID", key: "id" },
+                      { header: "Nama Lengkap", key: "nama" },
+                      { header: "Jabatan", key: "jabatan" },
+                      { header: "Email", key: "email" },
+                      { header: "Wilayah", key: "wilayah" },
+                      { header: "No. HP", key: "noHp" },
+                      { header: "Tanggal Lahir", key: "tanggalLahir" },
+                      { header: "Gaji Pokok", format: (r) => r.gajiPokok ? `Rp ${Number(r.gajiPokok).toLocaleString("id-ID")}` : "-" },
+                      { header: "Tanggal Bergabung", key: "tanggalBergabung" },
+                      { header: "Status", key: "status" },
+                    ],
+                    data: dataToExport,
+                  });
+                  toast.success(`Berhasil mengekspor ${dataToExport.length} data karyawan ke CSV!`);
+                } else {
+                  exportToPrintablePDF({
+                    title: "LAPORAN DATA KARYAWAN",
+                    subtitle: "Master data staf dan karyawan operasional SUN Biro Jasa",
+                    metadata: [
+                      { label: "Total Karyawan", value: `${dataToExport.length} Orang` },
+                      { label: "Status Operasional", value: "Aktif & Terdaftar" },
+                    ],
+                    columns: [
+                      { header: "No", width: "40px", align: "center", format: (_, idx) => idx + 1 },
+                      { header: "NIK / ID", width: "95px", align: "center", key: "id" },
+                      { header: "Nama", width: "140px", key: "nama" },
+                      { header: "Jabatan", width: "95px", align: "center", format: (r) => `<span class="badge">${r.jabatan}</span>` },
+                      { header: "Email", width: "150px", key: "email" },
+                      { header: "Wilayah", width: "110px", key: "wilayah" },
+                      { header: "No. HP", width: "105px", key: "noHp" },
+                      { header: "Status", width: "80px", align: "center", format: (r) => `<span class="badge">${r.status}</span>` },
+                    ],
+                    data: dataToExport,
+                  });
+                  toast.success(`Membuka dokumen cetak ${dataToExport.length} data karyawan...`);
+                }
+              }}
               searchPlaceholder="Cari karyawan..."
             />
           </Card>
@@ -485,23 +293,16 @@ export function MasterDataContent({ tab }: MasterDataContentProps) {
           </DialogContent>
         </Dialog>
 
-        {/* Delete Karyawan */}
-        <AlertDialog open={isDeleteKaryawanOpen} onOpenChange={setIsDeleteKaryawanOpen}>
-          <AlertDialogContent className="border-border">
-            <AlertDialogHeader>
-              <AlertDialogTitle>Hapus Karyawan</AlertDialogTitle>
-              <AlertDialogDescription>
-                Apakah Anda yakin ingin menghapus data karyawan "{selectedKaryawan?.nama}"? Tindakan ini tidak dapat dibatalkan.
-              </AlertDialogDescription>
-            </AlertDialogHeader>
-            <AlertDialogFooter>
-              <AlertDialogCancel>Batal</AlertDialogCancel>
-              <AlertDialogAction onClick={handleDeleteKaryawan} className="bg-red-500 hover:bg-red-600">
-                Hapus
-              </AlertDialogAction>
-            </AlertDialogFooter>
-          </AlertDialogContent>
-        </AlertDialog>
+        {/* Permanent Erasure Dialog for Karyawan */}
+        <PermanentErasureDialog
+          open={isDeleteKaryawanOpen}
+          onOpenChange={setIsDeleteKaryawanOpen}
+          targetId={selectedKaryawan?.id || null}
+          targetName={selectedKaryawan?.nama}
+          onErasureSuccess={() => {
+            refreshKaryawan();
+          }}
+        />
       </div>
     );
   }
@@ -520,6 +321,7 @@ type KaryawanFormData = {
   nama: string; jabatan: string; email: string; wilayah: string;
   noHp: string; status: string; jenisKelamin: string; alamat: string;
   gajiPokok: string; tanggalBergabung: string; tanggalLahir: string;
+  nikKtp: string;
 };
 
 function KaryawanForm({ form, onChange }: {
@@ -609,14 +411,26 @@ function KaryawanForm({ form, onChange }: {
         </div>
       </div>
 
-      <div className="space-y-1.5">
-        <Label>Alamat</Label>
-        <Input
-          className="bg-input-background border-border h-9 text-xs"
-          placeholder="Alamat lengkap"
-          value={form.alamat}
-          onChange={(e) => set("alamat")(e.target.value)}
-        />
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+        <div className="space-y-1.5">
+          <Label>NIK KTP</Label>
+          <Input
+            className="bg-input-background border-border h-9 text-xs font-mono tabular-nums"
+            placeholder="16 digit NIK KTP (opsional)"
+            maxLength={16}
+            value={form.nikKtp || ""}
+            onChange={(e) => set("nikKtp")(e.target.value)}
+          />
+        </div>
+        <div className="space-y-1.5">
+          <Label>Alamat</Label>
+          <Input
+            className="bg-input-background border-border h-9 text-xs"
+            placeholder="Alamat domisili"
+            value={form.alamat}
+            onChange={(e) => set("alamat")(e.target.value)}
+          />
+        </div>
       </div>
 
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">

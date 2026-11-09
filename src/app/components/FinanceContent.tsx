@@ -1,4 +1,4 @@
-import { useState, useMemo, useEffect } from "react";
+import { useState, useMemo, useEffect, useRef } from "react";
 import { useParams, useNavigate, Navigate } from "react-router";
 import { Card } from "./ui/card";
 import { Button } from "./ui/button";
@@ -87,8 +87,16 @@ import { orderStore } from "../data/orderStore";
 import { useKaryawanPengguna } from "../data/karyawanPenggunaAdapter";
 import { documentRepository } from "../../data/repositories/documentRepository";
 import { processDocumentUpload, formatFileSize } from "../utils/fileCompressor";
-import { usePaymentMethods } from "../data/paymentMethodStore";
+import { paymentMethodStore, usePaymentMethods } from "../data/paymentMethodStore";
 import type { PaymentProof } from "../../domain/order/types";
+import { ActionInlineError } from "./ui/ActionInlineError";
+import { useActionFeedback } from "../hooks/useActionFeedback";
+import {
+  ActionApiError,
+  classifyActionError,
+  fetchWithTimeout,
+  parseApiErrorResponse,
+} from "../utils/actionErrorClassifier";
 import { Upload, ImageIcon, FileIcon, Trash2, Eye } from "lucide-react";
 import {
   PaymentFilterBar,
@@ -119,6 +127,9 @@ export const STANDARD_EXPENSE_CATEGORIES = [
   "Konsumsi & Keperluan Harian",
   "Lain-lain / Biaya Tak Terduga",
 ];
+
+const makeLunasIdempotencyKey = (invoiceId: number | string) =>
+  `pay-${invoiceId}-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
 
 interface FinanceContentProps {
   tab: string;
@@ -196,26 +207,53 @@ export function FinanceContent({ tab }: FinanceContentProps) {
   const [lunasAmount, setLunasAmount] = useState<number>(0);
   const [lunasDate, setLunasDate] = useState<string>(() => new Date().toISOString().split("T")[0]);
   const [lunasNotes, setLunasNotes] = useState<string>("");
+  const [lunasUnknownOutcome, setLunasUnknownOutcome] = useState<boolean>(false);
 
   const [cashbackMethod, setCashbackMethod] = useState("Transfer BCA");
   const [cashbackProof, setCashbackProof] = useState<PaymentProof | null>(null);
   const [isUploadingCashbackProof, setIsUploadingCashbackProof] = useState(false);
   const [cashbackDate, setCashbackDate] = useState<string>(() => new Date().toISOString().split("T")[0]);
   const [cashbackIdempotencyKey, setCashbackIdempotencyKey] = useState<string>("");
+  const [cashbackUnknownOutcome, setCashbackUnknownOutcome] = useState<boolean>(false);
   const [paidCashbackIds, setPaidCashbackIds] = useState<Set<string | number>>(new Set());
   const [dismissedCashbackIds, setDismissedCashbackIds] = useState<Set<string | number>>(new Set());
   const [selesaiInfoItem, setSelesaiInfoItem] = useState<any | null>(null);
   const [editingCashbackItem, setEditingCashbackItem] = useState<any | null>(null);
   const [editingCashbackForm, setEditingCashbackForm] = useState<any>({});
+  const [isSavingEditCashback, setIsSavingEditCashback] = useState<boolean>(false);
   const [isCashbackToday, setIsCashbackToday] = useState<boolean>(true);
   const [cashbackAmount, setCashbackAmount] = useState<number>(0);
 
   const [targetPayments, setTargetPayments] = useState<any[]>([]);
   const [isLoadingPayments, setIsLoadingPayments] = useState(false);
 
+  const actionFeedback = useActionFeedback();
+  const lunasSubmittingRef = useRef(false);
+  const lunasUploadRef = useRef(false);
+  const cashbackOpeningRef = useRef(false);
+  const cashbackSubmittingRef = useRef(false);
+  const cashbackUploadRef = useRef(false);
+  const cashbackEditRef = useRef(false);
+  const voidCashbackRef = useRef(false);
+  const voidPaymentRef = useRef(false);
+  const selesaiDismissRef = useRef(false);
+
+  const handleLunasAmountChange = (nextAmount: number) => {
+    actionFeedback.clearError("finance-lunas-submit");
+    if (nextAmount !== lunasAmount) {
+      setLunasUnknownOutcome(false);
+      if (lunasTargetItem && !lunasSubmittingRef.current) {
+        setLunasIdempotencyKey(makeLunasIdempotencyKey(lunasTargetItem.id));
+      }
+    }
+    setLunasAmount(nextAmount);
+  };
+
   const handleUploadLunasProof = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
-    if (!file) return;
+    if (!file || lunasUploadRef.current) return;
+    lunasUploadRef.current = true;
+    actionFeedback.clearError("finance-lunas-proof");
     try {
       setIsUploadingLunasProof(true);
       toast.info(`Memproses bukti pelunasan ${file.name}...`);
@@ -234,8 +272,12 @@ export function FinanceContent({ tab }: FinanceContentProps) {
       });
       toast.success(`Bukti pelunasan ${processed.fileName} berhasil diunggah.`);
     } catch (err: any) {
-      toast.error(err?.message || "Gagal mengunggah bukti pelunasan.");
+      const classified = actionFeedback.setError("finance-lunas-proof", err, {
+        actionLabel: "mengunggah bukti pelunasan",
+      });
+      toast.error(classified.message);
     } finally {
+      lunasUploadRef.current = false;
       setIsUploadingLunasProof(false);
       e.target.value = "";
     }
@@ -243,7 +285,9 @@ export function FinanceContent({ tab }: FinanceContentProps) {
 
   const handleUploadCashbackProof = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
-    if (!file) return;
+    if (!file || cashbackUploadRef.current) return;
+    cashbackUploadRef.current = true;
+    actionFeedback.clearError("finance-cashback-proof");
     try {
       setIsUploadingCashbackProof(true);
       toast.info(`Memproses bukti pencairan ${file.name}...`);
@@ -262,8 +306,12 @@ export function FinanceContent({ tab }: FinanceContentProps) {
       });
       toast.success(`Bukti pencairan ${processed.fileName} berhasil diunggah.`);
     } catch (err: any) {
-      toast.error(err?.message || "Gagal mengunggah bukti pencairan.");
+      const classified = actionFeedback.setError("finance-cashback-proof", err, {
+        actionLabel: "mengunggah bukti pencairan",
+      });
+      toast.error(classified.message);
     } finally {
+      cashbackUploadRef.current = false;
       setIsUploadingCashbackProof(false);
       e.target.value = "";
     }
@@ -299,6 +347,22 @@ export function FinanceContent({ tab }: FinanceContentProps) {
   const [isRekonsiliasiOpen, setIsRekonsiliasiOpen] = useState(false);
 
   const handleOpenCashbackConfirm = async (item: any) => {
+    if (cashbackOpeningRef.current) return;
+    if (item.isPayoutGated) {
+      const gatingReason =
+        item.payoutGatingReason || (!item.hasFinalCost ? "Biaya Final Belum Ada" : "Menunggu persetujuan Supervisi (Stage 6)");
+      toast.warning(`Pencairan belum dapat diproses: ${gatingReason}`);
+      return;
+    }
+    const isAlreadyPaid =
+      paidCashbackIds.has(item.id) || (item.orderNo && paidCashbackIds.has(item.orderNo)) || item.status === "Dibayar";
+    if (isAlreadyPaid) {
+      toast.info(`Cashback untuk ${item.orderNo || item.invoice} sudah berstatus Dibayar.`);
+      return;
+    }
+
+    actionFeedback.clearByPrefix("finance-cashback-");
+    setCashbackUnknownOutcome(false);
     setCashbackTargetItem(item);
     const amount = Number(item.nominalKelebihan || item.jumlahCashback || 0);
     setCashbackAmount(amount);
@@ -315,25 +379,40 @@ export function FinanceContent({ tab }: FinanceContentProps) {
     setCashbackBank(isCashInitial ? "Tunai" : (foundM?.bank || "BCA"));
     setCashbackNoRekening("");
     setCashbackProof(null);
-    // DEF-FIN-005 Intent Lifecycle: Check for unresolved intent or strict 7-attribute server reconciliation
-    const unresolved = payoutIntentManager.getUnresolvedIntent(item.id);
-    if (unresolved && Array.isArray(item.payoutHistory)) {
-      const reconciled = payoutIntentManager.reconcileWithInvoice(item.id, item.payoutHistory);
-      if (reconciled) {
-        toast.success("Transaksi pencairan sebelumnya telah berhasil dibukukan di server.");
-        setCashbackTargetItem(null);
-        return;
-      }
-    }
 
-    const intent = await payoutIntentManager.getOrCreateIntentAsync(item.id, amount);
-    setCashbackIdempotencyKey(intent.idempotencyKey);
-    if (intent.status === "UNKNOWN_OUTCOME" && intent.nominal) {
-      setCashbackAmount(intent.nominal);
+    cashbackOpeningRef.current = true;
+    try {
+      // DEF-FIN-005 Intent Lifecycle: Check for unresolved intent or strict 7-attribute server reconciliation
+      const unresolved = payoutIntentManager.getUnresolvedIntent(item.id);
+      if (unresolved && Array.isArray(item.payoutHistory)) {
+        const reconciled = payoutIntentManager.reconcileWithInvoice(item.id, item.payoutHistory);
+        if (reconciled) {
+          toast.success("Transaksi pencairan sebelumnya telah berhasil dibukukan di server.");
+          setCashbackTargetItem(null);
+          return;
+        }
+      }
+
+      const intent = await payoutIntentManager.getOrCreateIntentAsync(item.id, amount);
+      setCashbackIdempotencyKey(intent.idempotencyKey);
+      if (intent.status === "UNKNOWN_OUTCOME") {
+        setCashbackUnknownOutcome(true);
+        if (intent.nominal) {
+          setCashbackAmount(intent.nominal);
+        }
+      }
+    } catch (err: any) {
+      const classified = actionFeedback.setError("finance-cashback-submit", err, {
+        actionLabel: "menyiapkan pencairan cashback",
+      });
+      toast.error(classified.message);
+    } finally {
+      cashbackOpeningRef.current = false;
     }
   };
 
   const handleOpenEditCashback = (item: any) => {
+    actionFeedback.clearError("finance-cashback-edit");
     setEditingCashbackItem(item);
     setEditingCashbackForm({
       orderNo: item.orderNo || item.invoice || "",
@@ -342,66 +421,208 @@ export function FinanceContent({ tab }: FinanceContentProps) {
       phone: item.phone || item.noHp || "",
       tanggalMasukBerkas: item.tanggalMasukBerkas || item.tanggal || "",
       totalTagihan: Number(item.totalTagihan || 0),
-      uangMasuk: Number(item.uangMasuk || item.terbayar || 0),
-      nominalKelebihan: Number(item.nominalKelebihan || item.jumlahCashback || 0),
+      uangMasuk: Number(item.uangMasuk ?? item.terbayar ?? 0),
+      nominalKelebihan: Number(item.nominalKelebihan ?? item.jumlahCashback ?? 0),
       status: item.status || "Pending",
       alasanPending: item.alasanPending || item.alasan || "",
     });
   };
 
   const handleSaveEditCashback = async () => {
-    if (!editingCashbackItem) return;
+    if (!editingCashbackItem || cashbackEditRef.current) return;
+    actionFeedback.clearError("finance-cashback-edit");
+
+    const trimmedCustomer = String(editingCashbackForm.customer || "").trim();
+    const trimmedNopol = String(editingCashbackForm.nopol || "").trim();
+    const totalTagihanNum = Number(editingCashbackForm.totalTagihan);
+    const uangMasukNum = Number(editingCashbackForm.uangMasuk);
+    const nominalKelebihanNum = Number(editingCashbackForm.nominalKelebihan);
+
+    if (!trimmedCustomer) {
+      const err = new ActionApiError(400, "VALIDATION_ERROR", "Nama customer wajib diisi.", { field: "customer" });
+      const classified = actionFeedback.setError("finance-cashback-edit", err);
+      toast.error(classified.message);
+      return;
+    }
+    if (!trimmedNopol) {
+      const err = new ActionApiError(400, "VALIDATION_ERROR", "Nomor polisi kendaraan wajib diisi.", { field: "nopol" });
+      const classified = actionFeedback.setError("finance-cashback-edit", err);
+      toast.error(classified.message);
+      return;
+    }
+    if (
+      Number.isNaN(totalTagihanNum) ||
+      Number.isNaN(uangMasukNum) ||
+      Number.isNaN(nominalKelebihanNum) ||
+      totalTagihanNum < 0 ||
+      uangMasukNum < 0 ||
+      nominalKelebihanNum < 0
+    ) {
+      const err = new ActionApiError(
+        400,
+        "VALIDATION_ERROR",
+        "Nominal tagihan, uang masuk, dan kelebihan bayar tidak boleh bernilai negatif."
+      );
+      const classified = actionFeedback.setError("finance-cashback-edit", err);
+      toast.error(classified.message);
+      return;
+    }
+
+    const isPaid = editingCashbackItem.status === "Dibayar" || paidCashbackIds.has(editingCashbackItem.id);
+    const origTagihan = Number(editingCashbackItem.totalTagihan || 0);
+    const origMasuk = Number(editingCashbackItem.uangMasuk ?? editingCashbackItem.terbayar ?? 0);
+    const origKelebihan = Number(editingCashbackItem.nominalKelebihan ?? editingCashbackItem.jumlahCashback ?? 0);
+    const origStatus = editingCashbackItem.status || "Pending";
+    const hasFinancialChange =
+      !isPaid &&
+      (totalTagihanNum !== origTagihan ||
+        uangMasukNum !== origMasuk ||
+        nominalKelebihanNum !== origKelebihan ||
+        String(editingCashbackForm.status || "Pending") !== origStatus);
+
+    const validOrderNo =
+      editingCashbackItem.orderNo && editingCashbackItem.orderNo !== "-" ? String(editingCashbackItem.orderNo) : "";
+
+    cashbackEditRef.current = true;
     try {
-      const isPaid = editingCashbackItem.status === "Dibayar" || paidCashbackIds.has(editingCashbackItem.id);
+      setIsSavingEditCashback(true);
 
-      const updates: any = {
-        nopol: editingCashbackForm.nopol,
-        customer: editingCashbackForm.customer,
-        phone: editingCashbackForm.phone,
-        tanggalMasukBerkas: editingCashbackForm.tanggalMasukBerkas,
-        alasan_pending: editingCashbackForm.alasanPending,
-        alasan: editingCashbackForm.alasanPending,
-      };
+      if (APP_CONFIG.dataProvider === "api") {
+        if (hasFinancialChange) {
+          throw new ActionApiError(
+            422,
+            "BUSINESS_RULE_VIOLATION",
+            "Perubahan nilai Total Tagihan, Uang Masuk, Kelebihan Bayar, atau Status cashback belum dapat disimpan dari formulir ini karena endpoint pembaruan finansial invoice belum tersedia di server. Gunakan aksi Cairkan / Void atau ubah biaya dari modul Order."
+          );
+        }
+        if (!validOrderNo) {
+          throw new ActionApiError(
+            422,
+            "BUSINESS_RULE_VIOLATION",
+            "Transaksi ini belum terhubung ke Nomor Order di server sehingga perubahan data tidak dapat disimpan permanen."
+          );
+        }
 
-      if (!isPaid) {
-        updates.totalTagihan = Number(editingCashbackForm.totalTagihan) || 0;
-        updates.terbayar = Number(editingCashbackForm.uangMasuk) || 0;
-        updates.dibayar = Number(editingCashbackForm.uangMasuk) || 0;
-        updates.overpayment = Number(editingCashbackForm.nominalKelebihan) || 0;
-        updates.cashback = Number(editingCashbackForm.nominalKelebihan) || 0;
-        updates.statusCashback = editingCashbackForm.status;
-      }
+        const orderUpdated = await orderStore.updateOrderAsync(validOrderNo, {
+          customer: trimmedCustomer,
+          nomorHP: String(editingCashbackForm.phone || "").trim(),
+          nopol: trimmedNopol.toUpperCase(),
+          tanggalMasukBerkas: editingCashbackForm.tanggalMasukBerkas,
+          alasanPending: editingCashbackForm.alasanPending,
+          alasan_pending: editingCashbackForm.alasanPending,
+        });
 
-      updateInvoice(editingCashbackItem.id, updates);
-
-      if (editingCashbackItem.orderNo) {
-        orderStore.updateOrder(editingCashbackItem.orderNo, {
-          customer: editingCashbackForm.customer,
-          nomorHP: editingCashbackForm.phone,
-          nopol: editingCashbackForm.nopol,
+        if (!orderUpdated) {
+          throw new ActionApiError(404, "NOT_FOUND", `Data order ${validOrderNo} tidak ditemukan di server.`);
+        }
+      } else if (validOrderNo) {
+        orderStore.updateOrder(validOrderNo, {
+          customer: trimmedCustomer,
+          nomorHP: String(editingCashbackForm.phone || "").trim(),
+          nopol: trimmedNopol.toUpperCase(),
+          tanggalMasukBerkas: editingCashbackForm.tanggalMasukBerkas,
           alasanPending: editingCashbackForm.alasanPending,
           alasan_pending: editingCashbackForm.alasanPending,
         });
       }
 
+      const updates: any = {
+        nopol: trimmedNopol.toUpperCase(),
+        customer: trimmedCustomer,
+        phone: String(editingCashbackForm.phone || "").trim(),
+        tanggalMasukBerkas: editingCashbackForm.tanggalMasukBerkas,
+        alasan_pending: editingCashbackForm.alasanPending,
+        alasan: editingCashbackForm.alasanPending,
+      };
+
+      if (!isPaid && APP_CONFIG.dataProvider !== "api") {
+        updates.totalTagihan = totalTagihanNum;
+        updates.terbayar = uangMasukNum;
+        updates.dibayar = uangMasukNum;
+        updates.overpayment = nominalKelebihanNum;
+        updates.cashback = nominalKelebihanNum;
+        updates.statusCashback = editingCashbackForm.status;
+      }
+
+      updateInvoice(editingCashbackItem.id, updates);
+
       toast.success(`Perubahan transaksi ${editingCashbackItem.orderNo || editingCashbackItem.invoice} berhasil disimpan.`);
       setEditingCashbackItem(null);
     } catch (err: any) {
-      toast.error(err?.message || "Gagal menyimpan perubahan transaksi.");
+      const classified = actionFeedback.setError("finance-cashback-edit", err, {
+        entityLabel: editingCashbackItem.orderNo || editingCashbackItem.invoice,
+        actionLabel: "menyimpan perubahan transaksi",
+      });
+      toast.error(classified.message);
+    } finally {
+      cashbackEditRef.current = false;
+      setIsSavingEditCashback(false);
     }
   };
 
   const handleConfirmCashbackPayment = async () => {
-    if (!cashbackTargetItem || isSubmittingCashback) return;
+    if (!cashbackTargetItem || cashbackSubmittingRef.current) return;
+    actionFeedback.clearError("finance-cashback-submit");
+
+    if (cashbackTargetItem.isPayoutGated) {
+      const gatingReason =
+        cashbackTargetItem.payoutGatingReason ||
+        (!cashbackTargetItem.hasFinalCost ? "Biaya Final Belum Ada" : "Menunggu persetujuan Supervisi (Stage 6)");
+      const err = new ActionApiError(422, "SUPERVISI_NOT_APPROVED", `Pencairan belum dapat diproses: ${gatingReason}.`);
+      const classified = actionFeedback.setError("finance-cashback-submit", err);
+      toast.error(classified.message);
+      return;
+    }
+
+    const isAlreadyPaid =
+      paidCashbackIds.has(cashbackTargetItem.id) ||
+      (cashbackTargetItem.orderNo && paidCashbackIds.has(cashbackTargetItem.orderNo)) ||
+      cashbackTargetItem.status === "Dibayar";
+    if (isAlreadyPaid) {
+      const err = new ActionApiError(
+        409,
+        "ALREADY_PROCESSED",
+        `Cashback untuk transaksi ${cashbackTargetItem.orderNo || cashbackTargetItem.invoice} sudah berstatus Dibayar.`
+      );
+      const classified = actionFeedback.setError("finance-cashback-submit", err);
+      toast.error(classified.message);
+      return;
+    }
 
     const maxAvailable = Number(cashbackTargetItem.nominalKelebihan || cashbackTargetItem.jumlahCashback || 0);
     const amount = Number(cashbackAmount) || 0;
     if (amount <= 0) {
-      toast.error("Nominal yang dicairkan harus bernilai positif (lebih besar dari Rp 0).");
+      const err = new ActionApiError(400, "VALIDATION_ERROR", "Nominal yang dicairkan harus bernilai positif (lebih besar dari Rp 0).");
+      const classified = actionFeedback.setError("finance-cashback-submit", err);
+      toast.error(classified.message);
       return;
     }
     if (amount > maxAvailable && maxAvailable > 0) {
-      toast.error(`Nominal yang dicairkan tidak boleh melebihi saldo yang berhak dicairkan (${formatRupiah(maxAvailable)}).`);
+      const err = new ActionApiError(
+        422,
+        "EXCEEDS_LIMIT",
+        `Nominal yang dicairkan tidak boleh melebihi saldo yang berhak dicairkan (${formatRupiah(maxAvailable)}).`
+      );
+      const classified = actionFeedback.setError("finance-cashback-submit", err);
+      toast.error(classified.message);
+      return;
+    }
+    if (!cashbackDate || !cashbackDate.trim()) {
+      const err = new ActionApiError(400, "VALIDATION_ERROR", "Tanggal pengeluaran kas wajib diisi.", { field: "tanggal" });
+      const classified = actionFeedback.setError("finance-cashback-submit", err);
+      toast.error(classified.message);
+      return;
+    }
+
+    const matchedCashbackMethod = paymentMethodStore.getAll().find((m) => m.nama_metode === cashbackMethod);
+    if (matchedCashbackMethod && matchedCashbackMethod.status === "Nonaktif") {
+      const err = new ActionApiError(
+        422,
+        "PAYMENT_METHOD_INACTIVE",
+        `Metode pembayaran "${cashbackMethod}" berstatus Nonaktif dan tidak dapat digunakan untuk pencairan.`
+      );
+      const classified = actionFeedback.setError("finance-cashback-submit", err);
+      toast.error(classified.message);
       return;
     }
 
@@ -414,15 +635,22 @@ export function FinanceContent({ tab }: FinanceContentProps) {
 
     if (!isCashbackCash) {
       if (!cashbackBank.trim()) {
-        toast.error("Bank tujuan wajib diisi untuk transfer bank.");
+        const err = new ActionApiError(400, "VALIDATION_ERROR", "Bank tujuan wajib diisi untuk transfer bank.", { field: "bank" });
+        const classified = actionFeedback.setError("finance-cashback-submit", err);
+        toast.error(classified.message);
         return;
       }
       if (!cashbackNoRekening.trim()) {
-        toast.error("Nomor rekening tujuan wajib diisi untuk transfer bank.");
+        const err = new ActionApiError(400, "VALIDATION_ERROR", "Nomor rekening tujuan wajib diisi untuk transfer bank.", {
+          field: "noRekening",
+        });
+        const classified = actionFeedback.setError("finance-cashback-submit", err);
+        toast.error(classified.message);
         return;
       }
     }
 
+    cashbackSubmittingRef.current = true;
     try {
       setIsSubmittingCashback(true);
       const isOverpaymentOnly = cashbackTargetItem.nominalKelebihan > 0 && (cashbackTargetItem.nominalKomisi || 0) === 0;
@@ -453,8 +681,9 @@ export function FinanceContent({ tab }: FinanceContentProps) {
 
       if (ok) {
         payoutIntentManager.markDefinitiveSuccess(cashbackTargetItem.id);
+        setCashbackUnknownOutcome(false);
         toast.success(
-          `Pencairan dana untuk ${cashbackTargetItem.orderNo || cashbackTargetItem.invoice} sebesar ${formatRupiah(amount)} berhasil dicatat ke Kas Kantor.`
+          `Cashback Berhasil Diproses: Pencairan dana untuk ${cashbackTargetItem.orderNo || cashbackTargetItem.invoice} sebesar ${formatRupiah(amount)} berhasil dicatat ke Kas Kantor.`
         );
 
         const voucherPayload = {
@@ -477,7 +706,7 @@ export function FinanceContent({ tab }: FinanceContentProps) {
         };
         setPrintVoucherData(voucherPayload);
 
-        // Mark as paid so status becomes "Dibayar" and button becomes "Selesai" 
+        // Mark as paid so status becomes "Dibayar" and button becomes "Selesai"
         setPaidCashbackIds((prev) => {
           const next = new Set(prev);
           next.add(cashbackTargetItem.id);
@@ -488,25 +717,50 @@ export function FinanceContent({ tab }: FinanceContentProps) {
         setCashbackProof(null);
         setCashbackIdempotencyKey("");
       } else {
-        toast.error("Gagal memproses pencairan cashback / refund.");
+        const failErr = new ActionApiError(422, "BUSINESS_RULE_VIOLATION", "Gagal memproses pencairan cashback / refund. Periksa kembali data transaksi.");
+        payoutIntentManager.markDefinitiveFailed(cashbackTargetItem.id, failErr.message);
+        const classified = actionFeedback.setError("finance-cashback-submit", failErr);
+        toast.error(classified.message);
       }
     } catch (err: any) {
-      if (err?.isDefinitive) {
-        payoutIntentManager.markDefinitiveFailed(cashbackTargetItem.id, err.message);
-        if (err?.errorCode === "CONCURRENT_MODIFICATION") {
-          toast.error("Transaksi ditolak: Data invoice telah diperbarui oleh pengguna/perangkat lain. Memuat ulang data invoice...");
+      const classified = classifyActionError(err, { actionLabel: "mencairkan dana cashback" });
+      const isUncertain =
+        classified.code === "TIMEOUT" ||
+        classified.code === "NETWORK_ERROR" ||
+        classified.statusCode === 408 ||
+        classified.statusCode === 429 ||
+        (classified.statusCode !== undefined && classified.statusCode >= 500) ||
+        err?.isDefinitive === false;
+
+      if (!isUncertain) {
+        payoutIntentManager.markDefinitiveFailed(cashbackTargetItem.id, classified.message);
+        setCashbackUnknownOutcome(false);
+        if (err?.errorCode === "CONCURRENT_MODIFICATION" || err?.code === "CONCURRENT_MODIFICATION") {
+          const concErr = new ActionApiError(
+            409,
+            "CONCURRENT_MODIFICATION",
+            "Transaksi ditolak: Data invoice telah diperbarui oleh pengguna atau perangkat lain. Data terbaru sedang dimuat ulang."
+          );
+          actionFeedback.setError("finance-cashback-submit", concErr);
+          toast.error(concErr.message);
           financeStore.syncFromRepository();
         } else {
-          toast.error(err?.message || "Terjadi kesalahan saat memproses pencairan.");
+          actionFeedback.setError("finance-cashback-submit", err, { actionLabel: "mencairkan dana cashback" });
+          toast.error(classified.message);
         }
       } else {
-        payoutIntentManager.markUnknownOutcome(cashbackTargetItem.id, err.message);
-        toast.error(
-          "Gangguan koneksi atau server timeout. Hasil transaksi belum terkonfirmasi. " +
-          "Kunci transaksi (idempotency key) dipertahankan agar percobaan ulang tidak menyebabkan mutasi kas ganda."
+        payoutIntentManager.markUnknownOutcome(cashbackTargetItem.id, classified.message);
+        setCashbackUnknownOutcome(true);
+        const uncertainErr = new ActionApiError(
+          classified.statusCode || 408,
+          classified.code === "NETWORK_ERROR" ? "NETWORK_ERROR" : "TIMEOUT",
+          "Gangguan koneksi atau server timeout saat memproses pencairan. Status pencairan BELUM terkonfirmasi (bukan dianggap berhasil ataupun gagal). Kunci idempotensi dipertahankan agar percobaan ulang tidak menyebabkan mutasi kas ganda — silakan periksa status transaksi sebelum mencoba lagi."
         );
+        actionFeedback.setError("finance-cashback-submit", uncertainErr);
+        toast.warning(uncertainErr.message);
       }
     } finally {
+      cashbackSubmittingRef.current = false;
       setIsSubmittingCashback(false);
     }
   };
@@ -526,34 +780,52 @@ export function FinanceContent({ tab }: FinanceContentProps) {
       toast.info(`Tagihan ${item.invoice || item.invoiceNo || item.orderNo} sudah berstatus Lunas. Kelebihan bayar dapat dikelola di Cashback Terpending.`);
       return;
     }
+
+    actionFeedback.clearByPrefix("finance-lunas-");
+    setLunasUnknownOutcome(false);
     setLunasTargetItem(item);
     setLunasAmount(sisa);
+    setLunasInstallmentMode("full");
     setLunasDate(new Date().toISOString().split("T")[0]);
     setLunasMethod(activeMethods[0]?.nama_metode || "Transfer BCA");
     setLunasProof(null);
     setLunasNotes("");
-    setLunasIdempotencyKey(`pay-${item.id}-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`);
+    setLunasIdempotencyKey(makeLunasIdempotencyKey(item.id));
 
     // Fetch previous payment history for this invoice / order
     setTargetPayments([]);
     setIsLoadingPayments(true);
     const invoiceNum = item.invoice || item.invoiceNo || item.orderNo;
     if (invoiceNum) {
-      fetch(`${APP_CONFIG.apiBaseUrl}/finance/invoices/${encodeURIComponent(invoiceNum)}/payments`, {
-        headers: {
-          Authorization: `Bearer ${localStorage.getItem("sun89_auth_token") || ""}`,
+      const token = localStorage.getItem("auth_token") || localStorage.getItem("sun89_auth_token") || "";
+      fetchWithTimeout(
+        `${APP_CONFIG.apiBaseUrl}/finance/invoices/${encodeURIComponent(invoiceNum)}/payments`,
+        {
+          headers: token ? { Authorization: `Bearer ${token}` } : {},
         },
-      })
-        .then((res) => (res.ok ? res.json() : null))
+        10000
+      )
+        .then(async (res) => {
+          if (!res.ok) {
+            throw await parseApiErrorResponse(res, "Gagal memuat riwayat pembayaran terbaru dari server.");
+          }
+          return res.json();
+        })
         .then((payload) => {
+          actionFeedback.clearError("finance-lunas-history");
           if (payload?.success && Array.isArray(payload.data) && payload.data.length > 0) {
             setTargetPayments(payload.data);
           } else {
             setTargetPayments(item.riwayatPembayaran || item.paymentRecords || []);
           }
         })
-        .catch(() => {
+        .catch((err) => {
           setTargetPayments(item.riwayatPembayaran || item.paymentRecords || []);
+          if (APP_CONFIG.dataProvider === "api") {
+            actionFeedback.setError("finance-lunas-history", err, {
+              actionLabel: "memuat riwayat pembayaran",
+            });
+          }
         })
         .finally(() => {
           setIsLoadingPayments(false);
@@ -565,32 +837,70 @@ export function FinanceContent({ tab }: FinanceContentProps) {
   };
 
   const handleConfirmLunas = async () => {
-    if (!lunasTargetItem || isSubmittingLunas) return;
+    if (!lunasTargetItem || lunasSubmittingRef.current) return;
+    actionFeedback.clearError("finance-lunas-submit");
 
     // Phase B Gating: Strict UI pre-guard before triggering backend
-    if (lunasTargetItem.isPaymentGated || !lunasTargetItem.hasFinalCost || !lunasTargetItem.isSupervisiApproved) {
-      const reason = lunasTargetItem.paymentGatingReason || (!lunasTargetItem.hasFinalCost ? "Biaya final belum ditetapkan (Stage 5)" : "Menunggu persetujuan Supervisi (Stage 6)");
-      toast.error(`Pembayaran ditolak: ${reason}.`);
+    if (
+      lunasTargetItem.isPaymentGated ||
+      !lunasTargetItem.hasFinalCost ||
+      !lunasTargetItem.isSupervisiApproved ||
+      lunasTargetItem.costVerificationStatus === "PENDING_VERIFICATION" ||
+      lunasTargetItem.isDraftEstimate
+    ) {
+      const reason =
+        lunasTargetItem.costVerificationStatus === "PENDING_VERIFICATION" || lunasTargetItem.isDraftEstimate
+          ? "Biaya Samsat berstatus Estimasi Sementara dan belum diverifikasi"
+          : (lunasTargetItem.paymentGatingReason || (!lunasTargetItem.hasFinalCost ? "Biaya final belum ditetapkan (Stage 5)" : "Menunggu persetujuan Supervisi (Stage 6)"));
+      const err = new ActionApiError(422, "SUPERVISI_NOT_APPROVED", `Pembayaran ditolak: ${reason}.`);
+      const classified = actionFeedback.setError("finance-lunas-submit", err);
+      toast.error(classified.message);
       return;
     }
 
     const payAmount = Number(lunasAmount) || 0;
     const currentSisa = Number(lunasTargetItem.kekurangan ?? lunasTargetItem.sisa ?? 0);
     if (payAmount <= 0) {
-      toast.error("Nominal pembayaran harus lebih besar dari Rp 0.");
+      const err = new ActionApiError(400, "VALIDATION_ERROR", "Nominal pembayaran harus lebih besar dari Rp 0.");
+      const classified = actionFeedback.setError("finance-lunas-submit", err);
+      toast.error(classified.message);
       return;
     }
     if (payAmount > currentSisa) {
-      toast.error(
+      const err = new ActionApiError(
+        422,
+        "BUSINESS_RULE_VIOLATION",
         `Nominal pembayaran (${formatRupiah(payAmount)}) melebihi sisa tagihan (${formatRupiah(currentSisa)}). Untuk kelebihan bayar, silakan kelola pada alur Cashback / Pengembalian.`
       );
+      const classified = actionFeedback.setError("finance-lunas-submit", err);
+      toast.error(classified.message);
       return;
     }
+    if (!lunasDate || !lunasDate.trim()) {
+      const err = new ActionApiError(400, "VALIDATION_ERROR", "Tanggal pembayaran wajib diisi.", { field: "tanggal" });
+      const classified = actionFeedback.setError("finance-lunas-submit", err);
+      toast.error(classified.message);
+      return;
+    }
+
+    const matchedLunasMethod = paymentMethodStore.getAll().find((m) => m.nama_metode === lunasMethod);
+    if (matchedLunasMethod && matchedLunasMethod.status === "Nonaktif") {
+      const err = new ActionApiError(
+        422,
+        "PAYMENT_METHOD_INACTIVE",
+        `Metode pembayaran "${lunasMethod}" berstatus Nonaktif dan tidak dapat digunakan.`
+      );
+      const classified = actionFeedback.setError("finance-lunas-submit", err);
+      toast.error(classified.message);
+      return;
+    }
+
+    lunasSubmittingRef.current = true;
     try {
       setIsSubmittingLunas(true);
       let key = lunasIdempotencyKey;
       if (!key) {
-        key = `pay-${lunasTargetItem.id}-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
+        key = makeLunasIdempotencyKey(lunasTargetItem.id);
         setLunasIdempotencyKey(key);
       }
       const isFull = payAmount === currentSisa;
@@ -603,6 +913,8 @@ export function FinanceContent({ tab }: FinanceContentProps) {
         idempotencyKey: key,
       });
       if (ok) {
+        setLunasUnknownOutcome(false);
+        actionFeedback.clearByPrefix("finance-lunas-");
         toast.success(
           `Pembayaran ${formatRupiah(payAmount)} untuk ${lunasTargetItem.invoice || lunasTargetItem.invoiceNo || lunasTargetItem.orderNo} (${lunasTargetItem.customer}) berhasil dicatat.`
         );
@@ -634,11 +946,42 @@ export function FinanceContent({ tab }: FinanceContentProps) {
         setLunasNotes("");
         setTargetPayments([]);
       } else {
-        toast.error("Gagal mencatat pembayaran tagihan. Silakan periksa kembali data transaksi.");
+        const failErr = new ActionApiError(422, "BUSINESS_RULE_VIOLATION", "Gagal mencatat pembayaran tagihan. Silakan periksa kembali data transaksi.");
+        const classified = actionFeedback.setError("finance-lunas-submit", failErr);
+        toast.error(classified.message);
       }
     } catch (err: any) {
-      toast.error(err?.message || "Terjadi kesalahan saat memproses pembayaran.");
+      const classified = classifyActionError(err, { actionLabel: "mencatat pembayaran tagihan" });
+      const isUncertain =
+        classified.code === "TIMEOUT" ||
+        classified.code === "NETWORK_ERROR" ||
+        classified.statusCode === 408 ||
+        classified.statusCode === 429 ||
+        (classified.statusCode !== undefined && classified.statusCode >= 500);
+
+      if (isUncertain) {
+        setLunasUnknownOutcome(true);
+        const uncertainErr = new ActionApiError(
+          classified.statusCode || 408,
+          classified.code === "NETWORK_ERROR" ? "NETWORK_ERROR" : "TIMEOUT",
+          "Gangguan koneksi atau server timeout saat memproses pembayaran. Status pembayaran BELUM terkonfirmasi dan tagihan belum dianggap lunas. Kunci idempotensi tetap dipertahankan — silakan periksa status tagihan sebelum mengirim ulang agar tidak terjadi pencatatan ganda."
+        );
+        actionFeedback.setError("finance-lunas-submit", uncertainErr);
+        toast.warning(uncertainErr.message);
+      } else {
+        setLunasUnknownOutcome(false);
+        const errCode = String(err?.errorCode || err?.code || classified.code);
+        if (errCode === "IDEMPOTENCY_CONFLICT") {
+          setLunasIdempotencyKey(makeLunasIdempotencyKey(lunasTargetItem.id));
+        }
+        if (errCode === "INVOICE_ALREADY_PAID" || errCode === "CONCURRENT_MODIFICATION" || classified.code === "CONFLICT") {
+          financeStore.syncFromRepository();
+        }
+        actionFeedback.setError("finance-lunas-submit", err, { actionLabel: "mencatat pembayaran tagihan" });
+        toast.error(classified.message);
+      }
     } finally {
+      lunasSubmittingRef.current = false;
       setIsSubmittingLunas(false);
     }
   };
@@ -855,11 +1198,15 @@ Terima kasih.`;
 
   // Void Payment Execution (Tahap 2)
   const handleConfirmVoidPayment = async () => {
-    if (!voidTargetPayment) return;
+    if (!voidTargetPayment || voidPaymentRef.current) return;
+    actionFeedback.clearError("finance-payment-void");
     if (!voidReasonText || voidReasonText.trim().length < 10) {
-      toast.error("Alasan pembatalan (Void) wajib diisi minimal 10 karakter sebagai bukti audit.");
+      const err = new ActionApiError(400, "VALIDATION_ERROR", "Alasan pembatalan (Void) wajib diisi minimal 10 karakter sebagai bukti audit.");
+      const classified = actionFeedback.setError("finance-payment-void", err);
+      toast.error(classified.message);
       return;
     }
+    voidPaymentRef.current = true;
     try {
       setIsSubmittingVoid(true);
       await voidInvoicePayment(voidTargetPayment.invoiceId, voidTargetPayment.paymentId, voidReasonText.trim());
@@ -871,9 +1218,11 @@ Terima kasih.`;
         const invoiceNum = lunasTargetItem.invoice || lunasTargetItem.invoiceNo || lunasTargetItem.orderNo;
         if (invoiceNum) {
           const token = localStorage.getItem("auth_token") || localStorage.getItem("sun89_auth_token") || "";
-          const res = await fetch(`${APP_CONFIG.apiBaseUrl}/finance/invoices/${encodeURIComponent(invoiceNum)}/payments`, {
-            headers: { Authorization: `Bearer ${token}` }
-          });
+          const res = await fetchWithTimeout(
+            `${APP_CONFIG.apiBaseUrl}/finance/invoices/${encodeURIComponent(invoiceNum)}/payments`,
+            { headers: token ? { Authorization: `Bearer ${token}` } : {} },
+            10000
+          );
           if (res.ok) {
             const payload = await res.json();
             if (payload?.success && Array.isArray(payload.data)) {
@@ -883,19 +1232,27 @@ Terima kasih.`;
         }
       }
     } catch (err: any) {
-      toast.error(err?.message || "Gagal membatalkan transaksi pembayaran.");
+      const classified = actionFeedback.setError("finance-payment-void", err, {
+        actionLabel: "membatalkan transaksi pembayaran",
+      });
+      toast.error(classified.message);
     } finally {
+      voidPaymentRef.current = false;
       setIsSubmittingVoid(false);
     }
   };
 
   // Void Cashback Payout Execution (Tahap 2)
   const handleConfirmVoidCashback = async () => {
-    if (!voidTargetCashback) return;
+    if (!voidTargetCashback || voidCashbackRef.current) return;
+    actionFeedback.clearError("finance-cashback-void");
     if (!voidReasonText || voidReasonText.trim().length < 10) {
-      toast.error("Alasan pembatalan (Void) wajib diisi minimal 10 karakter sebagai bukti audit.");
+      const err = new ActionApiError(400, "VALIDATION_ERROR", "Alasan pembatalan (Void) wajib diisi minimal 10 karakter sebagai bukti audit.");
+      const classified = actionFeedback.setError("finance-cashback-void", err);
+      toast.error(classified.message);
       return;
     }
+    voidCashbackRef.current = true;
     try {
       setIsSubmittingVoid(true);
       await voidCashbackPayout(voidTargetCashback.invoiceId, voidReasonText.trim());
@@ -906,11 +1263,17 @@ Terima kasih.`;
         next.delete(voidTargetCashback.orderNo);
         return next;
       });
+      actionFeedback.clearError("finance-cashback-void");
       setVoidTargetCashback(null);
       setVoidReasonText("");
     } catch (err: any) {
-      toast.error(err?.message || "Gagal membatalkan pencairan cashback.");
+      const classified = actionFeedback.setError("finance-cashback-void", err, {
+        entityLabel: voidTargetCashback.orderNo,
+        actionLabel: "membatalkan pencairan cashback",
+      });
+      toast.error(classified.message);
     } finally {
+      voidCashbackRef.current = false;
       setIsSubmittingVoid(false);
     }
   };
@@ -923,7 +1286,8 @@ Terima kasih.`;
       const history = await getVoidAuditHistory();
       setVoidHistoryData(history || { payments: [], cashbacks: [] });
     } catch (err: any) {
-      toast.error(err?.message || "Gagal memuat log audit pembatalan.");
+      const classified = classifyActionError(err, { actionLabel: "memuat log audit pembatalan" });
+      toast.error(classified.message);
     } finally {
       setIsLoadingVoidHistory(false);
     }
@@ -3757,7 +4121,9 @@ Terima kasih.`;
         <AlertDialog
           open={!!lunasTargetItem}
           onOpenChange={(open) => {
-            if (!open && !isSubmittingLunas) {
+            if (!open && !isSubmittingLunas && !isUploadingLunasProof) {
+              actionFeedback.clearByPrefix("finance-lunas-");
+              setLunasUnknownOutcome(false);
               setLunasTargetItem(null);
               setLunasProof(null);
               setTargetPayments([]);
@@ -3770,379 +4136,444 @@ Terima kasih.`;
                 <CheckCircle className="w-4 h-4 text-primary" />
                 Catat Pembayaran / Pelunasan Tagihan
               </AlertDialogTitle>
-              <AlertDialogDescription className="text-xs text-muted-foreground pt-1 space-y-3">
-                <p className="leading-relaxed">
-                  Catat pembayaran cicilan atau pelunasan sisa tagihan customer. Setiap mutasi kas masuk wajib diverifikasi dengan bukti transfer/setoran valid.
-                </p>
+              <AlertDialogDescription asChild>
+                <div className="text-xs text-muted-foreground pt-1 space-y-3 text-left">
+                  <p className="leading-relaxed">
+                    Catat pembayaran cicilan atau pelunasan sisa tagihan customer. Setiap mutasi kas masuk wajib diverifikasi dengan bukti transfer/setoran valid.
+                  </p>
 
-                {lunasTargetItem && (
-                  <div className="space-y-3">
-                    {/* Ringkasan Tagihan */}
-                    <div className="rounded-lg border border-border/80 bg-muted/30 p-3 space-y-2 text-xs">
-                      <div className="flex justify-between items-center py-0.5 border-b border-border/40">
-                        <span className="text-muted-foreground">No. Invoice / Order:</span>
-                        <div className="flex items-center gap-2">
-                          {lunasTargetItem.invoice && (
-                            <span className="font-mono font-semibold text-foreground">{lunasTargetItem.invoice}</span>
-                          )}
-                          {lunasTargetItem.orderNo && (
-                            <span className="font-mono text-muted-foreground text-[11px]">({lunasTargetItem.orderNo})</span>
-                          )}
-                        </div>
-                      </div>
-                      <div className="flex justify-between items-center py-0.5 border-b border-border/40">
-                        <span className="text-muted-foreground">Customer & Kendaraan:</span>
-                        <span className="font-medium text-foreground">
-                          {lunasTargetItem.customer} {lunasTargetItem.nopol ? `— ${lunasTargetItem.nopol}` : ""}
-                        </span>
-                      </div>
-                      <div className="flex justify-between items-center py-0.5 border-b border-border/40">
-                        <span className="text-muted-foreground">Jenis Pengurusan:</span>
-                        <span className="font-medium text-foreground">
-                          {lunasTargetItem.pengurusan || (lunasTargetItem as any).jenisLayanan || "Layanan Samsat"}
-                        </span>
-                      </div>
-                      <div className="grid grid-cols-3 gap-2 pt-1 text-center">
-                        <div className="p-2 rounded bg-background/60 border border-border/50">
-                          <p className="text-[10px] text-muted-foreground">Total Tagihan</p>
-                          <p className="text-xs font-semibold text-foreground font-mono mt-0.5">
-                            {formatRupiah(lunasTargetItem.totalTagihan || 0)}
-                          </p>
-                        </div>
-                        <div className="p-2 rounded bg-background/60 border border-border/50">
-                          <p className="text-[10px] text-muted-foreground">Sudah Terbayar</p>
-                          <p className="text-xs font-semibold text-emerald-600 dark:text-emerald-400 font-mono mt-0.5">
-                            {formatRupiah(lunasTargetItem.terbayar ?? (lunasTargetItem as any).uangMasuk ?? 0)}
-                          </p>
-                        </div>
-                        <div className="p-2 rounded bg-rose-500/10 border border-rose-500/20">
-                          <p className="text-[10px] text-rose-600 dark:text-rose-400 font-medium">Sisa Tagihan</p>
-                          <p className="text-xs font-bold text-rose-600 dark:text-rose-400 font-mono mt-0.5">
-                            {formatRupiah(lunasTargetItem.kekurangan ?? lunasTargetItem.sisa ?? 0)}
-                          </p>
-                        </div>
+                  {lunasUnknownOutcome && (
+                    <div className="bg-amber-500/10 border border-amber-500/40 text-amber-800 dark:text-amber-300 p-2.5 rounded-md text-xs flex items-start gap-2">
+                      <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
+                      <div>
+                        <p className="font-semibold">Status Pembayaran Sebelumnya Belum Terkonfirmasi</p>
+                        <p className="text-[11px] opacity-90 mt-0.5">
+                          Permintaan sebelumnya terputus atau timeout. Sistem mempertahankan kunci transaksi ({lunasIdempotencyKey.slice(0, 12)}...) agar percobaan ulang dengan nominal sama tidak menimbulkan pencatatan ganda. Periksa riwayat/status tagihan sebelum mengirim ulang.
+                        </p>
                       </div>
                     </div>
+                  )}
 
-                    {/* Status Approval Supervisi & Biaya Final */}
-                    <div className="flex items-center justify-between p-2.5 rounded-lg bg-emerald-500/10 border border-emerald-500/20 text-xs text-emerald-800 dark:text-emerald-300">
-                      <div className="flex items-center gap-1.5">
-                        <CheckCircle2 className="w-4 h-4 text-emerald-600 dark:text-emerald-400 shrink-0" />
-                        <span className="font-medium">Biaya Final & Supervisi Disetujui</span>
+                  {lunasTargetItem && (
+                    <div className="space-y-3">
+                      {/* Ringkasan Tagihan */}
+                      <div className="rounded-lg border border-border/80 bg-muted/30 p-3 space-y-2 text-xs">
+                        <div className="flex justify-between items-center py-0.5 border-b border-border/40">
+                          <span className="text-muted-foreground">No. Invoice / Order:</span>
+                          <div className="flex items-center gap-2">
+                            {lunasTargetItem.invoice && (
+                              <span className="font-mono font-semibold text-foreground">{lunasTargetItem.invoice}</span>
+                            )}
+                            {lunasTargetItem.orderNo && (
+                              <span className="font-mono text-muted-foreground text-[11px]">({lunasTargetItem.orderNo})</span>
+                            )}
+                          </div>
+                        </div>
+                        <div className="flex justify-between items-center py-0.5 border-b border-border/40">
+                          <span className="text-muted-foreground">Customer & Kendaraan:</span>
+                          <span className="font-medium text-foreground">
+                            {lunasTargetItem.customer} {lunasTargetItem.nopol ? `— ${lunasTargetItem.nopol}` : ""}
+                          </span>
+                        </div>
+                        <div className="flex justify-between items-center py-0.5 border-b border-border/40">
+                          <span className="text-muted-foreground">Jenis Pengurusan:</span>
+                          <span className="font-medium text-foreground">
+                            {lunasTargetItem.pengurusan || (lunasTargetItem as any).jenisLayanan || "Layanan Samsat"}
+                          </span>
+                        </div>
+                        <div className="grid grid-cols-3 gap-2 pt-1 text-center">
+                          <div className="p-2 rounded bg-background/60 border border-border/50">
+                            <p className="text-[10px] text-muted-foreground">Total Tagihan</p>
+                            <p className="text-xs font-semibold text-foreground font-mono mt-0.5">
+                              {formatRupiah(lunasTargetItem.totalTagihan || 0)}
+                            </p>
+                          </div>
+                          <div className="p-2 rounded bg-background/60 border border-border/50">
+                            <p className="text-[10px] text-muted-foreground">Sudah Terbayar</p>
+                            <p className="text-xs font-semibold text-emerald-600 dark:text-emerald-400 font-mono mt-0.5">
+                              {formatRupiah(lunasTargetItem.terbayar ?? (lunasTargetItem as any).uangMasuk ?? 0)}
+                            </p>
+                          </div>
+                          <div className="p-2 rounded bg-rose-500/10 border border-rose-500/20">
+                            <p className="text-[10px] text-rose-600 dark:text-rose-400 font-medium">Sisa Tagihan</p>
+                            <p className="text-xs font-bold text-rose-600 dark:text-rose-400 font-mono mt-0.5">
+                              {formatRupiah(lunasTargetItem.kekurangan ?? lunasTargetItem.sisa ?? 0)}
+                            </p>
+                          </div>
+                        </div>
                       </div>
-                      {lunasTargetItem.spvApprovedAt && (
-                        <span className="text-[11px] font-mono text-emerald-700 dark:text-emerald-400">
-                          {lunasTargetItem.spvApprovedAt} {lunasTargetItem.spvName ? `(${lunasTargetItem.spvName})` : ""}
-                        </span>
-                      )}
-                    </div>
 
-                    {/* Pilihan Opsi Multi-Termin: Lunasi 100% vs Cicilan / Sebagian */}
-                    <div className="grid grid-cols-2 gap-2 p-1 bg-muted/50 rounded-lg border border-border/60">
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setLunasInstallmentMode("full");
-                          const curSisa = Number(lunasTargetItem.kekurangan ?? lunasTargetItem.sisa ?? 0);
-                          setLunasAmount(curSisa);
-                        }}
-                        className={`h-7 rounded text-[11px] font-semibold flex items-center justify-center gap-1.5 transition-colors ${
-                          lunasInstallmentMode === "full"
-                            ? "bg-background text-primary shadow-xs border border-border/80 font-bold"
-                            : "text-muted-foreground hover:text-foreground"
-                        }`}
-                      >
-                        <CheckCircle className="w-3 h-3 text-primary" />
-                        Lunasi Penuh (100%)
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setLunasInstallmentMode("partial");
-                        }}
-                        className={`h-7 rounded text-[11px] font-semibold flex items-center justify-center gap-1.5 transition-colors ${
-                          lunasInstallmentMode === "partial"
-                            ? "bg-background text-primary shadow-xs border border-border/80 font-bold"
-                            : "text-muted-foreground hover:text-foreground"
-                        }`}
-                      >
-                        <Receipt className="w-3 h-3 text-amber-500" />
-                        Cicilan / Termin Sebagian
-                      </button>
-                    </div>
+                      {/* Status Approval Supervisi & Biaya Final */}
+                      <div className="flex items-center justify-between p-2.5 rounded-lg bg-emerald-500/10 border border-emerald-500/20 text-xs text-emerald-800 dark:text-emerald-300">
+                        <div className="flex items-center gap-1.5">
+                          <CheckCircle2 className="w-4 h-4 text-emerald-600 dark:text-emerald-400 shrink-0" />
+                          <span className="font-medium">Biaya Final & Supervisi Disetujui</span>
+                        </div>
+                        {lunasTargetItem.spvApprovedAt && (
+                          <span className="text-[11px] font-mono text-emerald-700 dark:text-emerald-400">
+                            {lunasTargetItem.spvApprovedAt} {lunasTargetItem.spvName ? `(${lunasTargetItem.spvName})` : ""}
+                          </span>
+                        )}
+                      </div>
 
-                    {/* Input Nominal Pembayaran & Kalkulator Sisa */}
-                    <div className="space-y-1.5 pt-1">
-                      <div className="flex items-center justify-between">
-                        <label className="text-[11px] font-semibold text-foreground block">
-                          Nominal Pembayaran <span className="text-destructive">*</span>
-                        </label>
+                      {/* Pilihan Opsi Multi-Termin: Lunasi 100% vs Cicilan / Sebagian */}
+                      <div className="grid grid-cols-2 gap-2 p-1 bg-muted/50 rounded-lg border border-border/60">
                         <button
                           type="button"
                           onClick={() => {
-                            const curSisa = Number(lunasTargetItem.kekurangan ?? lunasTargetItem.sisa ?? 0);
-                            setLunasAmount(curSisa);
                             setLunasInstallmentMode("full");
+                            const curSisa = Number(lunasTargetItem.kekurangan ?? lunasTargetItem.sisa ?? 0);
+                            handleLunasAmountChange(curSisa);
                           }}
-                          className="text-[10px] text-primary hover:underline font-semibold flex items-center gap-1"
+                          className={`h-7 rounded text-[11px] font-semibold flex items-center justify-center gap-1.5 transition-colors ${
+                            lunasInstallmentMode === "full"
+                              ? "bg-background text-primary shadow-xs border border-border/80 font-bold"
+                              : "text-muted-foreground hover:text-foreground"
+                          }`}
                         >
-                          Lunasi Sisa ({formatRupiah(Number(lunasTargetItem.kekurangan ?? lunasTargetItem.sisa ?? 0))})
+                          <CheckCircle className="w-3 h-3 text-primary" />
+                          Lunasi Penuh (100%)
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setLunasInstallmentMode("partial");
+                          }}
+                          className={`h-7 rounded text-[11px] font-semibold flex items-center justify-center gap-1.5 transition-colors ${
+                            lunasInstallmentMode === "partial"
+                              ? "bg-background text-primary shadow-xs border border-border/80 font-bold"
+                              : "text-muted-foreground hover:text-foreground"
+                          }`}
+                        >
+                          <Receipt className="w-3 h-3 text-amber-500" />
+                          Cicilan / Termin Sebagian
                         </button>
                       </div>
-                      <div className="relative">
-                        <span className="absolute left-3 top-1/2 -translate-y-1/2 text-xs font-semibold text-muted-foreground">
-                          Rp
-                        </span>
-                        <input
-                          type="number"
-                          min="1"
-                          max={Number(lunasTargetItem.kekurangan ?? lunasTargetItem.sisa ?? 0)}
-                          value={lunasAmount || ""}
-                          onChange={(e) => {
-                            const val = Math.max(0, Number(e.target.value));
-                            setLunasAmount(val);
-                            const curSisa = Number(lunasTargetItem.kekurangan ?? lunasTargetItem.sisa ?? 0);
-                            if (val === curSisa) {
-                              setLunasInstallmentMode("full");
-                            } else {
-                              setLunasInstallmentMode("partial");
-                            }
-                          }}
-                          placeholder="0"
-                          className="w-full h-9 pl-9 pr-3 rounded-md border border-border bg-input-background text-xs text-foreground focus:outline-none focus:ring-1 focus:ring-primary font-mono font-semibold"
-                        />
-                      </div>
-                      {/* Kalkulator Sisa Berjalan */}
-                      {(() => {
-                        const curSisa = Number(lunasTargetItem.kekurangan ?? lunasTargetItem.sisa ?? 0);
-                        const sisaBerjalan = Math.max(0, curSisa - lunasAmount);
-                        return (
-                          <div className="flex justify-between items-center px-2 py-1 rounded bg-muted/40 border border-border/40 text-[11px]">
-                            <span className="text-muted-foreground">Sisa Tagihan Setelah Pembayaran Ini:</span>
-                            <span className={`font-mono font-bold ${sisaBerjalan === 0 ? "text-emerald-600 dark:text-emerald-400" : "text-rose-600 dark:text-rose-400"}`}>
-                              {formatRupiah(sisaBerjalan)} {sisaBerjalan === 0 ? "(Lunas Penuh)" : "(Kurang Bayar)"}
-                            </span>
-                          </div>
-                        );
-                      })()}
-                      {(() => {
-                        const curSisa = Number(lunasTargetItem.kekurangan ?? lunasTargetItem.sisa ?? 0);
-                        if (lunasAmount > curSisa) {
-                          return (
-                            <p className="text-[10px] text-destructive flex items-center gap-1 font-medium mt-1">
-                              <AlertCircle className="w-3 h-3" />
-                              Nominal melebihi sisa tagihan ({formatRupiah(curSisa)}). Kelebihan bayar dicatat di alur Cashback.
-                            </p>
-                          );
-                        }
-                        if (lunasAmount === curSisa && curSisa > 0) {
-                          return (
-                            <p className="text-[10px] text-emerald-600 dark:text-emerald-400 flex items-center gap-1 font-medium mt-1">
-                              <CheckCircle className="w-3 h-3" />
-                              Pembayaran ini akan melunasi seluruh sisa tagihan (Status akan menjadi Lunas).
-                            </p>
-                          );
-                        }
-                        return null;
-                      })()}
-                    </div>
 
-                    {/* Baris Tanggal & Metode Pembayaran */}
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 pt-1">
-                      <div className="space-y-1">
+                      {/* Input Nominal Pembayaran & Kalkulator Sisa */}
+                      <div className="space-y-1.5 pt-1">
+                        <div className="flex items-center justify-between">
+                          <label className="text-[11px] font-semibold text-foreground block">
+                            Nominal Pembayaran <span className="text-destructive">*</span>
+                          </label>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              const curSisa = Number(lunasTargetItem.kekurangan ?? lunasTargetItem.sisa ?? 0);
+                              handleLunasAmountChange(curSisa);
+                              setLunasInstallmentMode("full");
+                            }}
+                            className="text-[10px] text-primary hover:underline font-semibold flex items-center gap-1"
+                          >
+                            Lunasi Sisa ({formatRupiah(Number(lunasTargetItem.kekurangan ?? lunasTargetItem.sisa ?? 0))})
+                          </button>
+                        </div>
+                        <div className="relative">
+                          <span className="absolute left-3 top-1/2 -translate-y-1/2 text-xs font-semibold text-muted-foreground">
+                            Rp
+                          </span>
+                          <input
+                            type="number"
+                            min="1"
+                            max={Number(lunasTargetItem.kekurangan ?? lunasTargetItem.sisa ?? 0)}
+                            value={lunasAmount || ""}
+                            onChange={(e) => {
+                              const val = Math.max(0, Number(e.target.value));
+                              handleLunasAmountChange(val);
+                              const curSisa = Number(lunasTargetItem.kekurangan ?? lunasTargetItem.sisa ?? 0);
+                              if (val === curSisa) {
+                                setLunasInstallmentMode("full");
+                              } else {
+                                setLunasInstallmentMode("partial");
+                              }
+                            }}
+                            placeholder="0"
+                            className="w-full h-9 pl-9 pr-3 rounded-md border border-border bg-input-background text-xs text-foreground focus:outline-none focus:ring-1 focus:ring-primary font-mono font-semibold"
+                          />
+                        </div>
+                        {/* Kalkulator Sisa Berjalan */}
+                        {(() => {
+                          const curSisa = Number(lunasTargetItem.kekurangan ?? lunasTargetItem.sisa ?? 0);
+                          const sisaBerjalan = Math.max(0, curSisa - lunasAmount);
+                          return (
+                            <div className="flex justify-between items-center px-2 py-1 rounded bg-muted/40 border border-border/40 text-[11px]">
+                              <span className="text-muted-foreground">Sisa Tagihan Setelah Pembayaran Ini:</span>
+                              <span className={`font-mono font-bold ${sisaBerjalan === 0 ? "text-emerald-600 dark:text-emerald-400" : "text-rose-600 dark:text-rose-400"}`}>
+                                {formatRupiah(sisaBerjalan)} {sisaBerjalan === 0 ? "(Lunas Penuh)" : "(Kurang Bayar)"}
+                              </span>
+                            </div>
+                          );
+                        })()}
+                        {(() => {
+                          const curSisa = Number(lunasTargetItem.kekurangan ?? lunasTargetItem.sisa ?? 0);
+                          if (lunasAmount <= 0) {
+                            return (
+                              <p className="text-[10px] text-amber-600 dark:text-amber-400 flex items-center gap-1 font-medium mt-1">
+                                <AlertCircle className="w-3 h-3" />
+                                Nominal pembayaran harus lebih besar dari Rp 0.
+                              </p>
+                            );
+                          }
+                          if (lunasAmount > curSisa) {
+                            return (
+                              <p className="text-[10px] text-destructive flex items-center gap-1 font-medium mt-1">
+                                <AlertCircle className="w-3 h-3" />
+                                Nominal melebihi sisa tagihan ({formatRupiah(curSisa)}). Kelebihan bayar dicatat di alur Cashback.
+                              </p>
+                            );
+                          }
+                          if (lunasAmount === curSisa && curSisa > 0) {
+                            return (
+                              <p className="text-[10px] text-emerald-600 dark:text-emerald-400 flex items-center gap-1 font-medium mt-1">
+                                <CheckCircle className="w-3 h-3" />
+                                Pembayaran ini akan melunasi seluruh sisa tagihan (Status akan menjadi Lunas).
+                              </p>
+                            );
+                          }
+                          return null;
+                        })()}
+                      </div>
+
+                      {/* Baris Tanggal & Metode Pembayaran */}
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 pt-1">
+                        <div className="space-y-1">
+                          <label className="text-[11px] font-semibold text-foreground block">
+                            Tanggal Pembayaran <span className="text-destructive">*</span>
+                          </label>
+                          <input
+                            type="date"
+                            value={lunasDate}
+                            onChange={(e) => {
+                              actionFeedback.clearError("finance-lunas-submit");
+                              setLunasDate(e.target.value);
+                            }}
+                            className="w-full h-9 px-3 rounded-md border border-border bg-input-background text-xs text-foreground focus:outline-none focus:ring-1 focus:ring-primary"
+                          />
+                          {!lunasDate?.trim() && (
+                            <p className="text-[10px] text-amber-600 dark:text-amber-400 mt-0.5">
+                              Tanggal pembayaran wajib diisi.
+                            </p>
+                          )}
+                        </div>
+
+                        <div className="space-y-1">
+                          <label className="text-[11px] font-semibold text-foreground block">
+                            Metode / Bank Kas Masuk <span className="text-destructive">*</span>
+                          </label>
+                          <select
+                            value={lunasMethod}
+                            onChange={(e) => {
+                              actionFeedback.clearError("finance-lunas-submit");
+                              setLunasMethod(e.target.value);
+                            }}
+                            className="w-full h-9 px-3 rounded-md border border-border bg-input-background text-xs text-foreground focus:outline-none focus:ring-1 focus:ring-primary font-normal"
+                          >
+                            {activeMethods.length > 0 ? (
+                              activeMethods.map((m) => (
+                                <option key={m.id} value={m.nama_metode}>
+                                  {m.nama_metode} ({m.bank}{m.nomor_rekening ? ` - ${m.nomor_rekening}` : ""})
+                                </option>
+                              ))
+                            ) : (
+                              <>
+                                <option value="Transfer BCA">Transfer BCA</option>
+                                <option value="Transfer Mandiri">Transfer Mandiri</option>
+                                <option value="Transfer BRI">Transfer BRI</option>
+                                <option value="Kas Tunai">Kas Tunai</option>
+                              </>
+                            )}
+                          </select>
+                          {(() => {
+                            const sel = paymentMethodStore.getAll().find((m) => m.nama_metode === lunasMethod);
+                            if (sel && sel.status === "Nonaktif") {
+                              return (
+                                <p className="text-[10px] text-destructive mt-0.5">
+                                  Metode ini berstatus Nonaktif dan tidak dapat digunakan.
+                                </p>
+                              );
+                            }
+                            return null;
+                          })()}
+                        </div>
+                      </div>
+
+                      {/* Catatan Pembayaran */}
+                      <div className="space-y-1 pt-1">
                         <label className="text-[11px] font-semibold text-foreground block">
-                          Tanggal Pembayaran <span className="text-destructive">*</span>
+                          Catatan Transaksi <span className="text-muted-foreground font-normal">(Opsional)</span>
                         </label>
                         <input
-                          type="date"
-                          value={lunasDate}
-                          onChange={(e) => setLunasDate(e.target.value)}
+                          type="text"
+                          value={lunasNotes}
+                          onChange={(e) => setLunasNotes(e.target.value)}
+                          placeholder="Contoh: DP Termin 2 / Pelunasan via Transfer M-Banking"
                           className="w-full h-9 px-3 rounded-md border border-border bg-input-background text-xs text-foreground focus:outline-none focus:ring-1 focus:ring-primary"
                         />
                       </div>
 
-                      <div className="space-y-1">
-                        <label className="text-[11px] font-semibold text-foreground block">
-                          Metode / Bank Kas Masuk <span className="text-destructive">*</span>
-                        </label>
-                        <select
-                          value={lunasMethod}
-                          onChange={(e) => setLunasMethod(e.target.value)}
-                          className="w-full h-9 px-3 rounded-md border border-border bg-input-background text-xs text-foreground focus:outline-none focus:ring-1 focus:ring-primary font-normal"
-                        >
-                          {activeMethods.length > 0 ? (
-                            activeMethods.map((m) => (
-                              <option key={m.id} value={m.nama_metode}>
-                                {m.nama_metode} ({m.bank}{m.nomor_rekening ? ` - ${m.nomor_rekening}` : ""})
-                              </option>
-                            ))
-                          ) : (
-                            <>
-                              <option value="Transfer BCA">Transfer BCA</option>
-                              <option value="Transfer Mandiri">Transfer Mandiri</option>
-                              <option value="Transfer BRI">Transfer BRI</option>
-                              <option value="Kas Tunai">Kas Tunai</option>
-                            </>
-                          )}
-                        </select>
-                      </div>
-                    </div>
-
-                    {/* Catatan Pembayaran */}
-                    <div className="space-y-1 pt-1">
-                      <label className="text-[11px] font-semibold text-foreground block">
-                        Catatan Transaksi <span className="text-muted-foreground font-normal">(Opsional)</span>
-                      </label>
-                      <input
-                        type="text"
-                        value={lunasNotes}
-                        onChange={(e) => setLunasNotes(e.target.value)}
-                        placeholder="Contoh: DP Termin 2 / Pelunasan via Transfer M-Banking"
-                        className="w-full h-9 px-3 rounded-md border border-border bg-input-background text-xs text-foreground focus:outline-none focus:ring-1 focus:ring-primary"
-                      />
-                    </div>
-
-                    {/* Unggah Bukti Pembayaran (Opsional) */}
-                    <div className="space-y-1.5 pt-1">
-                      <div className="flex items-center justify-between">
-                        <label className="text-[11px] font-semibold text-foreground flex items-center gap-1.5">
-                          <Upload className="w-3.5 h-3.5 text-primary" />
-                          Bukti Pembayaran / Struk Transfer <span className="text-muted-foreground font-normal">(Opsional)</span>
-                        </label>
-                        <span className={lunasProof ? "text-emerald-600 font-medium text-[10px]" : "text-muted-foreground font-medium text-[10px]"}>
-                          {lunasProof ? "✓ Terlampir" : "Opsional"}
-                        </span>
-                      </div>
-
-                      {lunasProof ? (
-                        <div className="p-2 rounded border border-primary/30 bg-primary/10 flex items-center justify-between gap-2">
-                          <div className="flex items-center gap-2 min-w-0">
-                            {lunasProof.fileType === "pdf" ? <FileIcon className="w-4 h-4 text-primary shrink-0" /> : <ImageIcon className="w-4 h-4 text-primary shrink-0" />}
-                            <span className="font-mono text-[11px] truncate text-foreground">{lunasProof.fileName}</span>
-                            <span className="text-[10px] text-muted-foreground uppercase">({lunasProof.fileType})</span>
-                          </div>
-                          <button
-                            type="button"
-                            onClick={() => setLunasProof(null)}
-                            className="text-destructive hover:text-destructive/80 p-1 text-xs"
-                            title="Hapus / ganti berkas"
-                          >
-                            <Trash2 className="w-3.5 h-3.5" />
-                          </button>
-                        </div>
-                      ) : (
-                        <label className="flex flex-col items-center justify-center p-3 border border-dashed border-border rounded-lg bg-background hover:bg-muted/30 cursor-pointer transition-colors">
-                          <Upload className="w-4 h-4 text-muted-foreground mb-1" />
-                          <span className="text-[11px] font-medium text-foreground">
-                            {isUploadingLunasProof ? "Mengunggah..." : "Klik untuk upload struk transfer / bukti setoran (JPG, PNG, PDF, HEIC)"}
+                      {/* Unggah Bukti Pembayaran (Opsional) */}
+                      <div className="space-y-1.5 pt-1">
+                        <div className="flex items-center justify-between">
+                          <label className="text-[11px] font-semibold text-foreground flex items-center gap-1.5">
+                            <Upload className="w-3.5 h-3.5 text-primary" />
+                            Bukti Pembayaran / Struk Transfer <span className="text-muted-foreground font-normal">(Opsional)</span>
+                          </label>
+                          <span className={lunasProof ? "text-emerald-600 font-medium text-[10px]" : "text-muted-foreground font-medium text-[10px]"}>
+                            {lunasProof ? "✓ Terlampir" : "Opsional"}
                           </span>
-                          <span className="text-[10px] text-muted-foreground">Maksimal 5 MB (dikompres otomatis)</span>
-                          <input
-                            type="file"
-                            accept=".pdf,.jpg,.jpeg,.png,.heic,.HEIC"
-                            className="hidden"
-                            disabled={isUploadingLunasProof}
-                            onChange={handleUploadLunasProof}
-                          />
-                        </label>
-                      )}
-                    </div>
+                        </div>
 
-                    {/* Riwayat Pembayaran Sebelumnya */}
-                    <div className="pt-2 border-t border-border/50 space-y-1.5">
-                      <p className="text-[11px] font-semibold text-foreground flex items-center justify-between">
-                        <span>Riwayat Pembayaran Terdaftar</span>
-                        {isLoadingPayments && <Loader2 className="w-3 h-3 animate-spin text-muted-foreground" />}
-                      </p>
-                      {targetPayments.length > 0 ? (
-                        <div className="max-h-36 overflow-y-auto space-y-1.5 pr-1">
-                          {targetPayments.map((p: any, idx: number) => {
-                            const isVoid = Boolean(p.is_void || p.isVoid);
-                            return (
-                              <div
-                                key={p.id || idx}
-                                className={`p-2 rounded border text-[11px] flex items-center justify-between gap-2 transition-colors ${
-                                  isVoid ? "bg-destructive/5 border-destructive/20 opacity-60" : "bg-muted/40 border-border/40"
-                                }`}
-                              >
-                                <div className="flex flex-col">
-                                  <div className="flex items-center gap-1.5">
-                                    <span className={`font-semibold font-mono ${isVoid ? "line-through text-muted-foreground" : "text-foreground"}`}>
-                                      {formatRupiah(p.nominal || p.amount || 0)}
+                        {lunasProof ? (
+                          <div className="p-2 rounded border border-primary/30 bg-primary/10 flex items-center justify-between gap-2">
+                            <div className="flex items-center gap-2 min-w-0">
+                              {lunasProof.fileType === "pdf" ? <FileIcon className="w-4 h-4 text-primary shrink-0" /> : <ImageIcon className="w-4 h-4 text-primary shrink-0" />}
+                              <span className="font-mono text-[11px] truncate text-foreground">{lunasProof.fileName}</span>
+                              <span className="text-[10px] text-muted-foreground uppercase">({lunasProof.fileType})</span>
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() => setLunasProof(null)}
+                              className="text-destructive hover:text-destructive/80 p-1 text-xs"
+                              title="Hapus / ganti berkas"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </button>
+                          </div>
+                        ) : (
+                          <label className="flex flex-col items-center justify-center p-3 border border-dashed border-border rounded-lg bg-background hover:bg-muted/30 cursor-pointer transition-colors">
+                            <Upload className="w-4 h-4 text-muted-foreground mb-1" />
+                            <span className="text-[11px] font-medium text-foreground">
+                              {isUploadingLunasProof ? "Mengunggah..." : "Klik untuk upload struk transfer / bukti setoran (JPG, PNG, PDF, HEIC)"}
+                            </span>
+                            <span className="text-[10px] text-muted-foreground">Maksimal 5 MB (dikompres otomatis)</span>
+                            <input
+                              type="file"
+                              accept=".pdf,.jpg,.jpeg,.png,.heic,.HEIC"
+                              className="hidden"
+                              disabled={isUploadingLunasProof || isSubmittingLunas}
+                              onChange={handleUploadLunasProof}
+                            />
+                          </label>
+                        )}
+                        <ActionInlineError
+                          compact
+                          actionKey="finance-lunas-proof"
+                          error={actionFeedback.getError("finance-lunas-proof")}
+                          onDismiss={() => actionFeedback.clearError("finance-lunas-proof")}
+                        />
+                      </div>
+
+                      {/* Riwayat Pembayaran Sebelumnya */}
+                      <div className="pt-2 border-t border-border/50 space-y-1.5">
+                        <p className="text-[11px] font-semibold text-foreground flex items-center justify-between">
+                          <span>Riwayat Pembayaran Terdaftar</span>
+                          {isLoadingPayments && <Loader2 className="w-3 h-3 animate-spin text-muted-foreground" />}
+                        </p>
+                        <ActionInlineError
+                          compact
+                          actionKey="finance-lunas-history"
+                          error={actionFeedback.getError("finance-lunas-history")}
+                          onDismiss={() => actionFeedback.clearError("finance-lunas-history")}
+                        />
+                        {targetPayments.length > 0 ? (
+                          <div className="max-h-36 overflow-y-auto space-y-1.5 pr-1">
+                            {targetPayments.map((p: any, idx: number) => {
+                              const isVoid = Boolean(p.is_void || p.isVoid);
+                              return (
+                                <div
+                                  key={p.id || idx}
+                                  className={`p-2 rounded border text-[11px] flex items-center justify-between gap-2 transition-colors ${
+                                    isVoid ? "bg-destructive/5 border-destructive/20 opacity-60" : "bg-muted/40 border-border/40"
+                                  }`}
+                                >
+                                  <div className="flex flex-col">
+                                    <div className="flex items-center gap-1.5">
+                                      <span className={`font-semibold font-mono ${isVoid ? "line-through text-muted-foreground" : "text-foreground"}`}>
+                                        {formatRupiah(p.nominal || p.amount || 0)}
+                                      </span>
+                                      {isVoid && (
+                                        <span className="inline-flex items-center px-1.5 py-0.2 rounded text-[9px] font-bold bg-destructive/15 text-destructive border border-destructive/30">
+                                          BATAL (VOID)
+                                        </span>
+                                      )}
+                                    </div>
+                                    <span className="text-[10px] text-muted-foreground">
+                                      {p.tanggal_bayar || p.tanggal || "-"} • {p.metode_pembayaran || p.metodePembayaran || p.nama_bank || "Transfer"}
+                                      {(p.keterangan || p.catatan) ? ` • ${p.keterangan || p.catatan}` : ""}
                                     </span>
-                                    {isVoid && (
-                                      <span className="inline-flex items-center px-1.5 py-0.2 rounded text-[9px] font-bold bg-destructive/15 text-destructive border border-destructive/30">
-                                        BATAL (VOID)
+                                    {isVoid && p.void_reason && (
+                                      <span className="text-[9px] text-destructive/90 italic mt-0.5">
+                                        Alasan: {p.void_reason} {p.voided_by ? `(oleh: ${p.voided_by})` : ""}
                                       </span>
                                     )}
                                   </div>
-                                  <span className="text-[10px] text-muted-foreground">
-                                    {p.tanggal_bayar || p.tanggal || "-"} • {p.metode_pembayaran || p.metodePembayaran || p.nama_bank || "Transfer"}
-                                    {p.keterangan ? ` • ${p.keterangan}` : ""}
-                                  </span>
-                                  {isVoid && p.void_reason && (
-                                    <span className="text-[9px] text-destructive/90 italic mt-0.5">
-                                      Alasan: {p.void_reason} {p.voided_by ? `(oleh: ${p.voided_by})` : ""}
-                                    </span>
-                                  )}
+                                  <div className="flex items-center gap-1.5">
+                                    {!isVoid && (
+                                      <>
+                                        <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[9px] font-semibold bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20">
+                                          {p.status_verifikasi || p.statusVerifikasi || "TERVERIFIKASI"}
+                                        </span>
+                                        <Button
+                                          type="button"
+                                          variant="outline"
+                                          size="sm"
+                                          className="h-6 px-1.5 text-[10px] gap-1 text-slate-700 dark:text-slate-300 border-slate-300 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800 font-medium whitespace-nowrap"
+                                          onClick={() => {
+                                            setPrintKwitansiData({
+                                              orderNo: lunasTargetItem.orderNo || lunasTargetItem.invoice || `ORD-${lunasTargetItem.id}`,
+                                              invoiceNo: lunasTargetItem.invoice || lunasTargetItem.invoiceNo || `INV/${(lunasTargetItem.orderNo || "").replace(/^ORD-/, "")}`,
+                                              kwitansiNo: `KW/${(lunasTargetItem.orderNo || "").replace(/^ORD-/, "")}/${p.id || "01"}`,
+                                              customer: lunasTargetItem.customer || "Pelanggan",
+                                              phone: lunasTargetItem.phone || (lunasTargetItem as any).nomorHp || "",
+                                              nopol: lunasTargetItem.nopol || "-",
+                                              layanan: lunasTargetItem.pengurusan || (lunasTargetItem as any).jenisLayanan || "Pengurusan Dokumen Kendaraan",
+                                              tanggal: p.tanggal_bayar || p.tanggal || new Date().toISOString().split("T")[0],
+                                              nominal: Number(p.nominal || p.amount || 0),
+                                              totalTagihan: Number(lunasTargetItem.totalTagihan || 0),
+                                              totalDibayar: Number(p.nominal || p.amount || 0),
+                                              sisaTagihan: Math.max(0, Number(lunasTargetItem.totalTagihan || 0) - Number(p.nominal || p.amount || 0)),
+                                              metodePembayaran: p.metode_pembayaran || p.metodePembayaran || "Transfer Bank",
+                                              catatan: p.keterangan || p.catatan || undefined,
+                                              kasirName: "Kasir SUN89",
+                                            });
+                                          }}
+                                          title="Cetak Kwitansi Tanda Terima Setoran (A5 Landscape)"
+                                        >
+                                          <Printer className="w-2.5 h-2.5 text-slate-600 dark:text-slate-400" />
+                                          <span>Kwitansi</span>
+                                        </Button>
+                                      </>
+                                    )}
+                                  </div>
                                 </div>
-                                <div className="flex items-center gap-1.5">
-                                  {!isVoid && (
-                                    <>
-                                      <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[9px] font-semibold bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20">
-                                        {p.status_verifikasi || p.statusVerifikasi || "TERVERIFIKASI"}
-                                      </span>
-                                      <Button
-                                        type="button"
-                                        variant="outline"
-                                        size="sm"
-                                        className="h-6 px-1.5 text-[10px] gap-1 text-slate-700 dark:text-slate-300 border-slate-300 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800 font-medium whitespace-nowrap"
-                                        onClick={() => {
-                                          setPrintKwitansiData({
-                                            orderNo: lunasTargetItem.orderNo || lunasTargetItem.invoice || `ORD-${lunasTargetItem.id}`,
-                                            invoiceNo: lunasTargetItem.invoice || lunasTargetItem.invoiceNo || `INV/${(lunasTargetItem.orderNo || "").replace(/^ORD-/, "")}`,
-                                            kwitansiNo: `KW/${(lunasTargetItem.orderNo || "").replace(/^ORD-/, "")}/${p.id || "01"}`,
-                                            customer: lunasTargetItem.customer || "Pelanggan",
-                                            phone: lunasTargetItem.phone || (lunasTargetItem as any).nomorHp || "",
-                                            nopol: lunasTargetItem.nopol || "-",
-                                            layanan: lunasTargetItem.pengurusan || (lunasTargetItem as any).jenisLayanan || "Pengurusan Dokumen Kendaraan",
-                                            tanggal: p.tanggal_bayar || p.tanggal || new Date().toISOString().split("T")[0],
-                                            nominal: Number(p.nominal || p.amount || 0),
-                                            totalTagihan: Number(lunasTargetItem.totalTagihan || 0),
-                                            totalDibayar: Number(p.nominal || p.amount || 0),
-                                            sisaTagihan: Math.max(0, Number(lunasTargetItem.totalTagihan || 0) - Number(p.nominal || p.amount || 0)),
-                                            metodePembayaran: p.metode_pembayaran || p.metodePembayaran || "Transfer Bank",
-                                            catatan: p.keterangan || p.catatan || undefined,
-                                            kasirName: "Kasir SUN89",
-                                          });
-                                        }}
-                                        title="Cetak Kwitansi Tanda Terima Setoran (A5 Landscape)"
-                                      >
-                                        <Printer className="w-2.5 h-2.5 text-slate-600 dark:text-slate-400" />
-                                        <span>Kwitansi</span>
-                                      </Button>
-
-                                    </>
-                                  )}
-                                </div>
-                              </div>
-                            );
-                          })}
-                        </div>
-                      ) : (
-                        <p className="text-[11px] text-muted-foreground italic bg-muted/20 p-2 rounded border border-border/30">
-                          {isLoadingPayments ? "Memuat riwayat pembayaran..." : "Belum ada riwayat pembayaran tambahan sebelumnya."}
-                        </p>
-                      )}
+                              );
+                            })}
+                          </div>
+                        ) : (
+                          <p className="text-[11px] text-muted-foreground italic bg-muted/20 p-2 rounded border border-border/30">
+                            {isLoadingPayments ? "Memuat riwayat pembayaran..." : "Belum ada riwayat pembayaran tambahan sebelumnya."}
+                          </p>
+                        )}
+                      </div>
                     </div>
-                  </div>
-                )}
+                  )}
+                </div>
               </AlertDialogDescription>
             </AlertDialogHeader>
+            <ActionInlineError
+              actionKey="finance-lunas-submit"
+              error={actionFeedback.getError("finance-lunas-submit")}
+              onDismiss={() => actionFeedback.clearError("finance-lunas-submit")}
+              onRetry={handleConfirmLunas}
+              isRetrying={isSubmittingLunas}
+              className="mt-2"
+            />
             <AlertDialogFooter className="mt-4 gap-2">
               <AlertDialogCancel
-                disabled={isSubmittingLunas}
+                disabled={isSubmittingLunas || isUploadingLunasProof}
                 onClick={() => {
+                  actionFeedback.clearByPrefix("finance-lunas-");
+                  setLunasUnknownOutcome(false);
                   setLunasTargetItem(null);
                   setLunasProof(null);
                   setTargetPayments([]);
@@ -4152,12 +4583,7 @@ Terima kasih.`;
                 Batal
               </AlertDialogCancel>
               <AlertDialogAction
-                disabled={Boolean(
-                  isSubmittingLunas ||
-                  isUploadingLunasProof ||
-                  lunasAmount <= 0 ||
-                  (lunasTargetItem && lunasAmount > Number(lunasTargetItem.kekurangan ?? lunasTargetItem.sisa ?? 0))
-                )}
+                disabled={isSubmittingLunas || isUploadingLunasProof}
                 onClick={(e) => {
                   e.preventDefault();
                   handleConfirmLunas();
@@ -4663,7 +5089,10 @@ Terima kasih.`;
                     variant="outline"
                     size="sm"
                     className="h-6 px-2.5 text-[11px] gap-1 text-emerald-600 hover:text-emerald-700 hover:bg-emerald-50 dark:hover:bg-emerald-950/40 border-emerald-500/40 font-semibold whitespace-nowrap"
-                    onClick={() => setSelesaiInfoItem(item)}
+                    onClick={() => {
+                      actionFeedback.clearError("finance-cashback-selesai");
+                      setSelesaiInfoItem(item);
+                    }}
                     title="Selesaikan transaksi cashback yang sudah dicairkan"
                   >
                     <CheckCircle className="w-3 h-3 text-emerald-600" />
@@ -4706,6 +5135,7 @@ Terima kasih.`;
                       size="sm"
                       className="h-6 px-1.5 text-[10px] gap-1 text-destructive hover:text-destructive hover:bg-destructive/10 border-destructive/30 font-medium whitespace-nowrap"
                       onClick={() => {
+                        actionFeedback.clearError("finance-cashback-void");
                         setVoidTargetCashback({
                           invoiceId: item.id,
                           nominal: Number(item.nominalKelebihan || item.jumlahCashback || 0),
@@ -4826,7 +5256,20 @@ Terima kasih.`;
         </div>
 
         {/* Modal Konfirmasi Pencairan Cashback / Refund (Dua Kolom Desktop, Field Rapih) */}
-        <AlertDialog open={!!cashbackTargetItem} onOpenChange={(open) => { if (!open && !isSubmittingCashback) { if (cashbackTargetItem) { payoutIntentManager.cancelDraft(cashbackTargetItem.id); } setCashbackTargetItem(null); setCashbackProof(null); } }}>
+        <AlertDialog
+          open={!!cashbackTargetItem}
+          onOpenChange={(open) => {
+            if (!open && !isSubmittingCashback && !isUploadingCashbackProof) {
+              if (cashbackTargetItem) {
+                payoutIntentManager.cancelDraft(cashbackTargetItem.id);
+              }
+              actionFeedback.clearByPrefix("finance-cashback-");
+              setCashbackUnknownOutcome(false);
+              setCashbackTargetItem(null);
+              setCashbackProof(null);
+            }
+          }}
+        >
           <AlertDialogContent className="border-border sm:max-w-2xl lg:max-w-3xl bg-card max-h-[92vh] overflow-y-auto">
             <AlertDialogHeader>
               <AlertDialogTitle className="text-base font-semibold flex items-center gap-2 text-foreground">
@@ -4837,13 +5280,15 @@ Terima kasih.`;
                 Catat pengeluaran kas kantor untuk pengembalian kelebihan bayar customer.
               </AlertDialogDescription>
             </AlertDialogHeader>
-            {cashbackTargetItem && payoutIntentManager.getIntent(cashbackTargetItem.id)?.status === "UNKNOWN_OUTCOME" && (
+            {cashbackTargetItem &&
+              (cashbackUnknownOutcome ||
+                payoutIntentManager.getIntent(cashbackTargetItem.id)?.status === "UNKNOWN_OUTCOME") && (
               <div className="bg-amber-500/10 border border-amber-500/40 text-amber-700 dark:text-amber-400 p-2.5 rounded-md text-xs flex items-start gap-2 my-2">
                 <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
                 <div>
-                  <p className="font-semibold">Melanjutkan Percobaan Transaksi Sebelumnya</p>
+                  <p className="font-semibold">Status Pencairan Sebelumnya Belum Terkonfirmasi</p>
                   <p className="text-[11px] opacity-90 mt-0.5">
-                    Percobaan sebelumnya belum terkonfirmasi akibat kendala jaringan. Sistem menggunakan kunci idempotensi yang sama ({cashbackIdempotencyKey.slice(0, 8)}...) untuk menjamin tidak ada mutasi kas ganda di server.
+                    Percobaan sebelumnya terganggu koneksi atau timeout sehingga hasilnya belum dapat dipastikan (bukan dianggap berhasil ataupun gagal). Kunci idempotensi ({cashbackIdempotencyKey ? `${cashbackIdempotencyKey.slice(0, 8)}...` : "-"}) tetap dipertahankan agar percobaan ulang tidak menyebabkan mutasi kas ganda.
                   </p>
                 </div>
               </div>
@@ -4919,7 +5364,10 @@ Terima kasih.`;
                       </label>
                       <button
                         type="button"
-                        onClick={() => setCashbackAmount(Number(cashbackTargetItem.nominalKelebihan || cashbackTargetItem.jumlahCashback || 0))}
+                        onClick={() => {
+                          actionFeedback.clearError("finance-cashback-submit");
+                          setCashbackAmount(Number(cashbackTargetItem.nominalKelebihan || cashbackTargetItem.jumlahCashback || 0));
+                        }}
                         className="text-[10px] text-primary hover:underline font-semibold"
                       >
                         Maksimal ({formatRupiah(Number(cashbackTargetItem.nominalKelebihan || cashbackTargetItem.jumlahCashback || 0))})
@@ -4934,7 +5382,10 @@ Terima kasih.`;
                         min="1"
                         max={Number(cashbackTargetItem.nominalKelebihan || cashbackTargetItem.jumlahCashback || 0)}
                         value={cashbackAmount || ""}
-                        onChange={(e) => setCashbackAmount(Number(e.target.value))}
+                        onChange={(e) => {
+                          actionFeedback.clearError("finance-cashback-submit");
+                          setCashbackAmount(Number(e.target.value));
+                        }}
                         className="w-full h-9 pl-9 pr-3 rounded-md border border-border bg-input-background text-xs text-foreground focus:outline-none focus:ring-1 focus:ring-primary font-mono font-semibold"
                       />
                     </div>
@@ -4962,6 +5413,7 @@ Terima kasih.`;
                           type="checkbox"
                           checked={isCashbackToday}
                           onChange={(e) => {
+                            actionFeedback.clearError("finance-cashback-submit");
                             setIsCashbackToday(e.target.checked);
                             if (e.target.checked) {
                               setCashbackDate(new Date().toISOString().split("T")[0]);
@@ -4976,15 +5428,24 @@ Terima kasih.`;
                       type="date"
                       value={cashbackDate}
                       onChange={(e) => {
+                        actionFeedback.clearError("finance-cashback-submit");
                         setCashbackDate(e.target.value);
                         setIsCashbackToday(e.target.value === new Date().toISOString().split("T")[0]);
                       }}
                       className="w-full h-9 px-3 rounded-md border border-border bg-input-background text-xs text-foreground focus:outline-none focus:ring-1 focus:ring-primary font-normal"
                     />
+                    {!cashbackDate?.trim() && (
+                      <p className="text-[10px] text-amber-600 dark:text-amber-400 mt-0.5">
+                        Tanggal pengeluaran kas wajib diisi.
+                      </p>
+                    )}
                   </div>
 
                   {/* Metode Pembayaran Keluar */}
                   {(() => {
+                    const allMethods = paymentMethodStore.getAll();
+                    const matchedStoredMethod = allMethods.find((m) => m.nama_metode === cashbackMethod);
+                    const isMethodInactive = matchedStoredMethod?.status === "Nonaktif";
                     const currentSelectedMethod = activeMethods.find((m) => m.nama_metode === cashbackMethod);
                     const isCash =
                       currentSelectedMethod?.bank === "Tunai" ||
@@ -5001,6 +5462,7 @@ Terima kasih.`;
                           <select
                             value={cashbackMethod}
                             onChange={(e) => {
+                              actionFeedback.clearError("finance-cashback-submit");
                               const selectedName = e.target.value;
                               setCashbackMethod(selectedName);
                               const foundM = activeMethods.find((m) => m.nama_metode === selectedName);
@@ -5034,6 +5496,11 @@ Terima kasih.`;
                               </>
                             )}
                           </select>
+                          {isMethodInactive && (
+                            <p className="text-[10px] text-destructive mt-0.5">
+                              Metode ini berstatus Nonaktif dan tidak dapat digunakan.
+                            </p>
+                          )}
                         </div>
 
                         {/* Detail Rekening: Hanya jika non-tunai */}
@@ -5055,7 +5522,10 @@ Terima kasih.`;
                               <input
                                 type="text"
                                 value={cashbackBank === "Tunai" ? "" : cashbackBank}
-                                onChange={(e) => setCashbackBank(e.target.value)}
+                                onChange={(e) => {
+                                  actionFeedback.clearError("finance-cashback-submit");
+                                  setCashbackBank(e.target.value);
+                                }}
                                 placeholder="Contoh: BCA, Mandiri, BRI"
                                 className="w-full h-8 px-2.5 rounded-md border border-border bg-input-background text-xs text-foreground focus:outline-none focus:ring-1 focus:ring-primary font-normal"
                               />
@@ -5073,7 +5543,10 @@ Terima kasih.`;
                               <input
                                 type="text"
                                 value={cashbackNoRekening}
-                                onChange={(e) => setCashbackNoRekening(e.target.value)}
+                                onChange={(e) => {
+                                  actionFeedback.clearError("finance-cashback-submit");
+                                  setCashbackNoRekening(e.target.value);
+                                }}
                                 placeholder="Nomor rekening"
                                 className="w-full h-8 px-2.5 rounded-md border border-border bg-input-background text-xs text-foreground focus:outline-none focus:ring-1 focus:ring-primary font-mono"
                               />
@@ -5128,107 +5601,175 @@ Terima kasih.`;
                           type="file"
                           accept=".pdf,.jpg,.jpeg,.png,.heic,.HEIC"
                           className="hidden"
-                          disabled={isUploadingCashbackProof}
+                          disabled={isUploadingCashbackProof || isSubmittingCashback}
                           onChange={handleUploadCashbackProof}
                         />
                       </label>
                     )}
+                    <ActionInlineError
+                      compact
+                      actionKey="finance-cashback-proof"
+                      error={actionFeedback.getError("finance-cashback-proof")}
+                      onDismiss={() => actionFeedback.clearError("finance-cashback-proof")}
+                    />
                   </div>
                 </div>
               </div>
             )}
 
+            <ActionInlineError
+              actionKey="finance-cashback-submit"
+              error={actionFeedback.getError("finance-cashback-submit")}
+              onDismiss={() => actionFeedback.clearError("finance-cashback-submit")}
+              onRetry={handleConfirmCashbackPayment}
+              isRetrying={isSubmittingCashback}
+              className="mt-2"
+            />
             <AlertDialogFooter className="mt-3 gap-2">
               <Button
                 type="button"
                 variant="outline"
-                disabled={isSubmittingCashback}
-                onClick={() => { if (cashbackTargetItem) { payoutIntentManager.cancelDraft(cashbackTargetItem.id); } setCashbackTargetItem(null); setCashbackProof(null); }}
+                disabled={isSubmittingCashback || isUploadingCashbackProof}
+                onClick={() => {
+                  if (cashbackTargetItem) {
+                    payoutIntentManager.cancelDraft(cashbackTargetItem.id);
+                  }
+                  actionFeedback.clearByPrefix("finance-cashback-");
+                  setCashbackUnknownOutcome(false);
+                  setCashbackTargetItem(null);
+                  setCashbackProof(null);
+                }}
                 className="h-9 text-xs px-4 font-medium"
               >
                 Batal
               </Button>
-              {(() => {
-                const maxAvailable = Number(cashbackTargetItem?.nominalKelebihan || cashbackTargetItem?.jumlahCashback || 0);
-                const isCashSubmit =
-                  cashbackMethod.toLowerCase().includes("cash") ||
-                  cashbackMethod.toLowerCase().includes("tunai") ||
-                  cashbackBank === "Tunai";
-                const isFormInvalid =
-                  cashbackAmount <= 0 ||
-                  (maxAvailable > 0 && cashbackAmount > maxAvailable) ||
-                  (!isCashSubmit && (!cashbackBank.trim() || !cashbackNoRekening.trim()));
-
-                return (
-                  <Button
-                    type="button"
-                    disabled={isSubmittingCashback || isUploadingCashbackProof || isFormInvalid}
-                    onClick={handleConfirmCashbackPayment}
-                    className="h-9 text-xs px-4 bg-primary hover:bg-primary/90 text-primary-foreground font-semibold shadow-xs flex items-center gap-1.5 disabled:opacity-50 disabled:cursor-not-allowed"
-                  >
-                    {isSubmittingCashback ? (
-                      <>
-                        <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                        Memproses...
-                      </>
-                    ) : (
-                      "Ya, Cairkan Dana"
-                    )}
-                  </Button>
-                );
-              })()}
+              <Button
+                type="button"
+                disabled={isSubmittingCashback || isUploadingCashbackProof}
+                onClick={handleConfirmCashbackPayment}
+                className="h-9 text-xs px-4 bg-primary hover:bg-primary/90 text-primary-foreground font-semibold shadow-xs flex items-center gap-1.5 disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {isSubmittingCashback ? (
+                  <>
+                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                    Memproses...
+                  </>
+                ) : (
+                  "Ya, Cairkan Dana"
+                )}
+              </Button>
             </AlertDialogFooter>
           </AlertDialogContent>
         </AlertDialog>
 
         {/* Modal Selesai (Informasi Cashback Telah Dicairkan & Dismiss dari Antrean) */}
-        <AlertDialog open={!!selesaiInfoItem} onOpenChange={(open) => { if (!open) setSelesaiInfoItem(null); }}>
+        <AlertDialog
+          open={!!selesaiInfoItem}
+          onOpenChange={(open) => {
+            if (!open && !isSubmittingSelesai) {
+              actionFeedback.clearError("finance-cashback-selesai");
+              setSelesaiInfoItem(null);
+            }
+          }}
+        >
           <AlertDialogContent className="border-border sm:max-w-md bg-card">
             <AlertDialogHeader>
               <AlertDialogTitle className="text-base font-semibold flex items-center gap-2 text-foreground">
                 <CheckCircle className="w-4 h-4 text-emerald-600" />
                 Cashback Berhasil Dicairkan
               </AlertDialogTitle>
-              <AlertDialogDescription className="text-xs text-muted-foreground pt-1 space-y-2">
-                <p className="leading-relaxed">
-                  Cashback terpending ini sudah berhasil dicairkan. Transaksi akan diselesaikan dan dikeluarkan dari antrean Cashback Terpending.
-                </p>
-                {selesaiInfoItem && (
-                  <div className="p-3 rounded-md border border-border/80 bg-muted/30 space-y-1 font-mono text-xs text-foreground">
-                    <div>Order: <span className="font-semibold text-primary">{selesaiInfoItem.orderNo || selesaiInfoItem.invoice}</span></div>
-                    <div>Customer: <span className="font-semibold">{selesaiInfoItem.customer}</span></div>
-                    <div>Nominal: <span className="font-semibold text-emerald-600 dark:text-emerald-400">{formatRupiah(selesaiInfoItem.nominalKelebihan || selesaiInfoItem.jumlahCashback || 0)}</span></div>
-                  </div>
-                )}
+              <AlertDialogDescription asChild className="text-xs text-muted-foreground pt-1 space-y-2">
+                <div>
+                  <p className="leading-relaxed">
+                    Cashback terpending ini sudah berhasil dicairkan. Transaksi akan diselesaikan dan dikeluarkan dari antrean Cashback Terpending pada tampilan sesi ini.
+                  </p>
+                  {selesaiInfoItem && (
+                    <div className="p-3 rounded-md border border-border/80 bg-muted/30 space-y-1 font-mono text-xs text-foreground mt-2">
+                      <div>Order: <span className="font-semibold text-primary">{selesaiInfoItem.orderNo || selesaiInfoItem.invoice}</span></div>
+                      <div>Customer: <span className="font-semibold">{selesaiInfoItem.customer}</span></div>
+                      <div>Nominal: <span className="font-semibold text-emerald-600 dark:text-emerald-400">{formatRupiah(selesaiInfoItem.nominalKelebihan || selesaiInfoItem.jumlahCashback || 0)}</span></div>
+                    </div>
+                  )}
+                </div>
               </AlertDialogDescription>
             </AlertDialogHeader>
+            <ActionInlineError
+              actionKey="finance-cashback-selesai"
+              error={actionFeedback.getError("finance-cashback-selesai")}
+              onDismiss={() => actionFeedback.clearError("finance-cashback-selesai")}
+              className="mt-2"
+            />
             <AlertDialogFooter className="mt-4">
-              <AlertDialogAction
-                onClick={() => {
-                  if (!selesaiInfoItem) return;
-                  dismissCashback(selesaiInfoItem.id);
-                  if (selesaiInfoItem.orderNo) {
-                    dismissCashback(selesaiInfoItem.orderNo);
-                  }
-                  setDismissedCashbackIds((prev) => {
-                    const next = new Set(prev);
-                    next.add(selesaiInfoItem.id);
-                    if (selesaiInfoItem.orderNo) next.add(selesaiInfoItem.orderNo);
-                    return next;
-                  });
-                  toast.success(`Transaksi ${selesaiInfoItem.orderNo || selesaiInfoItem.invoice} diselesaikan dari antrean pending.`);
-                  setSelesaiInfoItem(null);
-                }}
-                className="h-8 text-xs px-4 bg-primary hover:bg-primary/90 text-primary-foreground font-semibold"
+              <AlertDialogCancel
+                disabled={isSubmittingSelesai}
+                className="h-8 text-xs px-3 font-medium"
               >
-                OK
+                Tutup
+              </AlertDialogCancel>
+              <AlertDialogAction
+                disabled={isSubmittingSelesai}
+                onClick={(e) => {
+                  e.preventDefault();
+                  if (!selesaiInfoItem || selesaiDismissRef.current) return;
+                  actionFeedback.clearError("finance-cashback-selesai");
+                  const target = selesaiInfoItem;
+                  if (target.status !== "Dibayar" && !paidCashbackIds.has(target.id) && !(target.orderNo && paidCashbackIds.has(target.orderNo))) {
+                    const err = new ActionApiError(422, "BUSINESS_RULE_VIOLATION", "Transaksi cashback belum berstatus Dibayar sehingga tidak dapat diselesaikan dari antrean.");
+                    const classified = actionFeedback.setError("finance-cashback-selesai", err);
+                    toast.error(classified.message);
+                    return;
+                  }
+                  selesaiDismissRef.current = true;
+                  try {
+                    setIsSubmittingSelesai(true);
+                    const validOrderNo = target.orderNo && target.orderNo !== "-" ? target.orderNo : "";
+                    dismissCashback(target.id);
+                    if (validOrderNo) {
+                      dismissCashback(validOrderNo);
+                    }
+                    setDismissedCashbackIds((prev) => {
+                      const next = new Set(prev);
+                      next.add(target.id);
+                      if (validOrderNo) next.add(validOrderNo);
+                      return next;
+                    });
+                    toast.success(`Transaksi ${validOrderNo || target.invoice || target.id} diselesaikan dari antrean pending.`);
+                    setSelesaiInfoItem(null);
+                  } catch (err: any) {
+                    const classified = actionFeedback.setError("finance-cashback-selesai", err, {
+                      actionLabel: "menyelesaikan antrean cashback",
+                    });
+                    toast.error(classified.message);
+                  } finally {
+                    selesaiDismissRef.current = false;
+                    setIsSubmittingSelesai(false);
+                  }
+                }}
+                className="h-8 text-xs px-4 bg-primary hover:bg-primary/90 text-primary-foreground font-semibold flex items-center gap-1.5"
+              >
+                {isSubmittingSelesai ? (
+                  <>
+                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                    Memproses...
+                  </>
+                ) : (
+                  "OK"
+                )}
               </AlertDialogAction>
             </AlertDialogFooter>
           </AlertDialogContent>
         </AlertDialog>
 
         {/* Modal Edit Transaksi In-Place */}
-        <Dialog open={!!editingCashbackItem} onOpenChange={(open) => { if (!open) setEditingCashbackItem(null); }}>
+        <Dialog
+          open={!!editingCashbackItem}
+          onOpenChange={(open) => {
+            if (!open && !isSavingEditCashback) {
+              actionFeedback.clearError("finance-cashback-edit");
+              setEditingCashbackItem(null);
+            }
+          }}
+        >
           <DialogContent className="border-border sm:max-w-lg bg-card max-h-[90vh] overflow-y-auto">
             <DialogHeader>
               <DialogTitle className="text-base font-semibold flex items-center gap-2 text-foreground">
@@ -5262,8 +5803,12 @@ Terima kasih.`;
                     <div className="space-y-1">
                       <Label className="text-[11px] font-semibold text-foreground">Tanggal Masuk Berkas</Label>
                       <Input
+                        disabled={isSavingEditCashback}
                         value={editingCashbackForm.tanggalMasukBerkas || ""}
-                        onChange={(e) => setEditingCashbackForm({ ...editingCashbackForm, tanggalMasukBerkas: e.target.value })}
+                        onChange={(e) => {
+                          actionFeedback.clearError("finance-cashback-edit");
+                          setEditingCashbackForm({ ...editingCashbackForm, tanggalMasukBerkas: e.target.value });
+                        }}
                         className="h-8 text-xs"
                       />
                     </div>
@@ -5271,28 +5816,44 @@ Terima kasih.`;
 
                   <div className="grid grid-cols-2 gap-3">
                     <div className="space-y-1">
-                      <Label className="text-[11px] font-semibold text-foreground">Nomor Polisi</Label>
+                      <Label className="text-[11px] font-semibold text-foreground">
+                        Nomor Polisi <span className="text-destructive">*</span>
+                      </Label>
                       <Input
+                        disabled={isSavingEditCashback}
                         value={editingCashbackForm.nopol || ""}
-                        onChange={(e) => setEditingCashbackForm({ ...editingCashbackForm, nopol: e.target.value })}
+                        onChange={(e) => {
+                          actionFeedback.clearError("finance-cashback-edit");
+                          setEditingCashbackForm({ ...editingCashbackForm, nopol: e.target.value });
+                        }}
                         className="h-8 text-xs font-mono uppercase"
                       />
                     </div>
                     <div className="space-y-1">
                       <Label className="text-[11px] font-semibold text-foreground">No. Telepon / WhatsApp</Label>
                       <Input
+                        disabled={isSavingEditCashback}
                         value={editingCashbackForm.phone || ""}
-                        onChange={(e) => setEditingCashbackForm({ ...editingCashbackForm, phone: e.target.value })}
+                        onChange={(e) => {
+                          actionFeedback.clearError("finance-cashback-edit");
+                          setEditingCashbackForm({ ...editingCashbackForm, phone: e.target.value });
+                        }}
                         className="h-8 text-xs font-mono"
                       />
                     </div>
                   </div>
 
                   <div className="space-y-1">
-                    <Label className="text-[11px] font-semibold text-foreground">Nama Customer</Label>
+                    <Label className="text-[11px] font-semibold text-foreground">
+                      Nama Customer <span className="text-destructive">*</span>
+                    </Label>
                     <Input
+                      disabled={isSavingEditCashback}
                       value={editingCashbackForm.customer || ""}
-                      onChange={(e) => setEditingCashbackForm({ ...editingCashbackForm, customer: e.target.value })}
+                      onChange={(e) => {
+                        actionFeedback.clearError("finance-cashback-edit");
+                        setEditingCashbackForm({ ...editingCashbackForm, customer: e.target.value });
+                      }}
                       className="h-8 text-xs"
                     />
                   </div>
@@ -5302,9 +5863,10 @@ Terima kasih.`;
                       <Label className="text-[10px] font-semibold text-foreground">Total Tagihan</Label>
                       <Input
                         type="number"
-                        disabled={isPaid}
+                        disabled={isPaid || isSavingEditCashback}
                         value={editingCashbackForm.totalTagihan ?? 0}
                         onChange={(e) => {
+                          actionFeedback.clearError("finance-cashback-edit");
                           const tagihan = Number(e.target.value) || 0;
                           const masuk = Number(editingCashbackForm.uangMasuk) || 0;
                           setEditingCashbackForm({
@@ -5320,9 +5882,10 @@ Terima kasih.`;
                       <Label className="text-[10px] font-semibold text-foreground">Uang Masuk</Label>
                       <Input
                         type="number"
-                        disabled={isPaid}
+                        disabled={isPaid || isSavingEditCashback}
                         value={editingCashbackForm.uangMasuk ?? 0}
                         onChange={(e) => {
+                          actionFeedback.clearError("finance-cashback-edit");
                           const masuk = Number(e.target.value) || 0;
                           const tagihan = Number(editingCashbackForm.totalTagihan) || 0;
                           setEditingCashbackForm({
@@ -5338,9 +5901,12 @@ Terima kasih.`;
                       <Label className="text-[10px] font-semibold text-foreground">Kelebihan Bayar</Label>
                       <Input
                         type="number"
-                        disabled={isPaid}
+                        disabled={isPaid || isSavingEditCashback}
                         value={editingCashbackForm.nominalKelebihan ?? 0}
-                        onChange={(e) => setEditingCashbackForm({ ...editingCashbackForm, nominalKelebihan: Number(e.target.value) || 0 })}
+                        onChange={(e) => {
+                          actionFeedback.clearError("finance-cashback-edit");
+                          setEditingCashbackForm({ ...editingCashbackForm, nominalKelebihan: Number(e.target.value) || 0 });
+                        }}
                         className="h-8 text-xs font-mono font-bold text-blue-600"
                       />
                     </div>
@@ -5349,9 +5915,12 @@ Terima kasih.`;
                   <div className="space-y-1">
                     <Label className="text-[11px] font-semibold text-foreground">Status</Label>
                     <select
-                      disabled={isPaid}
+                      disabled={isPaid || isSavingEditCashback}
                       value={editingCashbackForm.status || "Pending"}
-                      onChange={(e) => setEditingCashbackForm({ ...editingCashbackForm, status: e.target.value })}
+                      onChange={(e) => {
+                        actionFeedback.clearError("finance-cashback-edit");
+                        setEditingCashbackForm({ ...editingCashbackForm, status: e.target.value });
+                      }}
                       className="w-full h-8 px-2.5 rounded-md border border-border bg-input-background text-xs text-foreground focus:outline-none focus:ring-1 focus:ring-primary disabled:opacity-50"
                     >
                       <option value="Pending">Pending</option>
@@ -5363,8 +5932,12 @@ Terima kasih.`;
                     <Label className="text-[11px] font-semibold text-foreground">Alasan / Catatan</Label>
                     <Textarea
                       rows={2}
+                      disabled={isSavingEditCashback}
                       value={editingCashbackForm.alasanPending || ""}
-                      onChange={(e) => setEditingCashbackForm({ ...editingCashbackForm, alasanPending: e.target.value })}
+                      onChange={(e) => {
+                        actionFeedback.clearError("finance-cashback-edit");
+                        setEditingCashbackForm({ ...editingCashbackForm, alasanPending: e.target.value });
+                      }}
                       placeholder="Catatan alasan kelebihan bayar atau pengembalian..."
                       className="text-xs"
                     />
@@ -5373,23 +5946,43 @@ Terima kasih.`;
               );
             })()}
 
+            <ActionInlineError
+              actionKey="finance-cashback-edit"
+              error={actionFeedback.getError("finance-cashback-edit")}
+              onDismiss={() => actionFeedback.clearError("finance-cashback-edit")}
+              onRetry={handleSaveEditCashback}
+              isRetrying={isSavingEditCashback}
+              className="mt-2"
+            />
             <DialogFooter className="mt-3 gap-2">
               <Button
                 type="button"
                 variant="outline"
                 size="sm"
+                disabled={isSavingEditCashback}
                 className="h-8 text-xs"
-                onClick={() => setEditingCashbackItem(null)}
+                onClick={() => {
+                  actionFeedback.clearError("finance-cashback-edit");
+                  setEditingCashbackItem(null);
+                }}
               >
                 Batal
               </Button>
               <Button
                 type="button"
                 size="sm"
-                className="h-8 text-xs bg-primary text-primary-foreground font-semibold"
+                disabled={isSavingEditCashback}
+                className="h-8 text-xs bg-primary text-primary-foreground font-semibold flex items-center gap-1.5"
                 onClick={handleSaveEditCashback}
               >
-                Simpan Perubahan
+                {isSavingEditCashback ? (
+                  <>
+                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                    Menyimpan...
+                  </>
+                ) : (
+                  "Simpan Perubahan"
+                )}
               </Button>
             </DialogFooter>
           </DialogContent>
@@ -5400,6 +5993,7 @@ Terima kasih.`;
           open={!!voidTargetCashback}
           onOpenChange={(open) => {
             if (!open && !isSubmittingVoid) {
+              actionFeedback.clearError("finance-cashback-void");
               setVoidTargetCashback(null);
               setVoidReasonText("");
             }
@@ -5462,7 +6056,10 @@ Terima kasih.`;
                       rows={3}
                       placeholder="Contoh: Kesalahan transfer rekening customer, pengembalian dibatalkan atau direvisi..."
                       value={voidReasonText}
-                      onChange={(e) => setVoidReasonText(e.target.value)}
+                      onChange={(e) => {
+                        actionFeedback.clearError("finance-cashback-void");
+                        setVoidReasonText(e.target.value);
+                      }}
                       className="text-xs text-foreground bg-input-background resize-none"
                       disabled={isSubmittingVoid}
                     />
@@ -5470,10 +6067,19 @@ Terima kasih.`;
                 </div>
               </AlertDialogDescription>
             </AlertDialogHeader>
+            <ActionInlineError
+              actionKey="finance-cashback-void"
+              error={actionFeedback.getError("finance-cashback-void")}
+              onDismiss={() => actionFeedback.clearError("finance-cashback-void")}
+              onRetry={voidReasonText.trim().length >= 10 ? handleConfirmVoidCashback : undefined}
+              isRetrying={isSubmittingVoid}
+              className="mt-2"
+            />
             <AlertDialogFooter className="mt-3 gap-2">
               <AlertDialogCancel
                 disabled={isSubmittingVoid}
                 onClick={() => {
+                  actionFeedback.clearError("finance-cashback-void");
                   setVoidTargetCashback(null);
                   setVoidReasonText("");
                 }}
@@ -5482,7 +6088,7 @@ Terima kasih.`;
                 Tutup
               </AlertDialogCancel>
               <AlertDialogAction
-                disabled={isSubmittingVoid || !voidReasonText || voidReasonText.trim().length < 10}
+                disabled={isSubmittingVoid}
                 onClick={(e) => {
                   e.preventDefault();
                   handleConfirmVoidCashback();

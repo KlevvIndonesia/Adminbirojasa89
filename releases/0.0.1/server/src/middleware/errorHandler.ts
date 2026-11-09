@@ -11,9 +11,11 @@ export class ApiError extends Error {
   public statusCode: number;
   public code: string;
   public details?: any;
+  public readonly isApiError = true;
 
   constructor(statusCode: number, code: string, message: string, details?: any) {
     super(message);
+    this.name = "ApiError";
     this.statusCode = statusCode;
     this.code = code;
     this.details = details;
@@ -27,7 +29,7 @@ export function errorHandler(
   res: Response,
   next: NextFunction
 ): void {
-  const isApiError = err instanceof ApiError;
+  const isApiError = err instanceof ApiError || err?.isApiError === true || (err && typeof err.statusCode === "number" && typeof err.code === "string");
   const statusCode = isApiError ? err.statusCode : (err.statusCode || (err.status ? Number(err.status) : 500));
   
   // Always log server-side for troubleshooting (with sanitized URL)
@@ -38,13 +40,35 @@ export function errorHandler(
 
   const isProduction = CONFIG.NODE_ENV === "production";
   
-  // In production, sanitize 500 and non-ApiErrors to prevent leaking SQL/filesystem details
-  let code = isApiError ? err.code : "INTERNAL_SERVER_ERROR";
-  let message = isApiError ? err.message : "Terjadi kesalahan internal pada server.";
+  // For 4xx errors, preserve the user-facing message and code
+  let code = isApiError ? err.code : (err.code || "VALIDATION_ERROR");
+  let message = err.message || "Permintaan tidak dapat diproses.";
 
-  if (isProduction && (!isApiError || statusCode >= 500)) {
+  // In production, sanitize 500+ errors to prevent leaking stack traces / internals
+  if (statusCode >= 500 && isProduction) {
     code = "INTERNAL_SERVER_ERROR";
     message = "Terjadi kesalahan internal pada server.";
+  }
+
+  // In production, sanitize any error message that contains internal database, SQL, or filesystem paths
+  if (isProduction && typeof message === "string") {
+    const sensitivePatterns = [
+      /sqlite/i,
+      /sql logic error/i,
+      /syntax error/i,
+      /unique constraint failed/i,
+      /check constraint failed/i,
+      /no such column/i,
+      /no such table/i,
+      /table .* has no column/i,
+      /[a-zA-Z]:\\[^\s]+/i, // Windows absolute paths
+      /\/(?:home|var|usr|etc|opt)\/[^\s]+/i, // Unix paths
+      /at\s+[a-zA-Z0-9_.]+\s+\(/i, // Stack trace frames
+    ];
+    if (sensitivePatterns.some((pattern) => pattern.test(message))) {
+      code = statusCode >= 500 ? "INTERNAL_SERVER_ERROR" : "VALIDATION_ERROR";
+      message = statusCode >= 500 ? "Terjadi kesalahan internal pada server." : "Permintaan tidak dapat diproses karena data tidak valid.";
+    }
   }
 
   const responsePayload = {

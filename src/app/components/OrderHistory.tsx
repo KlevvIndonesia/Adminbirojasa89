@@ -219,17 +219,6 @@ export function OrderHistory() {
 
   return (
     <div className="flex-1 flex flex-col min-h-full space-y-4 md:space-y-6 p-4 md:p-6 w-full min-w-0 text-left">
-      <motion.div
-        initial={{ opacity: 0, y: -10 }}
-        animate={{ opacity: 1, y: 0 }}
-        className="shrink-0"
-      >
-        <h1 className="text-xl font-semibold tracking-tight text-foreground">
-          Rekap Order
-        </h1>
-        <p className="text-xs text-muted-foreground mt-0.5">Arsip riwayat order operasional dan status rekonsiliasi pembayaran.</p>
-      </motion.div>
-
       <Card className="p-4 md:p-5 border border-border/80 bg-card shadow-xs flex-1 flex flex-col min-h-0">
         {/* Filters */}
         <div className="flex flex-wrap gap-3 mb-5 shrink-0">

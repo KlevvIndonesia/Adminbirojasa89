@@ -35,6 +35,9 @@ export interface IFinanceDataProvider {
   resolveInvoice(id: number, details?: any): boolean;
   completeInvoice(id: number, completedBy?: string): boolean;
   payoutCashback?(id: number, payoutData: any): Promise<boolean> | boolean;
+  voidInvoicePayment?(id: number, paymentId: number, reason: string): Promise<boolean> | boolean;
+  voidCashbackPayout?(id: number, reason: string): Promise<boolean> | boolean;
+  getVoidAuditHistory?(): Promise<{ payments: any[]; cashbacks: any[] }>;
   addKasKantor?(item: Omit<KasKantorItem, "id">): KasKantorItem | null;
   addKasMessenger?(item: Omit<KasMessengerItem, "id" | "total"> & { total?: number }): KasMessengerItem | null;
   deleteKasKantor?(id: number): Promise<boolean> | boolean;

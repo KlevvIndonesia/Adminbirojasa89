@@ -17,11 +17,15 @@ export interface SystemUser {
   wilayah?: string;
   alamat?: string;
   employeeId?: string;
+  employee_id?: string | null;
+  role?: string;
+  avatarUrl?: string;
   tanggalLahir?: string;
   gajiPokok?: number;
   tanggalBergabung?: string;
   jenisKelamin?: string;
   lastLogin?: string;
+  last_login_at?: string;
   createdAt?: string;
 }
 

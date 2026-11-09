@@ -33,7 +33,7 @@ export async function getPaymentMethodById(req: AuthenticatedRequest, res: Respo
 
 export async function createPaymentMethod(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
   try {
-    const created = paymentMethodService.create(req.body);
+    const created = paymentMethodService.create(req.body, req.user);
     res.status(201).json({
       success: true,
       message: `Metode pembayaran '${created.nama_metode}' berhasil ditambahkan.`,
@@ -48,7 +48,7 @@ export async function createPaymentMethod(req: AuthenticatedRequest, res: Respon
 export async function updatePaymentMethod(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
   try {
     const { id } = req.params;
-    const updated = paymentMethodService.update(id, req.body);
+    const updated = paymentMethodService.update(id, req.body, req.user);
     res.json({
       success: true,
       message: `Metode pembayaran '${updated.nama_metode}' berhasil diperbarui.`,
@@ -63,7 +63,7 @@ export async function updatePaymentMethod(req: AuthenticatedRequest, res: Respon
 export async function deletePaymentMethod(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
   try {
     const { id } = req.params;
-    const result = paymentMethodService.delete(id);
+    const result = paymentMethodService.delete(id, req.user);
     res.json({
       success: true,
       deactivated: result.deactivated,

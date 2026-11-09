@@ -5360,3 +5360,5 @@ export function findWilayahByName(name: string): WilayahAdministratifItem | unde
 export function getWilayahByProvinsi(kodeProvinsi: string): WilayahAdministratifItem[] {
   return WILAYAH_ADMINISTRATIF_LIST.filter((w) => w.kode_provinsi === kodeProvinsi);
 }
+
+export { normalizeSamsatOfficeName } from "./samsatNaming";

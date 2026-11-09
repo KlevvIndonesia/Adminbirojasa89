@@ -192,7 +192,8 @@ export class UserService {
       throw new ApiError(403, "FORBIDDEN", "Akun SVP dilindungi oleh sistem dan tidak dapat direset oleh role lain.");
     }
 
-    const dob = (targetUser as any).tanggal_lahir;
+    const fullUser = this.getById(rawId);
+    const dob = fullUser.tanggalLahir;
     const newPassword = formatDobToPassword(dob);
 
     const { hash, salt } = hashPassword(newPassword);

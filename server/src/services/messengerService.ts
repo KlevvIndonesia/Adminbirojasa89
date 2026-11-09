@@ -1098,9 +1098,9 @@ export class MessengerService {
     }
 
     if (rawOrder.componentProgress && Array.isArray(rawOrder.componentProgress)) {
-      rawOrder.componentProgress.forEach((cp, idx) => {
+      rawOrder.componentProgress.forEach((cp: any, idx: number) => {
         if (cp.evidence && Array.isArray(cp.evidence)) {
-          cp.evidence.forEach((ev, evIdx) => {
+          cp.evidence.forEach((ev: any, evIdx: number) => {
             attachments.push({
               id: `att-${orderNo}-comp-${idx}-${evIdx}`,
               name: `Bukti Loket: ${cp.name}`,

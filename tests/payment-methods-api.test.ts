@@ -41,17 +41,17 @@ test("Payment Methods API - Multi-Account & Conditional Master Data Invariants",
   const baseUrl = `http://127.0.0.1:${address.port}`;
 
   const adminToken = generateToken({
-    userId: "usr-admin-pm",
+    userId: "2",
     email: "admin@birojasa.com",
     nama: "Admin Operasional",
     role: "admin",
   });
 
   const staffToken = generateToken({
-    userId: "usr-staff-pm",
-    email: "staff@birojasa.com",
-    nama: "Staff Biasa",
-    role: "operator" as any,
+    userId: "4",
+    email: "budi.messenger@birojasa.com",
+    nama: "Budi Messenger",
+    role: "messenger" as any,
   });
 
   try {

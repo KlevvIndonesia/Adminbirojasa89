@@ -17,6 +17,7 @@ export interface DocumentAccessTicket {
   ticket: string;
   documentId: string;
   userId: string;
+  employeeId?: string;
   userName: string;
   userRole: string;
   operation: DocumentTicketOperation;
@@ -54,12 +55,13 @@ export class DocumentTicketService {
     const ticketStr = `tkt_${crypto.randomBytes(32).toString("hex")}`;
     const now = Date.now();
     const ttl = options?.ttlMs || this.defaultTtlMs;
-    const maxUses = options?.maxUses !== undefined ? options.maxUses : 1;
+    const maxUses = options?.maxUses !== undefined ? options.maxUses : (operation === "preview" ? 30 : 1);
 
     const entry: DocumentAccessTicket = {
       ticket: ticketStr,
       documentId,
       userId: String(user.userId || (user as any).id || user.email),
+      employeeId: (user as any).employeeId || undefined,
       userName: user.nama || user.email,
       userRole: user.role || user.jabatan || "admin",
       operation,
@@ -158,7 +160,36 @@ export class DocumentTicketService {
       }
     }
 
+    // Safety bounds: prevent unbounded growth under heavy ticket generation
+    if (this.usedTickets.size > 5000) {
+      const keysToDelete = Array.from(this.usedTickets.keys()).slice(0, 1000);
+      for (const k of keysToDelete) {
+        this.usedTickets.delete(k);
+      }
+    }
+
     return count;
+  }
+
+  /**
+   * Automated / explicit sweep alias for expired and spent tickets.
+   */
+  public sweepExpiredTickets(): number {
+    return this.sweepExpired();
+  }
+
+  /**
+   * Diagnostic helper: get count of currently active tickets.
+   */
+  public getActiveTicketCount(): number {
+    return this.tickets.size;
+  }
+
+  /**
+   * Diagnostic helper: get count of recorded consumed tickets.
+   */
+  public getUsedTicketCount(): number {
+    return this.usedTickets.size;
   }
 
   /**

@@ -15,6 +15,21 @@ export interface RateLimiterMiddleware {
   reset: (ip?: string) => void;
 }
 
+export function getClientIp(req: Request): string {
+  // Use Express resolved req.ip which respects app.get("trust proxy") configuration
+  // instead of blindly trusting raw unverified X-Forwarded-For headers
+  let ip = req.ip || req.socket.remoteAddress || "127.0.0.1";
+  if (typeof ip === "string") {
+    if (ip.startsWith("::ffff:")) {
+      ip = ip.substring(7);
+    }
+    if (ip === "::1") {
+      ip = "127.0.0.1";
+    }
+  }
+  return ip;
+}
+
 export function createRateLimiter(options: {
   windowMs: number;
   maxRequests: number;
@@ -45,11 +60,7 @@ export function createRateLimiter(options: {
       return next();
     }
 
-    const forwarded = req.headers["x-forwarded-for"];
-    const ip = (typeof forwarded === "string" ? forwarded.split(",")[0].trim() : Array.isArray(forwarded) ? forwarded[0] : null)
-      || req.ip
-      || req.socket.remoteAddress
-      || "127.0.0.1";
+    const ip = getClientIp(req);
     const now = Date.now();
 
     let record = store.get(ip);

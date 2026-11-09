@@ -4,7 +4,9 @@
  */
 
 import { dbPaymentMethodRepository, PaymentMethodEntity } from "../repositories/dbPaymentMethodRepository";
+import { dbAuditRepository } from "../repositories/dbAuditRepository";
 import { ApiError } from "../middleware/errorHandler";
+import { TokenPayload } from "../middleware/auth";
 
 export class PaymentMethodService {
   public getAll(activeOnly = false): PaymentMethodEntity[] {
@@ -15,13 +17,16 @@ export class PaymentMethodService {
     return dbPaymentMethodRepository.getById(id);
   }
 
-  public create(data: {
-    nama_metode: string;
-    bank?: string;
-    nama_rekening?: string;
-    nomor_rekening?: string;
-    status?: "Aktif" | "Nonaktif";
-  }): PaymentMethodEntity {
+  public create(
+    data: {
+      nama_metode: string;
+      bank?: string;
+      nama_rekening?: string;
+      nomor_rekening?: string;
+      status?: "Aktif" | "Nonaktif";
+    },
+    user?: TokenPayload | null
+  ): PaymentMethodEntity {
     const rawNama = (data.nama_metode || "").trim();
     if (!rawNama) {
       throw new ApiError(400, "VALIDATION_ERROR", "Metode pembayaran wajib dipilih.");
@@ -49,13 +54,35 @@ export class PaymentMethodService {
       }
 
       // Bersihkan nilai bank dan rekening lama
-      return dbPaymentMethodRepository.create({
+      const created = dbPaymentMethodRepository.create({
         nama_metode: "Tunai",
         bank: "Tunai",
         nama_rekening: "",
         nomor_rekening: "",
         status,
       });
+
+      try {
+        dbAuditRepository.save({
+          id: `log-paymethod-crt-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
+          userId: user?.userId || "usr-system",
+          userName: user?.nama || "Admin API",
+          userRole: user?.role || "admin",
+          action: "CREATE",
+          module: "Master Data - Metode Pembayaran",
+          details: `Menambahkan metode pembayaran Tunai.`,
+          metadata: {
+            recordId: created.id,
+            oldData: null,
+            newData: created,
+          },
+          createdAt: new Date().toISOString(),
+        });
+      } catch (auditErr) {
+        console.warn("[PaymentMethodService] Failed to record audit log:", auditErr);
+      }
+
+      return created;
     }
 
     // ─── CASE 2: TRANSFER BANK ─────────────────────────────────────────────────
@@ -80,16 +107,38 @@ export class PaymentMethodService {
       throw new ApiError(409, "DUPLICATE_ACCOUNT", `Rekening ${bank} dengan nomor '${nomorRekening}' sudah terdaftar.`);
     }
 
-    return dbPaymentMethodRepository.create({
+    const created = dbPaymentMethodRepository.create({
       nama_metode: "Transfer Bank",
       bank,
       nama_rekening: namaRekening,
       nomor_rekening: nomorRekening,
       status,
     });
+
+    try {
+      dbAuditRepository.save({
+        id: `log-paymethod-crt-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
+        userId: user?.userId || "usr-system",
+        userName: user?.nama || "Admin API",
+        userRole: user?.role || "admin",
+        action: "CREATE",
+        module: "Master Data - Metode Pembayaran",
+        details: `Menambahkan metode pembayaran Transfer Bank '${bank}' no. rekening '${nomorRekening}'.`,
+        metadata: {
+          recordId: created.id,
+          oldData: null,
+          newData: created,
+        },
+        createdAt: new Date().toISOString(),
+      });
+    } catch (auditErr) {
+      console.warn("[PaymentMethodService] Failed to record audit log:", auditErr);
+    }
+
+    return created;
   }
 
-  public update(id: string, updates: Partial<PaymentMethodEntity>): PaymentMethodEntity {
+  public update(id: string, updates: Partial<PaymentMethodEntity>, user?: TokenPayload | null): PaymentMethodEntity {
     const existing = dbPaymentMethodRepository.getById(id);
     if (!existing) {
       throw new ApiError(404, "NOT_FOUND", "Metode pembayaran tidak ditemukan.");
@@ -130,6 +179,28 @@ export class PaymentMethodService {
       });
 
       if (!updated) throw new ApiError(500, "UPDATE_FAILED", "Gagal memperbarui metode pembayaran.");
+
+      const isDeactivated = status === "Nonaktif" && existing.status === "Aktif";
+      try {
+        dbAuditRepository.save({
+          id: `log-paymethod-upd-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
+          userId: user?.userId || "usr-system",
+          userName: user?.nama || "Admin API",
+          userRole: user?.role || "admin",
+          action: isDeactivated ? "DEACTIVATE" : "UPDATE",
+          module: "Master Data - Metode Pembayaran",
+          details: `${isDeactivated ? "Menonaktifkan" : "Memperbarui"} metode pembayaran Tunai.`,
+          metadata: {
+            recordId: updated.id,
+            oldData: existing,
+            newData: updated,
+          },
+          createdAt: new Date().toISOString(),
+        });
+      } catch (auditErr) {
+        console.warn("[PaymentMethodService] Failed to record audit log:", auditErr);
+      }
+
       return updated;
     }
 
@@ -164,14 +235,58 @@ export class PaymentMethodService {
     });
 
     if (!updated) throw new ApiError(500, "UPDATE_FAILED", "Gagal memperbarui metode pembayaran.");
+
+    const isDeactivated = status === "Nonaktif" && existing.status === "Aktif";
+    try {
+      dbAuditRepository.save({
+        id: `log-paymethod-upd-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
+        userId: user?.userId || "usr-system",
+        userName: user?.nama || "Admin API",
+        userRole: user?.role || "admin",
+        action: isDeactivated ? "DEACTIVATE" : "UPDATE",
+        module: "Master Data - Metode Pembayaran",
+        details: `${isDeactivated ? "Menonaktifkan" : "Memperbarui"} metode pembayaran Transfer Bank '${updated.bank}' (${updated.nomor_rekening}).`,
+        metadata: {
+          recordId: updated.id,
+          oldData: existing,
+          newData: updated,
+        },
+        createdAt: new Date().toISOString(),
+      });
+    } catch (auditErr) {
+      console.warn("[PaymentMethodService] Failed to record audit log:", auditErr);
+    }
+
     return updated;
   }
 
-  public delete(id: string): { success: boolean; deactivated?: boolean; message: string } {
+  public delete(id: string, user?: TokenPayload | null): { success: boolean; deactivated?: boolean; message: string } {
+    const existing = dbPaymentMethodRepository.getById(id);
     const res = dbPaymentMethodRepository.delete(id, true);
     if (!res.success && !res.deactivated) {
       throw new ApiError(400, "DELETE_FAILED", res.message || "Gagal menghapus metode pembayaran.");
     }
+
+    try {
+      dbAuditRepository.save({
+        id: `log-paymethod-del-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
+        userId: user?.userId || "usr-system",
+        userName: user?.nama || "Admin API",
+        userRole: user?.role || "admin",
+        action: res.deactivated ? "DEACTIVATE" : "DELETE",
+        module: "Master Data - Metode Pembayaran",
+        details: `${res.deactivated ? "Menonaktifkan" : "Menghapus"} metode pembayaran '${existing?.nama_metode || id}' (${existing?.bank || "-"}).`,
+        metadata: {
+          recordId: id,
+          oldData: existing || null,
+          newData: res.deactivated && existing ? { ...existing, status: "Nonaktif" } : null,
+        },
+        createdAt: new Date().toISOString(),
+      });
+    } catch (auditErr) {
+      console.warn("[PaymentMethodService] Failed to record audit log:", auditErr);
+    }
+
     return {
       success: res.success,
       deactivated: res.deactivated,

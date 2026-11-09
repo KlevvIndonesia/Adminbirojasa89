@@ -20,6 +20,7 @@ import http from "node:http";
 import { createApp } from "../server/src/app";
 import { hashPassword, verifyPassword, needsRehash, generateToken, verifyToken } from "../server/src/utils/crypto";
 import { loginRateLimiter } from "../server/src/middleware/rateLimiter";
+import { dbOrderRepository } from "../server/src/repositories/dbOrderRepository";
 
 function startTestServer(): Promise<{ server: http.Server; baseUrl: string }> {
   return new Promise((resolve) => {
@@ -152,7 +153,7 @@ test("Security 3: JWT Hardening & Signature Verification", async (t) => {
 
     // 3. Tampered JWT signature
     const validToken = generateToken({
-      userId: "usr-admin-01",
+      userId: "usr-2",
       email: "admin@birojasa.com",
       nama: "Administrator",
       jabatan: "Admin",
@@ -161,7 +162,7 @@ test("Security 3: JWT Hardening & Signature Verification", async (t) => {
     const parts = validToken.split(".");
     // Tamper payload
     const tamperedPayload = Buffer.from(JSON.stringify({
-      userId: "usr-admin-01",
+      userId: "usr-1",
       email: "admin@birojasa.com",
       nama: "Hacked Admin",
       jabatan: "Admin",
@@ -179,7 +180,7 @@ test("Security 3: JWT Hardening & Signature Verification", async (t) => {
 
     // 4. Expired JWT token
     const expiredToken = generateToken(
-      { userId: "usr-admin-01", email: "admin@birojasa.com", nama: "Admin", jabatan: "Admin", role: "administrator" },
+      { userId: "usr-1", email: "admin@birojasa.com", nama: "Admin", jabatan: "Admin", role: "administrator" },
       -10 // Expired 10 seconds ago
     );
     const expiredRes = await fetch(`${baseUrl}/api/auth/me`, {
@@ -231,7 +232,7 @@ test("Security 5: Role-Based Access Control & Stage Authority (403)", async (t) 
   try {
     // 1. Messenger attempting to create an order -> Forbidden (403)
     const messengerToken = generateToken({
-      userId: "usr-mess-01",
+      userId: "usr-4",
       email: "kurir1@birojasa.com",
       nama: "Budi Santoso",
       jabatan: "Kurir",
@@ -258,7 +259,7 @@ test("Security 5: Role-Based Access Control & Stage Authority (403)", async (t) 
 
     // 2. Finance role attempting operational stage advance (Stage 2 Penjadwalan) -> Forbidden (403)
     const financeToken = generateToken({
-      userId: "usr-fin-01",
+      userId: "usr-3",
       email: "finance@birojasa.com",
       nama: "Siti Rahma",
       jabatan: "Finance",
@@ -267,7 +268,7 @@ test("Security 5: Role-Based Access Control & Stage Authority (403)", async (t) 
 
     // Create an order first using Administrator token
     const adminToken = generateToken({
-      userId: "usr-admin-01",
+      userId: "usr-1",
       email: "admin@birojasa.com",
       nama: "Administrator",
       jabatan: "SVP",
@@ -306,9 +307,12 @@ test("Security 5: Role-Based Access Control & Stage Authority (403)", async (t) 
     });
     assert.strictEqual(financeAdvanceRes.status, 403, "Finance role must be rejected on operational stage transitions");
 
+    // Advance order to Stage 6 Supervisi to test strict SVP gate
+    dbOrderRepository.updateOrder(testOrderNo, { currentStep: 6, currentStageName: "Supervisi" });
+
     // 3. Admin role attempting Stage 6 Supervisi -> Forbidden (403, SVP only)
     const operationalAdminToken = generateToken({
-      userId: "usr-opadmin-01",
+      userId: "usr-2",
       email: "admin.ops@birojasa.com",
       nama: "Staff Admin",
       jabatan: "Admin",
@@ -351,7 +355,7 @@ test("Security 6: Request Validation & Protected Field Tampering Resistance", as
   const { server, baseUrl } = await startTestServer();
   try {
     const adminToken = generateToken({
-      userId: "usr-admin-01",
+      userId: "usr-1",
       email: "admin@birojasa.com",
       nama: "Administrator",
       jabatan: "SVP",
@@ -429,7 +433,7 @@ test("Security 6: Request Validation & Protected Field Tampering Resistance", as
         isArchived: true,
       }),
     });
-    assert.strictEqual(attackRes.status, 200);
+    assert.strictEqual(attackRes.status, 403, "Tampering with protected fields must be rejected with 403");
 
     // Verify order in database: payment status MUST REMAIN Belum Lunas, currentStep MUST REMAIN 1
     const verifyRes = await fetch(`${baseUrl}/api/orders/${newOrder.orderNo}`, {
@@ -450,7 +454,7 @@ test("Security 7: Audit Log Actor Identity Cannot Be Spoofed", async (t) => {
   try {
     // Authenticated as Finance user
     const financeToken = generateToken({
-      userId: "usr-fin-01",
+      userId: "usr-3",
       email: "finance@birojasa.com",
       nama: "Siti Rahma Finance",
       jabatan: "Finance",
@@ -459,7 +463,7 @@ test("Security 7: Audit Log Actor Identity Cannot Be Spoofed", async (t) => {
 
     // Create an order as Admin to get an invoice to pay
     const adminToken = generateToken({
-      userId: "usr-admin-01",
+      userId: "usr-1",
       email: "admin@birojasa.com",
       nama: "Administrator",
       jabatan: "SVP",
@@ -477,9 +481,12 @@ test("Security 7: Audit Log Actor Identity Cannot Be Spoofed", async (t) => {
         layanan: "Pajak Tahunan",
         nopol: "B 1010 AUD",
         totalEstimasi: 400000,
+        isVerified: true,
+        finalCost: 400000,
       }),
     });
     const orderData = (await orderRes.json() as any).data;
+    dbOrderRepository.updateOrder(orderData.orderNo, { isVerified: true, finalCost: 400000, currentStep: 7, currentStageName: "Pengantaran", approvedBySpv: "Supervisor SPV" });
 
     // Get the corresponding invoice
     const invRes = await fetch(`${baseUrl}/api/finance/invoices`, {
@@ -488,6 +495,8 @@ test("Security 7: Audit Log Actor Identity Cannot Be Spoofed", async (t) => {
     const invList = (await invRes.json() as any).data;
     const inv = invList.find((i: any) => i.orderNo === orderData.orderNo);
     assert.ok(inv, "Invoice must exist for order");
+    const { dbFinanceRepository } = await import("../server/src/repositories/dbFinanceRepository");
+    dbFinanceRepository.updateInvoice(inv.id, { totalTagihan: 400000, sisa: 400000 });
 
     // Finance records payment but attempts to pass spoofed actor fields in body
     const payRes = await fetch(`${baseUrl}/api/finance/invoices/${inv.id}/pay`, {
@@ -498,9 +507,9 @@ test("Security 7: Audit Log Actor Identity Cannot Be Spoofed", async (t) => {
       },
       body: JSON.stringify({
         amount: 400000,
-        metode: "Transfer Bank",
+        metodePembayaran: "Transfer Bank",
         actor: {
-          userId: "usr-admin-01",
+          userId: "usr-1",
           userName: "Impersonated Admin",
           userRole: "administrator",
         },
@@ -508,7 +517,7 @@ test("Security 7: Audit Log Actor Identity Cannot Be Spoofed", async (t) => {
     });
     assert.strictEqual(payRes.status, 200);
 
-    // Check audit log: Actor MUST be Siti Rahma Finance (usr-fin-01), NOT the spoofed actor
+    // Check audit log: Actor MUST be Siti Rahma Finance (usr-3), NOT the spoofed actor
     const auditRes = await fetch(`${baseUrl}/api/audit-logs`, {
       headers: { Authorization: `Bearer ${adminToken}` },
     });
@@ -518,7 +527,7 @@ test("Security 7: Audit Log Actor Identity Cannot Be Spoofed", async (t) => {
     );
 
     assert.ok(latestPaymentLog, "Payment audit log entry must exist");
-    assert.strictEqual(latestPaymentLog.userId, "usr-fin-01", "Actor userId must be derived from authenticated JWT");
+    assert.strictEqual(latestPaymentLog.userId, "usr-3", "Actor userId must be derived from authenticated JWT");
     assert.strictEqual(latestPaymentLog.userName, "Siti Rahma Finance", "Actor userName must be derived from authenticated JWT");
     assert.strictEqual(latestPaymentLog.userRole, "finance", "Actor userRole must be derived from authenticated JWT");
   } finally {

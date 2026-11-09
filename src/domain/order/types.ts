@@ -214,6 +214,10 @@ export interface OperationalOrder {
   samsat_asal?: string;
   samsat_tujuan?: string;
   wilayahSamsatTujuan?: string;
+  samsatAsalId?: string;
+  samsat_asal_id?: string;
+  samsatTujuanId?: string;
+  samsat_tujuan_id?: string;
 
   // Alamat Terstruktur
   alamatPenjemputan: StructuredAddress;

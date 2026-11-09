@@ -695,19 +695,6 @@ export function MessengerHistory() {
           transition={{ duration: 0.2 }}
           className="space-y-6"
         >
-          {/* Header */}
-          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 border-b border-border/80 pb-4">
-            <div>
-              <h1 className="text-xl sm:text-2xl font-bold tracking-tight text-foreground flex items-center gap-2.5">
-                <Truck className="w-6 h-6 text-primary" />
-                Messenger History
-              </h1>
-              <p className="text-xs sm:text-sm text-muted-foreground mt-1">
-                Arsip riwayat pekerjaan Messenger yang telah berhasil diselesaikan, penelusuran proses, dan audit pengajuan biaya operasional.
-              </p>
-            </div>
-          </div>
-
           {/* Directory Filter Bar */}
           <Card className="p-4 border border-border/80 bg-card shadow-xs">
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">

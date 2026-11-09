@@ -18,6 +18,7 @@ export interface IOrderDataProvider {
   addOrder(order: OperationalOrder): void;
   addOrderAsync?(order: OperationalOrder): Promise<OperationalOrder>;
   updateOrder(orderNo: string, updates: Partial<OperationalOrder>): boolean;
+  updateOrderAsync?(orderNo: string, updates: Partial<OperationalOrder>): Promise<boolean>;
   advanceOrder(orderNo: string, targetStage: StageName, updates: Partial<OperationalOrder>): boolean;
   advanceOrderAsync?(orderNo: string, targetStage: StageName, updates?: Partial<OperationalOrder>): Promise<OperationalOrder | false>;
   rollbackOrder(orderNo: string, targetStage: StageName, updates: Partial<OperationalOrder>): boolean;
@@ -28,7 +29,8 @@ export interface IOrderDataProvider {
   deleteOrder?(orderNo: string): boolean | Promise<boolean>;
   clearArchivedOrders?(): boolean;
   cancelOrder?(orderNo: string, reason?: string): boolean | Promise<boolean>;
-  verifyPayment?(orderNo: string, verifierName?: string, confirmedAmount?: number, notes?: string): boolean;
+  verifyPayment?(orderNo: string, verifierName?: string, confirmedAmount?: number, notes?: string, proofPayload?: any): boolean;
+  verifyPaymentAsync?(orderNo: string, verifierName?: string, confirmedAmount?: number, notes?: string, proofPayload?: any): Promise<OperationalOrder>;
   subscribe(listener: () => void): () => void;
   getIsLoading?(): boolean;
   getError?(): string | null;
@@ -136,6 +138,17 @@ export class MockOrderProvider implements IOrderDataProvider {
     }
 
     return false;
+  }
+
+  public async updateOrderAsync(orderNo: string, updates: Partial<OperationalOrder>): Promise<boolean> {
+    const success = this.updateOrder(orderNo, updates);
+    if (!success) {
+      const err: any = new Error(`Order dengan nomor '${orderNo}' tidak ditemukan.`);
+      err.statusCode = 404;
+      err.code = "ORDER_NOT_FOUND";
+      throw err;
+    }
+    return true;
   }
 
   public advanceOrder(
@@ -292,7 +305,7 @@ export class MockOrderProvider implements IOrderDataProvider {
     return false;
   }
 
-  public verifyPayment(orderNo: string, verifierName: string = "Admin", confirmedAmount?: number, notes?: string): boolean {
+  public verifyPayment(orderNo: string, verifierName: string = "Admin", confirmedAmount?: number, notes?: string, proofPayload?: any): boolean {
     const targetOrder = this.getOrderByNo(orderNo);
     if (!targetOrder) return false;
     const nowStr = new Date().toISOString();
@@ -318,6 +331,8 @@ export class MockOrderProvider implements IOrderDataProvider {
       });
     }
 
+    const effectiveProof = proofPayload || targetOrder.payment?.buktiPembayaran;
+
     return this.updateOrder(orderNo, {
       payment: {
         ...targetOrder.payment,
@@ -329,10 +344,28 @@ export class MockOrderProvider implements IOrderDataProvider {
         dibayar: paid,
         kurang: sisa,
         overpayment,
+        buktiPembayaran: effectiveProof,
         tanggalBayar: nowStr.split("T")[0],
         riwayatKoreksiPembayaran: riwayat,
       },
     });
+  }
+
+  public async verifyPaymentAsync(
+    orderNo: string,
+    verifierName: string = "Admin",
+    confirmedAmount?: number,
+    notes?: string,
+    proofPayload?: any
+  ): Promise<OperationalOrder> {
+    const ok = this.verifyPayment(orderNo, verifierName, confirmedAmount, notes, proofPayload);
+    if (!ok) {
+      const err: any = new Error(`Order '${orderNo}' tidak ditemukan.`);
+      err.statusCode = 404;
+      err.code = "NOT_FOUND";
+      throw err;
+    }
+    return this.getOrderByNo(orderNo)!;
   }
 }
 

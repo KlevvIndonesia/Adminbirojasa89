@@ -12,6 +12,7 @@ import { requestLogger } from "./middleware/logger";
 import { errorHandler } from "./middleware/errorHandler";
 import { securityHeaders } from "./middleware/securityHeaders";
 import { apiRateLimiter } from "./middleware/rateLimiter";
+import { initializeSchema } from "./database/schema";
 import { seedDatabase } from "./database/seed";
 
 import { authRouter } from "./routes/authRoutes";
@@ -19,10 +20,21 @@ import { orderRouter } from "./routes/orderRoutes";
 import { pricingRouter } from "./routes/pricingRoutes";
 import { financeRouter } from "./routes/financeRoutes";
 import { userRouter } from "./routes/userRoutes";
+import { employeeRouter } from "./routes/employeeRoutes";
 import { auditRouter } from "./routes/auditRoutes";
 import { documentRouter } from "./routes/documentRoutes";
+import { estimationRouter } from "./routes/estimationRoutes";
+import { wilayahRouter, samsatOfficeRouter } from "./routes/wilayahRoutes";
+import { notificationRouter } from "./routes/notificationRoutes";
+import { permissionRouter } from "./routes/permissionRoutes";
+import { paymentMethodRouter } from "./routes/paymentMethodRoutes";
+import { messengerRouter } from "./routes/messengerRoutes";
+import { serviceRouter } from "./routes/serviceRoutes";
+import { orderCorrectionRouter } from "./routes/orderCorrectionRoutes";
 
 export function createApp(): Express {
+  // Ensure schema and migrations are initialized
+  initializeSchema(db);
   // Initialize Database Seeds if needed
   seedDatabase();
 
@@ -51,8 +63,8 @@ export function createApp(): Express {
         return callback(new Error(`CORS Error: Origin '${origin}' is not authorized.`));
       },
       credentials: true,
-      methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-      allowedHeaders: ["Content-Type", "Authorization", "X-Requested-With"],
+      methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+      allowedHeaders: ["Content-Type", "Authorization", "X-Requested-With", "X-Idempotency-Key", "x-idempotency-key", "Accept", "Cache-Control", "cache-control"],
     })
   );
 
@@ -60,10 +72,7 @@ export function createApp(): Express {
   app.use(express.json({ limit: "10mb" }));
   app.use(requestLogger);
 
-  // 4. Rate Limiting for all API routes (Milestone 15)
-  app.use("/api", apiRateLimiter);
-
-  // 5. Health Probes: Liveness & Readiness Endpoints (Section 9)
+  // 4. Health Probes: Liveness & Readiness Endpoints (exempt from rate limits)
   // Liveness probe (fast, lightweight process-alive check)
   const livenessHandler = (req: Request, res: Response) => {
     res.json({
@@ -121,14 +130,28 @@ export function createApp(): Express {
     });
   });
 
+  // 5. Rate Limiting for all business API routes (Milestone 15)
+  app.use("/api", apiRateLimiter);
+
   // Mount Feature Routes
   app.use("/api/auth", authRouter);
   app.use("/api/orders", orderRouter);
   app.use("/api/pricing", pricingRouter);
   app.use("/api/finance", financeRouter);
   app.use("/api/users", userRouter);
+  app.use("/api/employees", employeeRouter);
   app.use("/api/audit-logs", auditRouter);
+  app.use("/api/audit", auditRouter);
   app.use("/api/documents", documentRouter);
+  app.use("/api/estimation", estimationRouter);
+  app.use("/api/wilayah", wilayahRouter);
+  app.use("/api/samsat/offices", samsatOfficeRouter);
+  app.use("/api/notifications", notificationRouter);
+  app.use("/api/permissions", permissionRouter);
+  app.use("/api/payment-methods", paymentMethodRouter);
+  app.use("/api/messenger", messengerRouter);
+  app.use("/api/services", serviceRouter);
+  app.use("/api/order-corrections", orderCorrectionRouter);
 
   // 404 handler for unknown routes
   app.use((req, res) => {

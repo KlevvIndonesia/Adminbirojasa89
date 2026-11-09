@@ -11,14 +11,26 @@ export class ApiError extends Error {
   public statusCode: number;
   public code: string;
   public details?: any;
+  public field?: string;
+  public retryAfterSeconds?: number;
   public readonly isApiError = true;
 
-  constructor(statusCode: number, code: string, message: string, details?: any) {
+  constructor(
+    statusCode: number,
+    code: string,
+    message: string,
+    details?: any,
+    options?: { field?: string; retryAfterSeconds?: number }
+  ) {
     super(message);
     this.name = "ApiError";
     this.statusCode = statusCode;
     this.code = code;
     this.details = details;
+    this.field = options?.field ?? (details && typeof details === "object" ? details.field : undefined);
+    this.retryAfterSeconds =
+      options?.retryAfterSeconds ??
+      (details && typeof details === "object" ? details.retryAfterSeconds : undefined);
     Object.setPrototypeOf(this, ApiError.prototype);
   }
 }
@@ -71,11 +83,21 @@ export function errorHandler(
     }
   }
 
+  const extractedField = err?.field || err?.details?.field;
+  const extractedRetryAfter =
+    typeof err?.retryAfterSeconds === "number"
+      ? err.retryAfterSeconds
+      : typeof err?.details?.retryAfterSeconds === "number"
+      ? err.details.retryAfterSeconds
+      : undefined;
+
   const responsePayload = {
     success: false,
     error: {
       code,
       message,
+      ...(extractedField ? { field: extractedField } : {}),
+      ...(typeof extractedRetryAfter === "number" ? { retryAfterSeconds: extractedRetryAfter } : {}),
       ...(isApiError && err.details && !isProduction ? { details: err.details } : {}),
     },
     timestamp: new Date().toISOString(),

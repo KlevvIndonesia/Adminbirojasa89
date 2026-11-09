@@ -27,6 +27,7 @@ import {
 import { createInitialOrders } from "../../data/mock/orderMockData";
 import { orderRepository, IOrderRepository } from "../../data/repositories/orderRepository";
 import { APP_CONFIG } from "../config/appConfig";
+import { ActionApiError, fetchWithTimeout, parseApiErrorResponse } from "../utils/actionErrorClassifier";
 
 export type {
   StructuredAddress,
@@ -711,6 +712,64 @@ class OrderStore {
     return true;
   }
 
+  public async verifyPaymentAsync(
+    orderNo: string,
+    verifierName: string = "Admin",
+    confirmedAmount?: number,
+    notes?: string,
+    proofPayload?: any
+  ): Promise<OperationalOrder> {
+    const targetOrder = this.repository.getByOrderNo(orderNo);
+    if (!targetOrder) {
+      throw new ActionApiError(404, "NOT_FOUND", `Order ${orderNo} tidak ditemukan.`);
+    }
+
+    const updatedOrder = await (this.repository as any).verifyPaymentAsync(
+      orderNo,
+      verifierName,
+      confirmedAmount,
+      notes,
+      proofPayload
+    );
+
+    if (updatedOrder?.payment) {
+      try {
+        financeStore.updateInvoiceFromOrder(updatedOrder.orderNo, {
+          totalTagihan: updatedOrder.payment.totalBiaya,
+          terbayar: updatedOrder.payment.dibayar,
+          sisa: updatedOrder.payment.kurang,
+          overpayment: updatedOrder.payment.overpayment,
+          status: updatedOrder.payment.statusPembayaran as any,
+        });
+      } catch {
+        // safe fallback
+      }
+    }
+
+    try {
+      auditLog.log({
+        userId: "usr-admin",
+        userName: verifierName || "Admin",
+        userRole: "admin",
+        action: "UPDATE",
+        module: "Order Tracking",
+        details: `Verifikasi pembayaran order ${targetOrder.orderNo} (${targetOrder.customer}) - Terkonfirmasi Rp ${(updatedOrder?.payment?.dibayar || 0).toLocaleString("id-ID")} (${updatedOrder?.payment?.statusPembayaran})`,
+        metadata: {
+          orderNo: targetOrder.orderNo,
+          totalBiaya: targetOrder.payment.totalBiaya,
+          confirmedAmount: updatedOrder?.payment?.dibayar,
+          statusPembayaran: updatedOrder?.payment?.statusPembayaran,
+          catatan: notes,
+        },
+      });
+    } catch {
+      // safe fallback
+    }
+
+    this.notify();
+    return updatedOrder;
+  }
+
   // 2. Transisi stage (Misal 1->2, 2->3, dst.)
   public advanceOrder(orderNo: string, targetStage: StageName, updates: Partial<OperationalOrder>): boolean {
     const currentOrder = this.repository.getByOrderNo(orderNo);
@@ -1194,6 +1253,29 @@ class OrderStore {
     return true;
   }
 
+  public async addRekapDocumentAsync(
+    orderNo: string,
+    doc: Omit<RekapDocument, "id" | "orderId" | "uploadedAt">
+  ): Promise<boolean> {
+    const targetOrder = this.repository.getByOrderNo(orderNo);
+    if (!targetOrder) {
+      throw new ActionApiError(404, "NOT_FOUND", `Order ${orderNo} tidak ditemukan.`);
+    }
+
+    const currentDocs = targetOrder.rekapDocuments || [];
+    const newDoc: RekapDocument = {
+      ...doc,
+      id: `doc-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
+      orderId: orderNo,
+      uploadedAt: new Date().toISOString(),
+    };
+
+    const ok = await this.updateOrderAsync(orderNo, {
+      rekapDocuments: [...currentDocs, newDoc],
+    });
+    return ok;
+  }
+
   public async approveDocumentsAsync(
     orderNo: string,
     stage: 5 | 6,
@@ -1202,7 +1284,9 @@ class OrderStore {
     snapshotDocs?: string[]
   ): Promise<boolean> {
     const existing = this.repository.getByOrderNo(orderNo);
-    if (!existing) return false;
+    if (!existing) {
+      throw new ActionApiError(404, "NOT_FOUND", `Order ${orderNo} tidak ditemukan.`);
+    }
 
     const nowIso = new Date().toISOString();
     const currentApproval = existing.documentApproval || {
@@ -1234,29 +1318,56 @@ class OrderStore {
           }),
     };
 
-    this.repository.updateOrder(orderNo, {
-      documentApproval: updatedApproval,
-      ...(stage === 5 ? { documentsVerified: true } : { approvedBySpv: true, supervisorApprovedBy: userName }),
-    });
+    const token = typeof localStorage !== "undefined" ? localStorage.getItem("auth_token") : null;
+    const isApiMode = APP_CONFIG.dataProvider === "api" || Boolean(token);
 
-    try {
-      const token = typeof localStorage !== "undefined" ? localStorage.getItem("auth_token") : null;
+    let confirmedOrderData: Partial<OperationalOrder> | null = null;
+    if (isApiMode) {
       const headers: Record<string, string> = { "Content-Type": "application/json" };
       if (token) headers["Authorization"] = `Bearer ${token}`;
 
-      await fetch(`${APP_CONFIG.apiBaseUrl}/orders/${encodeURIComponent(orderNo)}/approve-documents`, {
-        method: "POST",
-        headers,
-        body: JSON.stringify({
-          stage,
-          approvedBy: userName,
-          approvedByRole: userRole,
-          notes,
-          snapshotDocs,
-        }),
-      });
-    } catch {
-      // Safe fallback if offline / mock mode
+      const res = await fetchWithTimeout(
+        `${APP_CONFIG.apiBaseUrl}/orders/${encodeURIComponent(orderNo)}/approve-documents`,
+        {
+          method: "POST",
+          headers,
+          body: JSON.stringify({
+            stage,
+            approvedBy: userName,
+            approvedByRole: userRole,
+            notes,
+            snapshotDocs,
+          }),
+        },
+        15000
+      );
+
+      if (!res.ok) {
+        throw await parseApiErrorResponse(
+          res,
+          `Gagal menyimpan persetujuan dokumen Stage ${stage} untuk order ${orderNo}.`
+        );
+      }
+
+      const payload = await res.json().catch(() => ({}));
+      if (payload?.data && typeof payload.data === "object") {
+        confirmedOrderData = payload.data;
+      }
+    }
+
+    const provider: any = this.repository.getProvider?.();
+    const updatesToApply: Partial<OperationalOrder> = {
+      ...(confirmedOrderData || {}),
+      documentApproval: confirmedOrderData?.documentApproval || updatedApproval,
+      ...(stage === 5
+        ? { documentsVerified: true }
+        : { approvedBySpv: true, supervisorApprovedBy: userName }),
+    };
+
+    if (provider && typeof provider.applyServerOrderSnapshot === "function") {
+      provider.applyServerOrderSnapshot(orderNo, updatesToApply);
+    } else {
+      this.repository.updateOrder(orderNo, updatesToApply);
     }
 
     try {
@@ -1315,6 +1426,7 @@ export function useOrderStore() {
     updateOrder: orderStore.updateOrder.bind(orderStore),
     updateOrderAsync: orderStore.updateOrderAsync.bind(orderStore),
     verifyPayment: orderStore.verifyPayment.bind(orderStore),
+    verifyPaymentAsync: orderStore.verifyPaymentAsync.bind(orderStore),
     archiveOrder: orderStore.archiveOrder.bind(orderStore),
     deleteArchivedOrder: orderStore.deleteArchivedOrder.bind(orderStore),
     deleteOrder: orderStore.deleteOrder.bind(orderStore),
@@ -1324,6 +1436,7 @@ export function useOrderStore() {
     syncFinalCostToFinance: orderStore.syncFinalCostToFinance.bind(orderStore),
     processRefund: orderStore.processRefund.bind(orderStore),
     addRekapDocument: orderStore.addRekapDocument.bind(orderStore),
+    addRekapDocumentAsync: orderStore.addRekapDocumentAsync.bind(orderStore),
     approveDocumentsAsync: orderStore.approveDocumentsAsync.bind(orderStore),
     cancelOrder: orderStore.cancelOrder.bind(orderStore),
   };

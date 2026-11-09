@@ -8,6 +8,8 @@ import multer from "multer";
 import { CONFIG } from "../config/env";
 import { requireAuth } from "../middleware/auth";
 import { uploadRateLimiter } from "../middleware/rateLimiter";
+import path from "node:path";
+import { ApiError } from "../middleware/errorHandler";
 import {
   uploadDocument,
   getDocumentById,
@@ -17,6 +19,7 @@ import {
   getDocumentsByOrder,
   getDocumentsByInvoice,
   deleteDocument,
+  linkDocumentToOrder,
 } from "../controllers/documentController";
 
 export const documentRouter = Router();
@@ -27,6 +30,15 @@ const upload = multer({
   limits: {
     fileSize: CONFIG.MAX_FILE_SIZE_BYTES,
     files: 1,
+  },
+  fileFilter: (_req, file, cb) => {
+    // Fast pre-filter for dangerous executable/script extensions
+    const ext = path.extname(file.originalname || "").toLowerCase();
+    const disallowed = [".exe", ".dll", ".bat", ".cmd", ".sh", ".php", ".js", ".mjs", ".vbs", ".ps1", ".jar", ".msi", ".scr", ".com", ".phtml"];
+    if (disallowed.includes(ext)) {
+      return cb(new ApiError(400, "DISALLOWED_FILE_EXTENSION", `Ekstensi '${ext}' dilarang demi keamanan sistem.`));
+    }
+    cb(null, true);
   },
 });
 
@@ -52,4 +64,5 @@ documentRouter.get("/:id/download", downloadDocument);
 
 // Single Resource Management
 documentRouter.get("/:id", requireAuth, getDocumentById);
+documentRouter.patch("/:id/link-order", requireAuth, linkDocumentToOrder);
 documentRouter.delete("/:id", requireAuth, deleteDocument);

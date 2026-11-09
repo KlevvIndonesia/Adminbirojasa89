@@ -14,13 +14,32 @@ export interface AuthUserSession {
   employeeId?: string;
 }
 
+export type AuthErrorCode =
+  | "INVALID_CREDENTIALS"
+  | "ACCOUNT_INACTIVE"
+  | "TOO_MANY_REQUESTS"
+  | "NETWORK_ERROR"
+  | "TIMEOUT_ERROR"
+  | "SERVER_ERROR"
+  | "VALIDATION_ERROR"
+  | "UNEXPECTED_ERROR";
+
+export interface AuthResult {
+  success: boolean;
+  session?: AuthUserSession;
+  errorCode?: AuthErrorCode;
+  errorMessage?: string;
+  statusCode?: number;
+  retryAfterSeconds?: number;
+}
+
 export const DEMO_CREDENTIALS = {
   administrator: {
     email: "svp@birojasa.com",
     password: "admin123",
     name: "Admin Super (SVP)",
     userId: "usr-001",
-    employeeId: "EMP-001",
+    employeeId: "EMP-0001",
     role: "administrator" as const,
   },
   finance: {
@@ -28,7 +47,7 @@ export const DEMO_CREDENTIALS = {
     password: "finance123",
     name: "Finance User",
     userId: "usr-002",
-    employeeId: "EMP-003",
+    employeeId: "EMP-0003",
     role: "finance" as const,
   },
   admin: {
@@ -36,7 +55,7 @@ export const DEMO_CREDENTIALS = {
     password: "admin123",
     name: "Admin User",
     userId: "usr-003",
-    employeeId: "EMP-002",
+    employeeId: "EMP-0002",
     role: "admin" as const,
   },
   messenger1: {
@@ -44,7 +63,7 @@ export const DEMO_CREDENTIALS = {
     password: "messenger123",
     name: "Budi Santoso",
     userId: "usr-msg-001",
-    employeeId: "EMP-MSG-001",
+    employeeId: "EMP-0004",
     role: "messenger" as const,
   },
   messenger2: {
@@ -52,7 +71,7 @@ export const DEMO_CREDENTIALS = {
     password: "messenger123",
     name: "Andi Pratama",
     userId: "usr-msg-002",
-    employeeId: "EMP-MSG-002",
+    employeeId: "EMP-0005",
     role: "messenger" as const,
   },
   messenger: {
@@ -60,7 +79,7 @@ export const DEMO_CREDENTIALS = {
     password: "messenger123",
     name: "Budi Santoso",
     userId: "usr-msg-001",
-    employeeId: "EMP-MSG-001",
+    employeeId: "EMP-0004",
     role: "messenger" as const,
   },
 };
@@ -74,6 +93,7 @@ export interface IUserRepository {
   deleteUser(id: number | string): boolean;
   subscribe(listener: () => void): () => void;
   authenticate(email: string, password: string): Promise<AuthUserSession | null>;
+  authenticateDetailed(email: string, password: string): Promise<AuthResult>;
   getDemoCredentials(): typeof DEMO_CREDENTIALS;
   resetPassword?(id: number | string): Promise<{ success: boolean; message?: string }>;
   isLoading?(): boolean;
@@ -142,8 +162,24 @@ export class UserRepository implements IUserRepository {
     return { success: true, message: "OK" };
   }
 
-  public authenticate(email: string, password: string): Promise<AuthUserSession | null> {
-    return this.provider.authenticate(email, password);
+  public async authenticateDetailed(email: string, password: string): Promise<AuthResult> {
+    if (typeof this.provider.authenticateDetailed === "function") {
+      return await this.provider.authenticateDetailed(email, password);
+    }
+    const session = await this.provider.authenticate(email, password);
+    if (session) {
+      return { success: true, session };
+    }
+    return {
+      success: false,
+      errorCode: "INVALID_CREDENTIALS",
+      errorMessage: "Email atau password yang Anda masukkan tidak sesuai. Periksa kembali data login Anda.",
+    };
+  }
+
+  public async authenticate(email: string, password: string): Promise<AuthUserSession | null> {
+    const res = await this.authenticateDetailed(email, password);
+    return res.session || null;
   }
 
   public isLoading(): boolean {

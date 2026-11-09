@@ -72,6 +72,9 @@ import { toast } from "sonner";
 import { documentRepository } from "../../data/repositories/documentRepository";
 import { processDocumentUpload, formatFileSize } from "../utils/fileCompressor";
 import { DocumentPreviewModal } from "./DocumentPreviewModal";
+import { ActionInlineError } from "./ui/ActionInlineError";
+import { useActionFeedback } from "../hooks/useActionFeedback";
+import { ActionApiError } from "../utils/actionErrorClassifier";
 import {
   useOrderStore,
   orderStore,
@@ -119,13 +122,42 @@ export const trackingSteps = [
   { id: 8, title: "Dokumen Telah Diterima", displayTitle: "Pengurusan Selesai", icon: CheckCircle2 },
 ];
 
-const layananOptions = [
-  "Perpanjangan 1 Tahun",
-  "Perpanjangan 5 Tahun",
-  "Balik Nama",
-  "Mutasi Antar Samsat",
-  "Mutasi Luar Daerah",
-];
+// Helper to derive document requirements from order snapshot, clientDocuments, or legacy fallback
+function getOrderDocumentRequirements(order?: any): Array<{ key: string; label: string }> {
+  if (!order) return [];
+  // Priority 1: Immutable snapshot requirements
+  if (order.serviceRequirementsSnapshot?.requirements && Array.isArray(order.serviceRequirementsSnapshot.requirements) && order.serviceRequirementsSnapshot.requirements.length > 0) {
+    return order.serviceRequirementsSnapshot.requirements.map((r: any) => ({
+      key: r.id || r.key || r.label?.toLowerCase().replace(/[^a-z0-9]+/g, "_"),
+      label: r.label || r.name || "Dokumen Persyaratan",
+    }));
+  }
+  // Priority 2: Keys from clientDocuments if present
+  if (order.clientDocuments && Object.keys(order.clientDocuments).length > 0) {
+    const defaultLabels: Record<string, string> = {
+      stnk: "STNK Asli",
+      bpkb: "BPKB Asli",
+      ktp: "KTP Pemilik Asli",
+      skkp: "SKKP (Surat Ketetapan Pajak)",
+      lainnya: "Dokumen Tambahan / Surat Kuasa",
+    };
+    return Object.keys(order.clientDocuments).map((key) => {
+      const doc = order.clientDocuments[key];
+      return {
+        key,
+        label: defaultLabels[key] || doc?.name || key.toUpperCase().replace(/_/g, " "),
+      };
+    });
+  }
+  // Priority 3: Fallback standard documents for legacy orders
+  return [
+    { key: "stnk", label: "STNK Asli" },
+    { key: "bpkb", label: "BPKB Asli" },
+    { key: "ktp", label: "KTP Pemilik Asli" },
+    { key: "skkp", label: "SKKP (Surat Ketetapan Pajak)" },
+    { key: "lainnya", label: "Dokumen Tambahan / Surat Kuasa" },
+  ];
+}
 const bulanOptions = [
   "Januari", "Februari", "Maret", "April", "Mei", "Juni",
   "Juli", "Agustus", "September", "Oktober", "November", "Desember"
@@ -190,10 +222,12 @@ export function OrderTracking({
   userName = 'Admin Operasional',
   userId = 'usr-admin',
 }: OrderTrackingProps) {
-  const { activeOrders, advanceOrder, advanceOrderAsync, rollbackOrderAsync, archiveOrder, archiveOrderAsync, updateOrder, updateOrderAsync, verifyPayment, processRefund, addRekapDocument, approveDocumentsAsync } = useOrderStore();
-  const { karyawan } = useKaryawanPengguna();
+  const { activeOrders, advanceOrder, advanceOrderAsync, rollbackOrderAsync, archiveOrder, archiveOrderAsync, updateOrder, updateOrderAsync, verifyPayment, verifyPaymentAsync, processRefund, addRekapDocument, addRekapDocumentAsync, approveDocumentsAsync } = useOrderStore();
+  const { karyawan, isLoading: isKaryawanLoading, error: karyawanError, refresh: refreshKaryawan } = useKaryawanPengguna();
+  const isApiMode = APP_CONFIG.dataProvider === "api";
+  const actionFeedback = useActionFeedback();
   const activeMessengers = useMemo(() => {
-    const active = karyawan
+    const active = (karyawan || [])
       .filter((k) => (k.jabatan || "").toUpperCase() === "MESSENGER" && k.status === "Aktif")
       .map((k) => ({
         id: k.id,
@@ -201,12 +235,17 @@ export function OrderTracking({
         wilayah: k.wilayah,
       }));
     if (active.length > 0) return active;
+    // In API mode: never fallback to dummy KNOWN_MESSENGERS
+    if (isApiMode) {
+      return [];
+    }
+    // Isolated demo/mock mode only
     return KNOWN_MESSENGERS.map((nama, idx) => ({
-      id: `EMP-MSG-00${idx + 1}`,
+      id: idx === 0 ? "EMP-0004" : idx === 1 ? "EMP-0005" : `EMP-000${idx + 4}`,
       nama,
       wilayah: "Jakarta",
     }));
-  }, [karyawan]);
+  }, [karyawan, isApiMode]);
 
   const messengers = useMemo(() => activeMessengers.map((m) => m.nama), [activeMessengers]);
 
@@ -318,66 +357,82 @@ export function OrderTracking({
   const [docNotes, setDocNotes] = useState("");
 
   const handleDocUpload = async (key: string, label: string, file: File) => {
-    try {
-      const processed = await processDocumentUpload(file);
-      let uploadedDocId: string | undefined;
-      let finalFileUrl = processed.fileUrl;
+    const orderNo = selectedOrder?.orderNo;
+    if (!orderNo) return;
+    const actionKey = `m3-doc:${key}:${orderNo}`;
 
-      if (selectedOrder?.orderNo) {
-        try {
-          const uploaded = await documentRepository.uploadDocument(processed.file, {
-            orderNo: selectedOrder.orderNo,
-            documentType: label,
-            metadata: {
-              documentKey: key,
-              phase: "BEFORE",
-              category: "Dokumen Masuk",
-            },
-          });
-          if (uploaded?.id) {
-            uploadedDocId = uploaded.id;
-            finalFileUrl = uploaded.fileUrl;
-          }
-        } catch (uploadErr) {
-          console.warn("Server upload failed, using processed fileUrl:", uploadErr);
+    await actionFeedback.runAction(
+      actionKey,
+      async () => {
+        const processed = await processDocumentUpload(file);
+        let uploadedDocId: string | undefined;
+        let finalFileUrl = processed.fileUrl;
+
+        const uploaded = await documentRepository.uploadDocument(processed.file, {
+          orderNo,
+          documentType: label,
+          metadata: {
+            documentKey: key,
+            phase: "BEFORE",
+            category: "Dokumen Masuk",
+          },
+        });
+        if (uploaded?.id) {
+          uploadedDocId = uploaded.id;
+          finalFileUrl = uploaded.fileUrl;
         }
-      }
 
-      const updatedItem = {
-        name: processed.fileName,
-        status: "Baru Diupload",
-        fileUrl: finalFileUrl,
-        documentId: uploadedDocId,
-        fileType: processed.fileType,
-        fileSize: formatFileSize(processed.fileSize),
-      };
+        const updatedItem = {
+          name: processed.fileName,
+          status: "Baru Diupload",
+          fileUrl: finalFileUrl,
+          documentId: uploadedDocId,
+          fileType: processed.fileType,
+          fileSize: formatFileSize(processed.fileSize),
+        };
 
-      setDocState((prev) => ({
-        ...prev,
-        [key]: updatedItem,
-      }));
-
-      if (selectedOrder?.orderNo) {
         const nextClientDocs = {
           ...(selectedOrder.clientDocuments || {}),
           [key]: updatedItem,
         };
-        updateOrder(selectedOrder.orderNo, {
+
+        const ok = await updateOrderAsync(orderNo, {
           clientDocuments: nextClientDocs,
         });
-        setSelectedOrder((prev: any) => prev ? { ...prev, clientDocuments: nextClientDocs } : null);
-      }
+        if (!ok) {
+          throw new ActionApiError(
+            500,
+            "INTERNAL_SERVER_ERROR",
+            `Gagal menyimpan lampiran ${label} ke server.`
+          );
+        }
 
-      if (processed.compressed && processed.compressionRatio) {
-        toast.success(
-          `${label} (${file.name}) berhasil dikompres (${formatFileSize(file.size)} ➔ ${formatFileSize(processed.fileSize)}, hemat ${processed.compressionRatio})!`
+        setDocState((prev) => ({
+          ...prev,
+          [key]: updatedItem,
+        }));
+        setSelectedOrder((prev: any) =>
+          prev && prev.orderNo === orderNo
+            ? { ...prev, clientDocuments: nextClientDocs }
+            : prev
         );
-      } else {
-        toast.success(`${label} (${file.name}) berhasil diunggah.`);
+
+        if (processed.compressed && processed.compressionRatio) {
+          toast.success(
+            `${label} (${file.name}) berhasil dikompres (${formatFileSize(file.size)} ➔ ${formatFileSize(processed.fileSize)}, hemat ${processed.compressionRatio})!`
+          );
+        } else {
+          toast.success(`${label} (${file.name}) berhasil diunggah.`);
+        }
+      },
+      {
+        entityLabel: `dokumen ${label}`,
+        actionLabel: `mengunggah ${label}`,
+        onError: (classified) => {
+          toast.error(classified.message);
+        },
       }
-    } catch (err: any) {
-      toast.error(err.message || `Gagal mengunggah ${label}`);
-    }
+    );
   };
 
   // Final Cost form state
@@ -443,71 +498,158 @@ export function OrderTracking({
     setNewDocName("");
     setNewDocFile(null);
     setNewDocError("");
+    actionFeedback.clearByPrefix("upload-new-doc:");
     setIsUploadNewDocModalOpen(true);
   };
 
   const handleSaveNewDocument = async () => {
+    const orderNo = selectedOrder?.orderNo;
+    const actionKey = `upload-new-doc:${orderNo || "none"}`;
+
     if (!newDocName.trim()) {
-      setNewDocError("Nama dokumen wajib diisi!");
+      const msg = "Nama dokumen wajib diisi!";
+      setNewDocError(msg);
+      actionFeedback.setError(actionKey, {
+        statusCode: 422,
+        code: "VALIDATION_ERROR",
+        message: msg,
+        field: "newDocName",
+      });
       return;
     }
     if (!newDocFile) {
-      setNewDocError("File dokumen wajib dipilih!");
+      const msg = "File dokumen wajib dipilih!";
+      setNewDocError(msg);
+      actionFeedback.setError(actionKey, {
+        statusCode: 422,
+        code: "VALIDATION_ERROR",
+        message: msg,
+        field: "newDocFile",
+      });
       return;
     }
-    if (!selectedOrder) return;
+    if (!orderNo) return;
 
     setIsSubmittingNewDoc(true);
     setNewDocError("");
 
-    try {
-      const processed = await processDocumentUpload(newDocFile);
-      const isPdf = processed.fileType === "pdf";
-      const uploaded = await documentRepository.uploadDocument(processed.file, {
-        orderNo: selectedOrder.orderNo,
-        documentType: newDocTargetContext === "ARCHIVE_AFTER" ? "REKAP_AFTER" : "DOKUMEN_PENDUKUNG",
-        metadata: {
-          customDocName: newDocName.trim(),
-          phase: newDocTargetContext === "ARCHIVE_AFTER" ? "AFTER" : undefined,
-        },
-      });
-
-      if (newDocTargetContext === "SUPERVISI") {
-        const newDoc: VerificationUploadedDoc = {
-          id: uploaded.id || `doc-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-          name: newDocName.trim(),
-          fileUrl: uploaded.fileUrl,
-          fileType: isPdf ? "pdf" : "image",
-          fileSize: formatFileSize(processed.fileSize),
-          uploadedAt: new Date().toISOString(),
-          uploadedBy: userName || "Staff",
-        };
-        setUploadedNewDocs((prev) => [...prev, newDoc]);
-        setNewSamsatDocs((prev) => [...prev, newDocName.trim()]);
-        setIsStage5DocApproved(false);
-        setIsStage6DocApproved(false);
-        toast.info("Dokumen baru ditambahkan. Persetujuan dokumen direset dan perlu disetujui ulang.");
-      } else {
-        addRekapDocument(selectedOrder.orderNo, {
-          phase: "AFTER",
-          documentType: (["STNK", "BPKB", "SKKP"].includes(newDocName.trim().toUpperCase()) ? newDocName.trim().toUpperCase() : "OTHER") as "STNK" | "BPKB" | "SKKP" | "OTHER",
-          label: newDocName.trim(),
-          fileType: isPdf ? "PDF" : "IMAGE",
-          fileUrl: uploaded.fileUrl,
-          uploadedBy: userName,
+    const result = await actionFeedback.runAction(
+      actionKey,
+      async () => {
+        const processed = await processDocumentUpload(newDocFile);
+        const isPdf = processed.fileType === "pdf";
+        const uploaded = await documentRepository.uploadDocument(processed.file, {
+          orderNo,
+          documentType: newDocTargetContext === "ARCHIVE_AFTER" ? "REKAP_AFTER" : "DOKUMEN_PENDUKUNG",
+          metadata: {
+            customDocName: newDocName.trim(),
+            phase: newDocTargetContext === "ARCHIVE_AFTER" ? "AFTER" : undefined,
+          },
         });
-      }
 
-      toast.success(`Dokumen "${newDocName.trim()}" (${newDocFile.name}) berhasil diunggah.`);
-      setIsUploadNewDocModalOpen(false);
-      setNewDocName("");
-      setNewDocFile(null);
-    } catch (err: any) {
-      setNewDocError(err.message || "Gagal mengunggah dokumen baru.");
-      toast.error(err.message || "Gagal mengunggah dokumen baru.");
-    } finally {
-      setIsSubmittingNewDoc(false);
-    }
+        if (newDocTargetContext === "SUPERVISI") {
+          const newDoc: VerificationUploadedDoc = {
+            id: uploaded.id || `doc-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+            name: newDocName.trim(),
+            fileUrl: uploaded.fileUrl,
+            fileType: isPdf ? "pdf" : "image",
+            fileSize: formatFileSize(processed.fileSize),
+            uploadedAt: new Date().toISOString(),
+            uploadedBy: userName || "Staff",
+          };
+          const currentRekap = selectedOrder.rekapDocuments || [];
+          const updatedRekap = [
+            ...currentRekap,
+            {
+              id: newDoc.id,
+              orderId: orderNo,
+              phase: "AFTER" as const,
+              documentType: (["STNK", "BPKB", "SKKP"].includes(newDoc.name.toUpperCase())
+                ? newDoc.name.toUpperCase()
+                : "OTHER") as "STNK" | "BPKB" | "SKKP" | "OTHER",
+              label: newDoc.name,
+              fileType: (isPdf ? "PDF" : "IMAGE") as "PDF" | "IMAGE",
+              fileUrl: newDoc.fileUrl,
+              uploadedAt: newDoc.uploadedAt,
+              uploadedBy: newDoc.uploadedBy || userName,
+            },
+          ];
+          const updatedUploadedDocs = [...(selectedOrder.uploadedDocs || []), newDoc];
+
+          const ok = await updateOrderAsync(orderNo, {
+            rekapDocuments: updatedRekap,
+            uploadedDocs: updatedUploadedDocs,
+          });
+          if (!ok) {
+            throw new ActionApiError(
+              500,
+              "INTERNAL_SERVER_ERROR",
+              "Gagal menyimpan daftar dokumen baru ke server."
+            );
+          }
+
+          setUploadedNewDocs((prev) => [...prev, newDoc]);
+          setNewSamsatDocs((prev) => [...prev, newDocName.trim()]);
+          setSelectedOrder((prev: any) =>
+            prev && prev.orderNo === orderNo
+              ? { ...prev, rekapDocuments: updatedRekap, uploadedDocs: updatedUploadedDocs }
+              : prev
+          );
+          setIsStage5DocApproved(false);
+          setIsStage6DocApproved(false);
+          toast.info("Dokumen baru ditambahkan. Persetujuan dokumen direset dan perlu disetujui ulang.");
+        } else {
+          const docInput = {
+            phase: "AFTER" as const,
+            documentType: (["STNK", "BPKB", "SKKP"].includes(newDocName.trim().toUpperCase()) ? newDocName.trim().toUpperCase() : "OTHER") as "STNK" | "BPKB" | "SKKP" | "OTHER",
+            label: newDocName.trim(),
+            fileType: (isPdf ? "PDF" : "IMAGE") as "PDF" | "IMAGE",
+            fileUrl: uploaded.fileUrl,
+            uploadedBy: userName,
+          };
+          const ok = await addRekapDocumentAsync(orderNo, docInput);
+          if (!ok) {
+            throw new ActionApiError(
+              500,
+              "INTERNAL_SERVER_ERROR",
+              "Gagal menyimpan dokumen rekap hasil Samsat ke server."
+            );
+          }
+          setSelectedOrder((prev: any) =>
+            prev && prev.orderNo === orderNo
+              ? {
+                  ...prev,
+                  rekapDocuments: [
+                    ...(prev.rekapDocuments || []),
+                    {
+                      ...docInput,
+                      id: uploaded.id || `doc-${Date.now()}`,
+                      orderId: orderNo,
+                      uploadedAt: new Date().toISOString(),
+                    },
+                  ],
+                }
+              : prev
+          );
+        }
+
+        toast.success(`Dokumen "${newDocName.trim()}" (${newDocFile.name}) berhasil diunggah.`);
+        setIsUploadNewDocModalOpen(false);
+        setNewDocName("");
+        setNewDocFile(null);
+      },
+      {
+        entityLabel: "dokumen order",
+        actionLabel: "mengunggah dokumen baru",
+        onError: (classified) => {
+          setNewDocError(classified.message);
+          toast.error(classified.message);
+        },
+      }
+    );
+
+    setIsSubmittingNewDoc(false);
+    return result.ok;
   };
 
   // Samsat progress state
@@ -606,6 +748,8 @@ export function OrderTracking({
     summaryText: string,
     action: () => Promise<void> | void
   ) => {
+    const confirmKey = `confirm-advance:${orderNo}`;
+    actionFeedback.clearError(confirmKey);
     setAdvanceConfirmData({
       isOpen: true,
       orderNo,
@@ -614,14 +758,22 @@ export function OrderTracking({
       onConfirm: async () => {
         if (isAdvancing) return;
         setIsAdvancing(true);
-        try {
-          await action();
+        const result = await actionFeedback.runAction(
+          confirmKey,
+          async () => {
+            await action();
+          },
+          {
+            entityLabel: `order ${orderNo}`,
+            actionLabel: `memindahkan order ke ${targetStage}`,
+            onError: (classified) => {
+              toast.error(classified.message);
+            },
+          }
+        );
+        setIsAdvancing(false);
+        if (result.ok) {
           setAdvanceConfirmData(null);
-        } catch (err: any) {
-          console.error("Stage transition failed:", err);
-          toast.error(err?.message || "Gagal memproses tahapan order.");
-        } finally {
-          setIsAdvancing(false);
         }
       },
     });
@@ -634,135 +786,285 @@ export function OrderTracking({
   // Stage 1: Upload Bukti Pembayaran Langsung di Loket / Stage 1
   const handleUploadStage1Proof = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
-    if (!file || !selectedOrder) return;
-    try {
-      toast.info(`Memproses bukti pembayaran ${file.name}...`);
-      const processed = await processDocumentUpload(file);
-      const uploaded = await documentRepository.uploadDocument(processed.file, {
-        orderNo: selectedOrder.orderNo,
-        documentType: "BUKTI_PEMBAYARAN",
-      });
-      const proof: PaymentProof = {
-        fileName: processed.fileName,
-        fileType: processed.fileType,
-        fileUrl: uploaded.fileUrl,
-        uploadedAt: new Date().toISOString(),
-        fileSize: formatFileSize(processed.fileSize),
-        documentId: uploaded.id,
-      };
-      const updatedPayment = {
-        ...selectedOrder.payment,
-        buktiPembayaran: proof,
-      };
-      updateOrder(selectedOrder.orderNo, { payment: updatedPayment });
-      setSelectedOrder({
-        ...selectedOrder,
-        payment: updatedPayment,
-      });
-      toast.success(`Bukti pembayaran ${processed.fileName} berhasil diunggah.`);
-    } catch (err: any) {
-      toast.error(err?.message || "Gagal mengunggah bukti pembayaran.");
-    } finally {
-      e.target.value = "";
-    }
+    const orderNo = selectedOrder?.orderNo;
+    e.target.value = "";
+    if (!file || !orderNo) return;
+
+    const actionKey = `m1-proof:${orderNo}`;
+    await actionFeedback.runAction(
+      actionKey,
+      async () => {
+        toast.info(`Memproses bukti pembayaran ${file.name}...`);
+        const processed = await processDocumentUpload(file);
+        const uploaded = await documentRepository.uploadDocument(processed.file, {
+          orderNo,
+          documentType: "BUKTI_PEMBAYARAN",
+        });
+        const proof: PaymentProof = {
+          fileName: processed.fileName,
+          fileType: processed.fileType,
+          fileUrl: uploaded.fileUrl,
+          uploadedAt: new Date().toISOString(),
+          fileSize: formatFileSize(processed.fileSize),
+          documentId: uploaded.id,
+        };
+        const updatedPayment = {
+          ...selectedOrder.payment,
+          buktiPembayaran: proof,
+        };
+        const ok = await updateOrderAsync(orderNo, { payment: updatedPayment });
+        if (!ok) {
+          throw new ActionApiError(
+            500,
+            "INTERNAL_SERVER_ERROR",
+            "Gagal menyimpan bukti pembayaran ke server."
+          );
+        }
+        setSelectedOrder((prev: any) =>
+          prev && prev.orderNo === orderNo ? { ...prev, payment: updatedPayment } : prev
+        );
+        toast.success(`Bukti pembayaran ${processed.fileName} berhasil diunggah.`);
+      },
+      {
+        entityLabel: "bukti pembayaran",
+        actionLabel: "mengunggah bukti pembayaran",
+        onError: (classified) => {
+          toast.error(classified.message);
+        },
+      }
+    );
+  };
+
+  // Stage 1: Upload lampiran dokumen klien (opsional)
+  const handleUploadStage1ClientDoc = async (
+    docKey: string,
+    docLabel: string,
+    file: File
+  ) => {
+    const orderNo = selectedOrder?.orderNo;
+    if (!orderNo) return;
+    const actionKey = `m1-doc:${docKey}:${orderNo}`;
+
+    await actionFeedback.runAction(
+      actionKey,
+      async () => {
+        const processed = await processDocumentUpload(file);
+        const uploaded = await documentRepository.uploadDocument(processed.file, {
+          orderNo,
+          documentType: docKey,
+        });
+        const updatedDocs = {
+          ...(selectedOrder.clientDocuments || {}),
+          [docKey]: {
+            name: processed.fileName,
+            status: "Baru Diupload",
+            updatedAt: new Date().toISOString().split("T")[0],
+            fileType: processed.fileType === "pdf" ? "pdf" : "image",
+            fileUrl: uploaded.fileUrl,
+            documentId: uploaded.id,
+            fileSize: formatFileSize(processed.fileSize),
+            isOptional: true,
+          },
+        };
+        const ok = await updateOrderAsync(orderNo, { clientDocuments: updatedDocs });
+        if (!ok) {
+          throw new ActionApiError(
+            500,
+            "INTERNAL_SERVER_ERROR",
+            `Gagal menyimpan lampiran ${docLabel} ke server.`
+          );
+        }
+        setSelectedOrder((prev: any) =>
+          prev && prev.orderNo === orderNo ? { ...prev, clientDocuments: updatedDocs } : prev
+        );
+        toast.success(`${docLabel} (${file.name}) berhasil diunggah.`);
+      },
+      {
+        entityLabel: docLabel,
+        actionLabel: `mengunggah ${docLabel}`,
+        onError: (classified) => {
+          toast.error(classified.message);
+        },
+      }
+    );
+  };
+
+  // Stage 1: Hapus lampiran dokumen klien (opsional)
+  const handleRemoveStage1ClientDoc = async (docKey: string, docLabel: string, documentId?: string) => {
+    const orderNo = selectedOrder?.orderNo;
+    if (!orderNo) return;
+    const actionKey = `m1-doc-remove:${docKey}:${orderNo}`;
+
+    await actionFeedback.runAction(
+      actionKey,
+      async () => {
+        if (documentId && isApiMode) {
+          await documentRepository.deleteDocument(documentId);
+        }
+        const updatedDocs = {
+          ...(selectedOrder.clientDocuments || {}),
+          [docKey]: {
+            name: "",
+            status: "Belum Tersedia",
+            isOptional: true,
+          },
+        };
+        const ok = await updateOrderAsync(orderNo, { clientDocuments: updatedDocs });
+        if (!ok) {
+          throw new ActionApiError(
+            500,
+            "INTERNAL_SERVER_ERROR",
+            `Gagal menghapus lampiran ${docLabel} dari server.`
+          );
+        }
+        setSelectedOrder((prev: any) =>
+          prev && prev.orderNo === orderNo ? { ...prev, clientDocuments: updatedDocs } : prev
+        );
+        toast.info(`Lampiran ${docLabel} dihapus.`);
+      },
+      {
+        entityLabel: docLabel,
+        actionLabel: `menghapus lampiran ${docLabel}`,
+        onError: (classified) => {
+          toast.error(classified.message);
+        },
+      }
+    );
   };
 
   // Stage 1: Action Verifikasi & Koreksi Pembayaran Awal
-  const handleSavePaymentVerificationAndCorrection = async (overrideAmount?: number, overrideNotes?: string) => {
-    if (!selectedOrder) return;
-    try {
-      setIsVerifyingPayment(true);
-      const rawInput = overrideAmount !== undefined ? String(overrideAmount) : editPaymentAmount;
-      const cleanStr = rawInput.replace(/[^0-9]/g, "");
-      if (!cleanStr || isNaN(Number(cleanStr))) {
-        toast.error("Nominal pembayaran terkonfirmasi harus berupa angka valid!");
-        return;
-      }
-      const confirmedNominal = Number(cleanStr);
-      if (confirmedNominal < 0) {
-        toast.error("Nominal pembayaran tidak boleh bernilai negatif!");
-        return;
-      }
+  const handleSavePaymentVerificationAndCorrection = async (
+    overrideAmount?: number,
+    overrideNotes?: string,
+    callerActionKey?: string
+  ): Promise<boolean> => {
+    if (!selectedOrder) return false;
+    const orderNo = selectedOrder.orderNo;
+    const actionKey = callerActionKey || `m1-verify-payment:${orderNo}`;
 
-      const totalBiaya = selectedOrder.payment?.totalBiaya || selectedOrder.totalEstimasi || 0;
-      const sisa = Math.max(0, totalBiaya - confirmedNominal);
-      const overpayment = Math.max(0, confirmedNominal - totalBiaya);
-      const statusPembayaran = confirmedNominal >= totalBiaya ? "Lunas" : confirmedNominal > 0 ? "Kurang Bayar" : "Belum Bayar";
-      const nowStr = new Date().toISOString();
-      const notesToSave = overrideNotes !== undefined ? overrideNotes : editPaymentNote.trim();
-
-      const prevNominal = selectedOrder.payment?.nominalPembayaranAwalTerkonfirmasi ?? selectedOrder.payment?.nominalDibayarAwal ?? selectedOrder.payment?.dibayar ?? 0;
-      const existingHistory = selectedOrder.payment?.riwayatKoreksiPembayaran || [];
-      const updatedHistory = [...existingHistory];
-      if (prevNominal !== confirmedNominal || notesToSave) {
-        updatedHistory.push({
-          nominalLama: prevNominal,
-          nominalBaru: confirmedNominal,
-          tanggal: nowStr,
-          admin: userName,
-          catatan: notesToSave || (selectedOrder.payment?.isPaymentVerified ? "Koreksi nominal pembayaran" : "Konfirmasi verifikasi awal"),
-        });
-      }
-
-      verifyPayment(selectedOrder.orderNo, userName, confirmedNominal, notesToSave);
-
-      const updatedPayment = {
-        ...selectedOrder.payment,
-        isPaymentVerified: true,
-        paymentVerifiedAt: nowStr,
-        paymentVerifiedBy: userName,
-        nominalPembayaranAwalTerkonfirmasi: confirmedNominal,
-        statusPembayaran,
-        dibayar: confirmedNominal,
-        kurang: sisa,
-        overpayment,
-        tanggalBayar: nowStr.split("T")[0],
-        riwayatKoreksiPembayaran: updatedHistory,
-      };
-
-      setSelectedOrder({
-        ...selectedOrder,
-        payment: updatedPayment,
+    const rawInput = overrideAmount !== undefined ? String(overrideAmount) : editPaymentAmount;
+    const cleanStr = rawInput.replace(/[^0-9]/g, "");
+    if (!cleanStr || isNaN(Number(cleanStr))) {
+      const msg = "Nominal pembayaran terkonfirmasi harus berupa angka valid!";
+      actionFeedback.setError(actionKey, {
+        statusCode: 422,
+        code: "VALIDATION_ERROR",
+        message: msg,
+        field: "editPaymentAmount",
       });
-
-      setEditPaymentNote("");
-      setIsEditingPayment(false);
-      setIsConfirmPaymentDialogOpen(false);
-      toast.success(
-        `Pembayaran order ${selectedOrder.orderNo} berhasil dikonfirmasi: Rp ${confirmedNominal.toLocaleString("id-ID")} (${statusPembayaran})`
-      );
-    } catch (err: any) {
-      toast.error(err?.message || "Gagal memverifikasi pembayaran order.");
-    } finally {
-      setIsVerifyingPayment(false);
+      toast.error(msg);
+      return false;
     }
+    const confirmedNominal = Number(cleanStr);
+    if (confirmedNominal < 0) {
+      const msg = "Nominal pembayaran tidak boleh bernilai negatif!";
+      actionFeedback.setError(actionKey, {
+        statusCode: 422,
+        code: "VALIDATION_ERROR",
+        message: msg,
+        field: "editPaymentAmount",
+      });
+      toast.error(msg);
+      return false;
+    }
+
+    setIsVerifyingPayment(true);
+    const result = await actionFeedback.runAction(
+      actionKey,
+      async () => {
+        const notesToSave = overrideNotes !== undefined ? overrideNotes : editPaymentNote.trim();
+        const verifiedOrder = await verifyPaymentAsync(
+          orderNo,
+          userName,
+          confirmedNominal,
+          notesToSave,
+          selectedOrder.payment?.buktiPembayaran
+        );
+
+        const totalBiaya = verifiedOrder?.payment?.totalBiaya ?? selectedOrder.payment?.totalBiaya ?? selectedOrder.totalEstimasi ?? 0;
+        const sisa = verifiedOrder?.payment?.kurang ?? Math.max(0, totalBiaya - confirmedNominal);
+        const overpayment = verifiedOrder?.payment?.overpayment ?? Math.max(0, confirmedNominal - totalBiaya);
+        const statusPembayaran = verifiedOrder?.payment?.statusPembayaran ?? (confirmedNominal >= totalBiaya ? "Lunas" : confirmedNominal > 0 ? "Kurang Bayar" : "Belum Bayar");
+        const nowStr = new Date().toISOString();
+
+        const updatedPayment = verifiedOrder?.payment || {
+          ...selectedOrder.payment,
+          isPaymentVerified: true,
+          paymentVerifiedAt: nowStr,
+          paymentVerifiedBy: userName,
+          nominalPembayaranAwalTerkonfirmasi: confirmedNominal,
+          statusPembayaran,
+          dibayar: confirmedNominal,
+          kurang: sisa,
+          overpayment,
+          tanggalBayar: nowStr.split("T")[0],
+        };
+
+        setSelectedOrder((prev: any) =>
+          prev && prev.orderNo === orderNo
+            ? { ...(verifiedOrder || prev), payment: updatedPayment }
+            : prev
+        );
+
+        setEditPaymentNote("");
+        setIsEditingPayment(false);
+        setIsConfirmPaymentDialogOpen(false);
+        actionFeedback.clearByPrefix(`m1-verify-payment:${orderNo}`);
+        actionFeedback.clearByPrefix(`confirm-payment:${orderNo}`);
+        toast.success(
+          `Pembayaran order ${orderNo} berhasil dikonfirmasi: Rp ${confirmedNominal.toLocaleString("id-ID")} (${statusPembayaran})`
+        );
+      },
+      {
+        entityLabel: `pembayaran order ${orderNo}`,
+        actionLabel: "memverifikasi pembayaran order",
+        onError: (classified) => {
+          toast.error(classified.message);
+        },
+      }
+    );
+    setIsVerifyingPayment(false);
+    return result.ok;
   };
 
   const handleMarkPaymentVerified = async () => {
-    return handleSavePaymentVerificationAndCorrection();
+    const orderNo = selectedOrder?.orderNo;
+    return handleSavePaymentVerificationAndCorrection(
+      undefined,
+      undefined,
+      orderNo ? `confirm-payment:${orderNo}` : undefined
+    );
   };
 
   // Stage 1 -> Stage 2 (Verifikasi -> Penjadwalan) atau langsung ke Stage 3 jika Datang Langsung
   const handleVerifyOrder = async () => {
     if (!selectedOrder) return;
+    const orderNo = selectedOrder.orderNo;
+    const m1AdvanceKey = `m1-advance:${orderNo}`;
+    actionFeedback.clearError(m1AdvanceKey);
 
     // Jika Bayar di Awal dan pembayaran belum terverifikasi secara tersimpan, otomatis simpan verifikasi pembayaran
     const isBayarDiAwal = selectedOrder.payment?.tipePembayaran === "Bayar di Awal";
     const isPaymentVerified = selectedOrder.payment?.isPaymentVerified;
     if (isBayarDiAwal && !isPaymentVerified) {
-      await handleSavePaymentVerificationAndCorrection();
+      const paymentOk = await handleSavePaymentVerificationAndCorrection(
+        undefined,
+        undefined,
+        m1AdvanceKey
+      );
+      if (!paymentOk) return;
     }
 
     const isDatangLangsung = selectedOrder.metodeLayanan === "Datang Langsung";
 
     if (isDatangLangsung) {
       confirmAndAdvance(
-        selectedOrder.orderNo,
+        orderNo,
         "Stage 3 – Verifikasi Dokumen Fisik",
-        `Order ${selectedOrder.orderNo} menggunakan metode Datang Langsung (berkas diserahkan langsung di loket). Verifikasi awal disetujui dan order akan langsung dialihkan ke Stage 3 (Verifikasi Dokumen Fisik di Loket)?`,
+        `Order ${orderNo} menggunakan metode Datang Langsung (berkas diserahkan langsung di loket). Verifikasi awal disetujui dan order akan langsung dialihkan ke Stage 3 (Verifikasi Dokumen Fisik di Loket)?`,
         async () => {
           const nowStr = new Date().toISOString();
-          const updated = await advanceOrderAsync(selectedOrder.orderNo, "Verifikasi Dokumen", {
+          const updated = await advanceOrderAsync(orderNo, "Verifikasi Dokumen", {
             isVerified: true,
             verifiedBy: userName,
             verifiedAt: nowStr,
@@ -772,10 +1074,12 @@ export function OrderTracking({
             assignedMessengerName: "Datang Langsung (Loket)",
             catatanPenjadwalan: "Klien datang langsung ke loket kantor Biro Jasa SUN89",
           });
-          if (!updated) throw new Error("Gagal memajukan order ke Verifikasi Dokumen");
+          if (!updated) {
+            throw new ActionApiError(500, "INTERNAL_SERVER_ERROR", "Gagal memajukan order ke Verifikasi Dokumen.");
+          }
 
           setIsVerifyWorkspaceOpen(false);
-          toast.success(`Order ${selectedOrder.orderNo} (Datang Langsung) berhasil diverifikasi dan langsung masuk ke Stage 3 (Verifikasi Dokumen Fisik di Loket)!`);
+          toast.success(`Order ${orderNo} (Datang Langsung) berhasil diverifikasi dan langsung masuk ke Stage 3 (Verifikasi Dokumen Fisik di Loket)!`);
           setSelectedOrder(null);
           setCurrentTab("Verifikasi Dokumen");
         }
@@ -784,20 +1088,22 @@ export function OrderTracking({
     }
 
     confirmAndAdvance(
-      selectedOrder.orderNo,
+      orderNo,
       "Stage 2 – Penjadwalan",
       "Apakah Anda yakin verifikasi awal data identitas customer dan kelayakan berkas order telah sesuai untuk dipindahkan ke tahap Penjadwalan?",
       async () => {
         const nowStr = new Date().toISOString();
-        const updated = await advanceOrderAsync(selectedOrder.orderNo, "Penjadwalan", {
+        const updated = await advanceOrderAsync(orderNo, "Penjadwalan", {
           isVerified: true,
           verifiedBy: userName,
           verifiedAt: nowStr,
         });
-        if (!updated) throw new Error("Gagal memajukan order ke Penjadwalan");
+        if (!updated) {
+          throw new ActionApiError(500, "INTERNAL_SERVER_ERROR", "Gagal memajukan order ke Penjadwalan.");
+        }
 
         setIsVerifyWorkspaceOpen(false);
-        toast.success(`Order ${selectedOrder.orderNo} berhasil diverifikasi dan masuk tahap Penjadwalan!`);
+        toast.success(`Order ${orderNo} berhasil diverifikasi dan masuk tahap Penjadwalan!`);
         setSelectedOrder(null);
         setCurrentTab("Penjadwalan");
       }
@@ -807,72 +1113,145 @@ export function OrderTracking({
   // Stage 2: Save schedule in place (Stage 2)
   const handleSaveScheduleOnly = async () => {
     if (!selectedOrder) return;
+    const orderNo = selectedOrder.orderNo;
+    const actionKey = `m2-save:${orderNo}`;
+    actionFeedback.clearError(`m2-advance:${orderNo}`);
+
     if (!scheduleData.tanggalJemput) {
-      toast.error("Harap tentukan tanggal jemput dokumen!");
+      const msg = "Harap tentukan tanggal jemput dokumen!";
+      actionFeedback.setError(actionKey, {
+        statusCode: 422,
+        code: "VALIDATION_ERROR",
+        message: msg,
+        field: "tanggalJemput",
+      });
+      toast.error(msg);
       return;
     }
     if (!scheduleData.messenger) {
-      toast.error("Harap pilih messenger penjemput!");
+      const msg = "Harap pilih messenger penjemput!";
+      actionFeedback.setError(actionKey, {
+        statusCode: 422,
+        code: "VALIDATION_ERROR",
+        message: msg,
+        field: "messenger",
+      });
+      toast.error(msg);
       return;
     }
     const selectedMessengerObj = activeMessengers.find(
       (m) => m.nama === scheduleData.messenger || m.id === scheduleData.messenger
     );
-    const ok = await updateOrderAsync(selectedOrder.orderNo, {
-      tanggalJemput: scheduleData.tanggalJemput,
-      messenger: selectedMessengerObj?.nama || scheduleData.messenger,
-      assignedMessengerId: selectedMessengerObj?.id,
-      assignedMessengerName: selectedMessengerObj?.nama || scheduleData.messenger,
-      catatanPenjadwalan: scheduleData.catatanPenjadwalan,
-      isScheduled: true,
-      messengerTaskStatus: "Terjadwal Jemput",
-    });
-    if (!ok) {
-      toast.error("Gagal menyimpan jadwal penjemputan");
+    if (!selectedMessengerObj) {
+      const msg = "Messenger yang dipilih tidak valid atau tidak aktif!";
+      actionFeedback.setError(actionKey, {
+        statusCode: 422,
+        code: "VALIDATION_ERROR",
+        message: msg,
+        field: "messenger",
+      });
+      toast.error(msg);
       return;
     }
-    setIsScheduleWorkspaceOpen(false);
-    toast.success(`Jadwal jemput untuk ${selectedOrder.orderNo} berhasil disimpan (${selectedMessengerObj?.nama || scheduleData.messenger})!`);
-    setSelectedOrder(null);
+
+    await actionFeedback.runAction(
+      actionKey,
+      async () => {
+        const ok = await updateOrderAsync(orderNo, {
+          tanggalJemput: scheduleData.tanggalJemput,
+          messenger: selectedMessengerObj.nama,
+          assignedMessengerId: selectedMessengerObj.id,
+          assignedMessengerName: selectedMessengerObj.nama,
+          catatanPenjadwalan: scheduleData.catatanPenjadwalan,
+          isScheduled: true,
+          messengerTaskStatus: "Terjadwal Jemput",
+        });
+        if (!ok) {
+          throw new ActionApiError(500, "INTERNAL_SERVER_ERROR", "Gagal menyimpan jadwal penjemputan ke server.");
+        }
+        setIsScheduleWorkspaceOpen(false);
+        toast.success(`Jadwal jemput untuk ${orderNo} berhasil disimpan (${selectedMessengerObj.nama})!`);
+        setSelectedOrder(null);
+      },
+      {
+        entityLabel: `jadwal order ${orderNo}`,
+        actionLabel: "menyimpan jadwal penjemputan",
+        onError: (classified) => {
+          toast.error(classified.message);
+        },
+      }
+    );
   };
 
   // Stage 2 -> Stage 3 (Save schedule & Advance directly from modal)
   const handleSaveScheduleAndAdvance = () => {
     if (!selectedOrder) return;
+    const orderNo = selectedOrder.orderNo;
+    const actionKey = `m2-advance:${orderNo}`;
+    actionFeedback.clearError(`m2-save:${orderNo}`);
+    actionFeedback.clearError(actionKey);
+
     if (!scheduleData.tanggalJemput) {
-      toast.error("Harap tentukan tanggal jemput dokumen!");
+      const msg = "Harap tentukan tanggal jemput dokumen!";
+      actionFeedback.setError(actionKey, {
+        statusCode: 422,
+        code: "VALIDATION_ERROR",
+        message: msg,
+        field: "tanggalJemput",
+      });
+      toast.error(msg);
       return;
     }
     if (!scheduleData.messenger) {
-      toast.error("Harap pilih messenger penjemput!");
+      const msg = "Harap pilih messenger penjemput!";
+      actionFeedback.setError(actionKey, {
+        statusCode: 422,
+        code: "VALIDATION_ERROR",
+        message: msg,
+        field: "messenger",
+      });
+      toast.error(msg);
       return;
     }
     const selectedMessengerObj = activeMessengers.find(
       (m) => m.nama === scheduleData.messenger || m.id === scheduleData.messenger
     );
+    if (!selectedMessengerObj) {
+      const msg = "Messenger yang dipilih tidak valid atau tidak aktif!";
+      actionFeedback.setError(actionKey, {
+        statusCode: 422,
+        code: "VALIDATION_ERROR",
+        message: msg,
+        field: "messenger",
+      });
+      toast.error(msg);
+      return;
+    }
 
     confirmAndAdvance(
-      selectedOrder.orderNo,
+      orderNo,
       "Stage 3 — Verifikasi Dokumen Fisik",
-      `Simpan jadwal jemput (${selectedMessengerObj?.nama || scheduleData.messenger}), konfirmasi penjemputan berkas selesai, dan lanjutkan order ke Verifikasi Dokumen?`,
+      `Simpan jadwal jemput (${selectedMessengerObj.nama}), konfirmasi penjemputan berkas selesai, dan lanjutkan order ke Verifikasi Dokumen?`,
       async () => {
         const nowIso = new Date().toISOString();
-        const updated = await advanceOrderAsync(selectedOrder.orderNo, "Verifikasi Dokumen", {
+        const updated = await advanceOrderAsync(orderNo, "Verifikasi Dokumen", {
           tanggalJemput: scheduleData.tanggalJemput,
-          messenger: selectedMessengerObj?.nama || scheduleData.messenger,
-          assignedMessengerId: selectedMessengerObj?.id,
-          assignedMessengerName: selectedMessengerObj?.nama || scheduleData.messenger,
+          messenger: selectedMessengerObj.nama,
+          assignedMessengerId: selectedMessengerObj.id,
+          assignedMessengerName: selectedMessengerObj.nama,
           catatanPenjadwalan: scheduleData.catatanPenjadwalan,
           isScheduled: true,
           pickupCompleted: true,
           pickupCompletedAt: nowIso,
           messengerTaskStatus: "Dokumen Sudah Tersedia",
         });
-        if (!updated) throw new Error("Gagal memindahkan order ke Verifikasi Dokumen");
+        if (!updated) {
+          throw new ActionApiError(500, "INTERNAL_SERVER_ERROR", "Gagal memindahkan order ke Verifikasi Dokumen.");
+        }
 
         setIsScheduleWorkspaceOpen(false);
         setCurrentTab("Verifikasi Dokumen");
-        toast.success(`Jadwal jemput untuk ${selectedOrder.orderNo} disimpan & order berlanjut ke Verifikasi Dokumen!`);
+        toast.success(`Jadwal jemput untuk ${orderNo} disimpan & order berlanjut ke Verifikasi Dokumen!`);
         setSelectedOrder(null);
       }
     );
@@ -880,8 +1259,16 @@ export function OrderTracking({
 
   // Stage 2 -> Stage 3 (Advance to Verifikasi Dokumen only when pickup completed from table)
   const handleAdvanceFromPickup = (order: any) => {
+    const rowKey = `row-stage2-advance:${order.orderNo}`;
+    actionFeedback.clearError(rowKey);
     if (!order.pickupCompleted && order.messengerTaskStatus !== "Dokumen Sudah Tersedia") {
-      toast.error("Penjemputan dokumen belum diselesaikan oleh messenger!");
+      const msg = "Penjemputan dokumen belum diselesaikan oleh messenger!";
+      actionFeedback.setError(rowKey, {
+        statusCode: 422,
+        code: "BUSINESS_RULE_VIOLATION",
+        message: msg,
+      });
+      toast.error(msg);
       return;
     }
     confirmAndAdvance(
@@ -890,7 +1277,9 @@ export function OrderTracking({
       "Apakah Anda yakin berkas fisik telah tiba dan siap diverifikasi kelengkapannya di kantor?",
       async () => {
         const updated = await advanceOrderAsync(order.orderNo, "Verifikasi Dokumen", { pickupCompleted: true });
-        if (!updated) throw new Error("Gagal memajukan order ke Verifikasi Dokumen");
+        if (!updated) {
+          throw new ActionApiError(500, "INTERNAL_SERVER_ERROR", "Gagal memajukan order ke Verifikasi Dokumen.");
+        }
         setCurrentTab("Verifikasi Dokumen");
         toast.success(`Dokumen order ${order.orderNo} siap diverifikasi fisik di kantor!`);
       }
@@ -905,23 +1294,27 @@ export function OrderTracking({
   // Stage 3 -> Stage 4 (Verifikasi Dokumen -> Proses Samsat)
   const handleVerifyDocuments = () => {
     if (!selectedOrder) return;
+    const orderNo = selectedOrder.orderNo;
+    actionFeedback.clearError(`m3-advance:${orderNo}`);
     confirmAndAdvance(
-      selectedOrder.orderNo,
+      orderNo,
       "Stage 4 — Proses Samsat",
       "Apakah Anda yakin seluruh berkas fisik (STNK, BPKB, KTP, SKKP, Surat Kuasa) sudah lengkap dan benar untuk diproses ke Samsat?",
       async () => {
-        const updated = await advanceOrderAsync(selectedOrder.orderNo, "Proses Samsat", {
+        const updated = await advanceOrderAsync(orderNo, "Proses Samsat", {
           clientDocuments: docState as any,
           documentNotes: docNotes,
           documentsVerified: true,
           samsatStatus: "Belum Terjadwal",
           isSamsatScheduled: false,
         });
-        if (!updated) throw new Error("Gagal memajukan order ke Proses Samsat");
+        if (!updated) {
+          throw new ActionApiError(500, "INTERNAL_SERVER_ERROR", "Gagal memajukan order ke Proses Samsat.");
+        }
 
         setIsDocVerificationWorkspaceOpen(false);
         setCurrentTab("Proses Samsat");
-        toast.success(`Verifikasi dokumen fisik selesai. Order ${selectedOrder.orderNo} siap diproses Samsat!`);
+        toast.success(`Verifikasi dokumen fisik selesai. Order ${orderNo} siap diproses Samsat!`);
         setSelectedOrder(null);
       }
     );
@@ -930,25 +1323,34 @@ export function OrderTracking({
   // Stage 4 -> Stage 5 (Proses Samsat -> Verifikasi Ulang)
   const handleAdvanceFromSamsat = () => {
     if (!selectedOrder) return;
+    const orderNo = selectedOrder.orderNo;
+    const actionKey = `m4-advance:${orderNo}`;
+    actionFeedback.clearError(actionKey);
     if (!canManage(4)) {
-      toast.error("Akses Ditolak: Anda tidak memiliki izin untuk memproses tahap Samsat.");
+      const msg = "Akses Ditolak: Anda tidak memiliki izin untuk memproses tahap Samsat.";
+      actionFeedback.setError(actionKey, { statusCode: 403, code: "FORBIDDEN", message: msg });
+      toast.error(msg);
       return;
     }
     if (selectedOrder.samsatPickupStatus !== "Dokumen Samsat Diterima di Kantor") {
-      toast.error("Dokumen hasil Samsat belum diserahkan dan diterima di kantor!");
+      const msg = "Dokumen hasil Samsat belum diserahkan dan diterima di kantor!";
+      actionFeedback.setError(actionKey, { statusCode: 422, code: "BUSINESS_RULE_VIOLATION", message: msg });
+      toast.error(msg);
       return;
     }
     confirmAndAdvance(
-      selectedOrder.orderNo,
+      orderNo,
       "Stage 5 — Verifikasi Ulang Biaya",
       "Apakah Anda yakin seluruh tahapan Samsat telah selesai dan dokumen hasil sudah diterima kantor untuk diverifikasi biayanya?",
       async () => {
-        const updated = await advanceOrderAsync(selectedOrder.orderNo, "Verifikasi Ulang", {});
-        if (!updated) throw new Error("Gagal memajukan order ke Verifikasi Ulang");
+        const updated = await advanceOrderAsync(orderNo, "Verifikasi Ulang", {});
+        if (!updated) {
+          throw new ActionApiError(500, "INTERNAL_SERVER_ERROR", "Gagal memajukan order ke Verifikasi Ulang.");
+        }
 
         setIsSamsatProgressDialogOpen(false);
         setCurrentTab("Verifikasi Ulang");
-        toast.success(`Proses Samsat selesai! Order ${selectedOrder.orderNo} berlanjut ke Verifikasi Ulang.`);
+        toast.success(`Proses Samsat selesai! Order ${orderNo} berlanjut ke Verifikasi Ulang.`);
         setSelectedOrder(null);
       }
     );
@@ -956,12 +1358,18 @@ export function OrderTracking({
 
   // Stage 4 -> Stage 5 from Stage 4 Table
   const handleAdvanceFromSamsatResult = (order: any) => {
+    const rowKey = `row-stage4-advance:${order.orderNo}`;
+    actionFeedback.clearError(rowKey);
     if (!canManage(4)) {
-      toast.error("Akses Ditolak: Anda tidak memiliki izin untuk memproses tahap Samsat.");
+      const msg = "Akses Ditolak: Anda tidak memiliki izin untuk memproses tahap Samsat.";
+      actionFeedback.setError(rowKey, { statusCode: 403, code: "FORBIDDEN", message: msg });
+      toast.error(msg);
       return;
     }
     if (order.samsatPickupStatus !== "Dokumen Samsat Diterima di Kantor") {
-      toast.error("Dokumen hasil Samsat belum diserahkan dan diterima di kantor!");
+      const msg = "Dokumen hasil Samsat belum diserahkan dan diterima di kantor!";
+      actionFeedback.setError(rowKey, { statusCode: 422, code: "BUSINESS_RULE_VIOLATION", message: msg });
+      toast.error(msg);
       return;
     }
     confirmAndAdvance(
@@ -970,7 +1378,9 @@ export function OrderTracking({
       "Apakah Anda yakin dokumen hasil Samsat sudah diverifikasi dan siap direkonsiliasi biayanya?",
       async () => {
         const updated = await advanceOrderAsync(order.orderNo, "Verifikasi Ulang", {});
-        if (!updated) throw new Error("Gagal memajukan order ke Verifikasi Ulang");
+        if (!updated) {
+          throw new ActionApiError(500, "INTERNAL_SERVER_ERROR", "Gagal memajukan order ke Verifikasi Ulang.");
+        }
 
         setCurrentTab("Verifikasi Ulang");
         toast.success(`Dokumen hasil Samsat diterima. Order ${order.orderNo} berlanjut ke Verifikasi Ulang Biaya.`);
@@ -980,8 +1390,12 @@ export function OrderTracking({
 
   // Stage 7 -> Stage 8 from Stage 7 Table
   const handleAdvanceFromDelivery = (order: any) => {
+    const rowKey = `row-stage7-advance:${order.orderNo}`;
+    actionFeedback.clearError(rowKey);
     if (order.deliveryStatus !== "Dokumen Diserahkan" && !order.isReceived) {
-      toast.error("Pengantaran dokumen belum diselesaikan oleh messenger!");
+      const msg = "Pengantaran dokumen belum diselesaikan oleh messenger!";
+      actionFeedback.setError(rowKey, { statusCode: 422, code: "BUSINESS_RULE_VIOLATION", message: msg });
+      toast.error(msg);
       return;
     }
     confirmAndAdvance(
@@ -994,7 +1408,9 @@ export function OrderTracking({
           tanggalDiterima: dateStr,
           isReceived: true,
         });
-        if (!updated) throw new Error("Gagal memajukan order ke Dokumen Telah Diterima");
+        if (!updated) {
+          throw new ActionApiError(500, "INTERNAL_SERVER_ERROR", "Gagal memajukan order ke Dokumen Telah Diterima.");
+        }
 
         setCurrentTab("Dokumen Telah Diterima");
         toast.success(`Order ${order.orderNo} berhasil diserahkan ke pelanggan! Berpindah ke tahap Dokumen Telah Diterima.`);
@@ -1076,186 +1492,296 @@ export function OrderTracking({
   };
 
   const handleUploadNewVerificationDoc = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (e.target.files && e.target.files[0]) {
-      const file = e.target.files[0];
-      try {
-        const processed = await processDocumentUpload(file);
-        let uploadedDocId: string | undefined;
-        let finalFileUrl = processed.fileUrl;
+    const file = e.target.files?.[0];
+    const orderNo = selectedOrder?.orderNo;
+    e.target.value = "";
+    if (!file || !orderNo) return;
 
-        if (selectedOrder?.orderNo) {
-          try {
-            const uploaded = await documentRepository.uploadDocument(processed.file, {
-              orderNo: selectedOrder.orderNo,
-              documentType: "Hasil Samsat",
-              metadata: {
-                phase: "AFTER",
-                category: "Dokumen Hasil",
-              },
-            });
-            if (uploaded?.id) {
-              uploadedDocId = uploaded.id;
-              finalFileUrl = uploaded.fileUrl;
-            }
-          } catch (uploadErr) {
-            console.warn("Server upload failed, using processed fileUrl:", uploadErr);
-          }
-        }
+    const actionKey = `m56-upload-doc:${orderNo}`;
+    await actionFeedback.runAction(
+      actionKey,
+      async () => {
+        const processed = await processDocumentUpload(file);
+        const uploaded = await documentRepository.uploadDocument(processed.file, {
+          orderNo,
+          documentType: "Hasil Samsat",
+          metadata: {
+            phase: "AFTER",
+            category: "Dokumen Hasil",
+          },
+        });
 
         const newDoc: VerificationUploadedDoc = {
-          id: uploadedDocId || `doc-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+          id: uploaded.id || `doc-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
           name: file.name,
-          fileUrl: finalFileUrl,
+          fileUrl: uploaded.fileUrl,
           fileType: processed.fileType === "pdf" ? "pdf" : "image",
           fileSize: formatFileSize(processed.fileSize),
           uploadedAt: new Date().toISOString(),
           uploadedBy: userName || "Staff",
         };
+
+        const currentRekap = selectedOrder.rekapDocuments || [];
+        const updatedRekap = [
+          ...currentRekap,
+          {
+            id: newDoc.id,
+            name: newDoc.name,
+            category: "Dokumen Hasil" as const,
+            phase: "AFTER" as const,
+            fileUrl: newDoc.fileUrl,
+            fileType: newDoc.fileType,
+            fileSize: newDoc.fileSize,
+            uploadedAt: newDoc.uploadedAt,
+            uploadedBy: newDoc.uploadedBy,
+            status: "Tersedia",
+          },
+        ];
+        const updatedUploadedDocs = [...(selectedOrder.uploadedDocs || []), newDoc];
+
+        const ok = await updateOrderAsync(orderNo, {
+          rekapDocuments: updatedRekap,
+          uploadedDocs: updatedUploadedDocs,
+        });
+        if (!ok) {
+          throw new ActionApiError(500, "INTERNAL_SERVER_ERROR", "Gagal menyimpan dokumen ke server.");
+        }
+
         setUploadedNewDocs((prev) => [...prev, newDoc]);
         setNewSamsatDocs((prev) => [...prev, file.name]);
         setIsStage5DocApproved(false);
         setIsStage6DocApproved(false);
+        setSelectedOrder((prev: any) =>
+          prev && prev.orderNo === orderNo
+            ? { ...prev, rekapDocuments: updatedRekap, uploadedDocs: updatedUploadedDocs }
+            : prev
+        );
         toast.info("Dokumen baru diunggah. Persetujuan dokumen direset dan harus disetujui ulang.");
-
-        if (selectedOrder?.orderNo) {
-          const currentRekap = selectedOrder.rekapDocuments || [];
-          const updatedRekap = [
-            ...currentRekap,
-            {
-              id: newDoc.id,
-              name: newDoc.name,
-              category: "Dokumen Hasil" as const,
-              phase: "AFTER" as const,
-              fileUrl: newDoc.fileUrl,
-              fileType: newDoc.fileType,
-              fileSize: newDoc.fileSize,
-              uploadedAt: newDoc.uploadedAt,
-              uploadedBy: newDoc.uploadedBy,
-              status: "Tersedia",
-            },
-          ];
-          updateOrder(selectedOrder.orderNo, {
-            rekapDocuments: updatedRekap,
-            uploadedDocs: [...(selectedOrder.uploadedDocs || []), newDoc],
-          });
-          setSelectedOrder((prev: any) => prev ? {
-            ...prev,
-            rekapDocuments: updatedRekap,
-            uploadedDocs: [...(prev.uploadedDocs || []), newDoc],
-          } : null);
-        }
-
         toast.success(`Dokumen "${file.name}" berhasil diunggah.`);
-      } catch (err: any) {
-        toast.error(err.message || "Gagal mengunggah dokumen baru.");
+      },
+      {
+        entityLabel: "dokumen verifikasi",
+        actionLabel: "mengunggah dokumen baru",
+        onError: (classified) => {
+          toast.error(classified.message);
+        },
       }
-    }
+    );
   };
 
-  const handleRemoveUploadedDoc = (docId: string) => {
-    setUploadedNewDocs(prev => {
-      const remaining = prev.filter(d => d.id !== docId);
-      setNewSamsatDocs(remaining.map(d => d.name));
-      return remaining;
-    });
-    setIsStage5DocApproved(false);
-    setIsStage6DocApproved(false);
-    toast.info("Dokumen dihapus. Persetujuan dokumen direset dan harus disetujui ulang.");
-    toast.success("Dokumen dihapus.");
+  const handleRemoveUploadedDoc = async (docId: string) => {
+    const orderNo = selectedOrder?.orderNo;
+    if (!orderNo) return;
+    const actionKey = `m56-doc-remove:${docId}:${orderNo}`;
+
+    await actionFeedback.runAction(
+      actionKey,
+      async () => {
+        if (isApiMode) {
+          await documentRepository.deleteDocument(docId);
+        }
+
+        const remainingUploaded = uploadedNewDocs.filter((d) => d.id !== docId);
+        const remainingNames = remainingUploaded.map((d) => d.name);
+        const removedDoc = uploadedNewDocs.find((d) => d.id === docId);
+        const remainingRekap = (selectedOrder.rekapDocuments || []).filter(
+          (rd: any) => rd.id !== docId && (!removedDoc || rd.label !== removedDoc.name)
+        );
+        const remainingOrderUploaded = (selectedOrder.uploadedDocs || []).filter(
+          (ud: any) => ud.id !== docId
+        );
+
+        const ok = await updateOrderAsync(orderNo, {
+          rekapDocuments: remainingRekap,
+          uploadedDocs: remainingOrderUploaded,
+          updatedDocuments: remainingNames,
+        });
+        if (!ok) {
+          throw new ActionApiError(500, "INTERNAL_SERVER_ERROR", "Gagal memperbarui daftar dokumen di server.");
+        }
+
+        setUploadedNewDocs(remainingUploaded);
+        setNewSamsatDocs(remainingNames);
+        setIsStage5DocApproved(false);
+        setIsStage6DocApproved(false);
+        setSelectedOrder((prev: any) =>
+          prev && prev.orderNo === orderNo
+            ? {
+                ...prev,
+                rekapDocuments: remainingRekap,
+                uploadedDocs: remainingOrderUploaded,
+                updatedDocuments: remainingNames,
+              }
+            : prev
+        );
+        toast.info("Dokumen dihapus. Persetujuan dokumen direset dan harus disetujui ulang.");
+        toast.success("Dokumen dihapus.");
+      },
+      {
+        entityLabel: "dokumen verifikasi",
+        actionLabel: "menghapus dokumen",
+        onError: (classified) => {
+          toast.error(classified.message);
+        },
+      }
+    );
   };
 
   // Explicit Document Approval Handlers
   const handleApproveStage5Documents = async () => {
     if (!selectedOrder || isSubmittingApproval) return;
+    const orderNo = selectedOrder.orderNo;
+    const actionKey = `m5-approve-docs:${orderNo}`;
+
     setIsSubmittingApproval(true);
-    try {
-      const allDocNames = [
-        ...Object.keys(docState).filter(k => docState[k].status === "Lengkap" || docState[k].fileUrl).map(k => docState[k].name || k),
-        ...uploadedNewDocs.map(d => d.name)
-      ];
-      const ok = await approveDocumentsAsync(
-        selectedOrder.orderNo,
-        5,
-        { name: userName || "Admin Loket", role: userRole || "admin" },
-        docApprovalNoteInput,
-        allDocNames
-      );
-      if (ok) {
+    await actionFeedback.runAction(
+      actionKey,
+      async () => {
+        const allDocNames = [
+          ...Object.keys(docState).filter(k => docState[k].status === "Lengkap" || docState[k].fileUrl).map(k => docState[k].name || k),
+          ...uploadedNewDocs.map(d => d.name)
+        ];
+        const ok = await approveDocumentsAsync(
+          orderNo,
+          5,
+          { name: userName || "Admin Loket", role: userRole || "admin" },
+          docApprovalNoteInput,
+          allDocNames
+        );
+        if (!ok) {
+          throw new ActionApiError(500, "INTERNAL_SERVER_ERROR", "Gagal menyetujui dokumen Stage 5.");
+        }
+        const nowIso = new Date().toISOString();
         setIsStage5DocApproved(true);
         setDocApprovalDetails(prev => ({
           ...prev,
           stage5VerifiedBy: userName || "Admin Loket",
-          stage5VerifiedAt: new Date().toISOString(),
+          stage5VerifiedAt: nowIso,
           stage5Notes: docApprovalNoteInput,
         }));
+        setSelectedOrder((prev: any) =>
+          prev && prev.orderNo === orderNo
+            ? {
+                ...prev,
+                documentsVerified: true,
+                documentApproval: {
+                  ...(prev.documentApproval || {}),
+                  stage5Verified: true,
+                  stage5VerifiedBy: userName || "Admin Loket",
+                  stage5VerifiedAt: nowIso,
+                  stage5Notes: docApprovalNoteInput,
+                },
+              }
+            : prev
+        );
+        actionFeedback.clearError(`m5-advance:${orderNo}`);
         toast.success("Dokumen berhasil disetujui untuk Stage 5.");
-      } else {
-        toast.error("Gagal menyetujui dokumen.");
+      },
+      {
+        entityLabel: `dokumen Stage 5 order ${orderNo}`,
+        actionLabel: "menyetujui dokumen Stage 5",
+        onError: (classified) => {
+          toast.error(classified.message);
+        },
       }
-    } catch (err: any) {
-      toast.error(err.message || "Gagal menyetujui dokumen.");
-    } finally {
-      setIsSubmittingApproval(false);
-    }
+    );
+    setIsSubmittingApproval(false);
   };
 
   const handleApproveStage6Documents = async () => {
     if (!selectedOrder || isSubmittingApproval) return;
+    const orderNo = selectedOrder.orderNo;
+    const actionKey = `m6-approve-docs:${orderNo}`;
     if (!canManage(6)) {
-      toast.error("Akses Ditolak: Hanya Supervisor atau Administrator yang dapat menyetujui dokumen di Stage 6.");
+      const msg = "Akses Ditolak: Hanya Supervisor atau Administrator yang dapat menyetujui dokumen di Stage 6.";
+      actionFeedback.setError(actionKey, { statusCode: 403, code: "FORBIDDEN", message: msg });
+      toast.error(msg);
       return;
     }
+
     setIsSubmittingApproval(true);
-    try {
-      const allDocNames = [
-        ...Object.keys(docState).filter(k => docState[k].status === "Lengkap" || docState[k].fileUrl).map(k => docState[k].name || k),
-        ...uploadedNewDocs.map(d => d.name)
-      ];
-      const ok = await approveDocumentsAsync(
-        selectedOrder.orderNo,
-        6,
-        { name: userName || "Supervisor", role: userRole || "supervisor" },
-        docApprovalNoteInput,
-        allDocNames
-      );
-      if (ok) {
+    await actionFeedback.runAction(
+      actionKey,
+      async () => {
+        const allDocNames = [
+          ...Object.keys(docState).filter(k => docState[k].status === "Lengkap" || docState[k].fileUrl).map(k => docState[k].name || k),
+          ...uploadedNewDocs.map(d => d.name)
+        ];
+        const ok = await approveDocumentsAsync(
+          orderNo,
+          6,
+          { name: userName || "Supervisor", role: userRole || "supervisor" },
+          docApprovalNoteInput,
+          allDocNames
+        );
+        if (!ok) {
+          throw new ActionApiError(500, "INTERNAL_SERVER_ERROR", "Gagal menyetujui dokumen Supervisor.");
+        }
+        const nowIso = new Date().toISOString();
         setIsStage6DocApproved(true);
         setDocApprovalDetails(prev => ({
           ...prev,
           stage6ApprovedBy: userName || "Supervisor",
-          stage6ApprovedAt: new Date().toISOString(),
+          stage6ApprovedAt: nowIso,
           stage6Notes: docApprovalNoteInput,
         }));
+        setSelectedOrder((prev: any) =>
+          prev && prev.orderNo === orderNo
+            ? {
+                ...prev,
+                approvedBySpv: true,
+                spvName: userName || "Supervisor",
+                documentApproval: {
+                  ...(prev.documentApproval || {}),
+                  stage6Approved: true,
+                  stage6ApprovedBy: userName || "Supervisor",
+                  stage6ApprovedAt: nowIso,
+                  stage6Notes: docApprovalNoteInput,
+                },
+              }
+            : prev
+        );
+        actionFeedback.clearError(`m6-advance:${orderNo}`);
         toast.success("Dokumen berhasil disetujui oleh Supervisor (Stage 6).");
-      } else {
-        toast.error("Gagal menyetujui dokumen.");
+      },
+      {
+        entityLabel: `supervisi dokumen order ${orderNo}`,
+        actionLabel: "menyetujui dokumen Stage 6",
+        onError: (classified) => {
+          toast.error(classified.message);
+        },
       }
-    } catch (err: any) {
-      toast.error(err.message || "Gagal menyetujui dokumen.");
-    } finally {
-      setIsSubmittingApproval(false);
-    }
+    );
+    setIsSubmittingApproval(false);
   };
 
   // Stage 5 -> Stage 6 (Verifikasi Ulang -> Supervisi) & Stage 6 -> Stage 7 (Supervisi -> Pengantaran)
   const handleSaveFinalCost = (isSupervisi: boolean) => {
     if (!selectedOrder || isSubmittingFinalCost) return;
+    const orderNo = selectedOrder.orderNo;
+    const actionKey = isSupervisi ? `m6-advance:${orderNo}` : `m5-advance:${orderNo}`;
+    actionFeedback.clearError(actionKey);
+
     if (isSupervisi && !canManage(6)) {
-      toast.error("Akses Ditolak: Anda tidak memiliki izin untuk menyetujui tahap Supervisi.");
+      const msg = "Akses Ditolak: Anda tidak memiliki izin untuk menyetujui tahap Supervisi.";
+      actionFeedback.setError(actionKey, { statusCode: 403, code: "FORBIDDEN", message: msg });
+      toast.error(msg);
       return;
     }
     if (!isSupervisi && !isStage5DocApproved) {
-      toast.error("Validasi Gagal: Dokumen fisik dan hasil Samsat harus disetujui terlebih dahulu sebelum mengajukan rekonsiliasi ke Supervisi.");
+      const msg = "Validasi Gagal: Dokumen fisik dan hasil Samsat harus disetujui terlebih dahulu sebelum mengajukan rekonsiliasi ke Supervisi.";
+      actionFeedback.setError(actionKey, { statusCode: 422, code: "BUSINESS_RULE_VIOLATION", message: msg });
+      toast.error(msg);
       return;
     }
     if (isSupervisi && !isStage6DocApproved) {
-      toast.error("Validasi Gagal: Dokumen harus disetujui oleh Supervisor terlebih dahulu sebelum lanjut ke tahap Pengantaran.");
+      const msg = "Validasi Gagal: Dokumen harus disetujui oleh Supervisor terlebih dahulu sebelum lanjut ke tahap Pengantaran.";
+      actionFeedback.setError(actionKey, { statusCode: 422, code: "BUSINESS_RULE_VIOLATION", message: msg });
+      toast.error(msg);
       return;
     }
-    setIsSubmittingFinalCost(true);
 
-    try {
-      // Check exceeded items vs base price
+    // Check exceeded items vs base price
     const exceededItems: string[] = [];
     Object.keys(hargaDasarMutasiKeluar).forEach((key) => {
       const val = parseFloat(finalCostData[key] || "0");
@@ -1343,7 +1869,7 @@ export function OrderTracking({
         .filter(d => !(selectedOrder.rekapDocuments || []).some((rd: any) => rd.fileUrl === d.fileUrl || rd.label === d.name))
         .map(d => ({
           id: d.id,
-          orderId: selectedOrder.orderNo,
+          orderId: orderNo,
           phase: "AFTER" as const,
           documentType: (d.name.toLowerCase().includes("stnk") ? "STNK" : d.name.toLowerCase().includes("bpkb") ? "BPKB" : "SKKP") as any,
           label: d.name,
@@ -1371,164 +1897,243 @@ export function OrderTracking({
       isVerified: true,
     };
 
-    // Synchronize final costs directly to FinanceStore (Order -> Finance SSoT Sync)
-    orderStore.syncFinalCostToFinance(
-      selectedOrder.orderNo,
-      totalFinal,
-      totalBiayaSamsat,
-      finalBiayaJasa,
-      customCostItems,
-      finalCostAlasan
-    );
+    if (exceededItems.length > 0) {
+      toast.warning(`${exceededItems.length} item mutasi melebihi harga dasar.`);
+    }
 
     if (isSupervisi) {
       // Stage 6 -> Stage 7 (Supervisi -> Pengantaran)
       confirmAndAdvance(
-        selectedOrder.orderNo,
+        orderNo,
         "Stage 7 — Pengantaran Dokumen",
         "Apakah Anda yakin menyetujui seluruh rekonsiliasi biaya final ini dan memindahkan order ke tahap Pengantaran?",
         async () => {
-          const nowIso = new Date().toISOString();
-          const updated = await advanceOrderAsync(selectedOrder.orderNo, "Pengantaran", {
-            ...payload,
-            approvedBySpv: true,
-            spvName: userName || "Supervisor",
-            spvApprovedAt: nowIso,
-            documentApproval: {
-              ...(selectedOrder.documentApproval || {}),
-              stage6Approved: true,
-              stage6ApprovedBy: userName || "Supervisor",
-              stage6ApprovedAt: nowIso,
-            },
-          });
-          if (!updated) throw new Error("Gagal memajukan order ke Pengantaran");
+          setIsSubmittingFinalCost(true);
+          try {
+            const nowIso = new Date().toISOString();
+            const updated = await advanceOrderAsync(orderNo, "Pengantaran", {
+              ...payload,
+              approvedBySpv: true,
+              spvName: userName || "Supervisor",
+              spvApprovedAt: nowIso,
+              documentApproval: {
+                ...(selectedOrder.documentApproval || {}),
+                stage6Approved: true,
+                stage6ApprovedBy: userName || "Supervisor",
+                stage6ApprovedAt: nowIso,
+              },
+            });
+            if (!updated) {
+              throw new ActionApiError(500, "INTERNAL_SERVER_ERROR", "Gagal memajukan order ke Pengantaran.");
+            }
 
-          setIsFinalCostDialogOpen(false);
-          setCurrentTab("Pengantaran");
-          toast.success(`Supervisi disetujui! Order ${selectedOrder.orderNo} dipindahkan ke Pengantaran.`);
-          setSelectedOrder(null);
+            // Strictly sync Finance store AFTER backend confirms stage transition
+            orderStore.syncFinalCostToFinance(
+              orderNo,
+              totalFinal,
+              totalBiayaSamsat,
+              finalBiayaJasa,
+              customCostItems,
+              finalCostAlasan
+            );
+
+            setIsFinalCostDialogOpen(false);
+            setCurrentTab("Pengantaran");
+            toast.success(`Supervisi disetujui! Order ${orderNo} dipindahkan ke Pengantaran.`);
+            setSelectedOrder(null);
+          } finally {
+            setIsSubmittingFinalCost(false);
+          }
         }
       );
     } else {
       // Stage 5 -> Stage 6 (Verifikasi Ulang -> Supervisi)
       confirmAndAdvance(
-        selectedOrder.orderNo,
+        orderNo,
         "Stage 6 — Supervisi & Review SPV",
         "Apakah Anda yakin rincian biaya final aktual sudah sesuai dan siap diajukan ke Supervisi SPV?",
         async () => {
-          const nowIso = new Date().toISOString();
-          const updated = await advanceOrderAsync(selectedOrder.orderNo, "Supervisi", {
-            ...payload,
-            documentsVerified: true,
-            documentApproval: {
-              ...(selectedOrder.documentApproval || {}),
-              stage5Verified: true,
-              stage5VerifiedBy: docApprovalDetails.stage5VerifiedBy || userName || "Admin",
-              stage5VerifiedAt: docApprovalDetails.stage5VerifiedAt || nowIso,
-            },
-          });
-          if (!updated) throw new Error("Gagal memajukan order ke Supervisi");
+          setIsSubmittingFinalCost(true);
+          try {
+            const nowIso = new Date().toISOString();
+            const updated = await advanceOrderAsync(orderNo, "Supervisi", {
+              ...payload,
+              documentsVerified: true,
+              documentApproval: {
+                ...(selectedOrder.documentApproval || {}),
+                stage5Verified: true,
+                stage5VerifiedBy: docApprovalDetails.stage5VerifiedBy || userName || "Admin",
+                stage5VerifiedAt: docApprovalDetails.stage5VerifiedAt || nowIso,
+              },
+            });
+            if (!updated) {
+              throw new ActionApiError(500, "INTERNAL_SERVER_ERROR", "Gagal memajukan order ke Supervisi.");
+            }
 
-          setIsFinalCostDialogOpen(false);
-          setCurrentTab("Supervisi");
-          toast.success(`Biaya final disimpan! Order ${selectedOrder.orderNo} diajukan ke Supervisi SPV.`);
-          setSelectedOrder(null);
+            // Strictly sync Finance store AFTER backend confirms stage transition
+            orderStore.syncFinalCostToFinance(
+              orderNo,
+              totalFinal,
+              totalBiayaSamsat,
+              finalBiayaJasa,
+              customCostItems,
+              finalCostAlasan
+            );
+
+            setIsFinalCostDialogOpen(false);
+            setCurrentTab("Supervisi");
+            toast.success(`Biaya final disimpan! Order ${orderNo} diajukan ke Supervisi SPV.`);
+            setSelectedOrder(null);
+          } finally {
+            setIsSubmittingFinalCost(false);
+          }
         }
       );
-    }
-
-    if (exceededItems.length > 0) {
-      toast.warning(`${exceededItems.length} item mutasi melebihi harga dasar.`);
-    }
-    } finally {
-      setIsSubmittingFinalCost(false);
     }
   };
 
   // Stage 7: Save delivery schedule in place (Stage 7)
-  const handleSaveDelivery = () => {
+  const handleSaveDelivery = async () => {
     if (!selectedOrder) return;
+    const orderNo = selectedOrder.orderNo;
+    const actionKey = `m7-save-schedule:${orderNo}`;
+    actionFeedback.clearError(`m7-handover-save:${orderNo}`);
+
     if (!deliveryData.tanggalPengantaran) {
-      toast.error("Harap tentukan tanggal pengantaran dokumen!");
+      const msg = "Harap tentukan tanggal pengantaran dokumen!";
+      actionFeedback.setError(actionKey, {
+        statusCode: 422,
+        code: "VALIDATION_ERROR",
+        message: msg,
+        field: "tanggalPengantaran",
+      });
+      toast.error(msg);
       return;
     }
     const deliveryMessengerName = deliveryData.messenger || selectedOrder.messengerPengantar || selectedOrder.messenger;
+    if (!deliveryMessengerName) {
+      const msg = "Harap pilih messenger pengantar dokumen!";
+      actionFeedback.setError(actionKey, {
+        statusCode: 422,
+        code: "VALIDATION_ERROR",
+        message: msg,
+        field: "messenger",
+      });
+      toast.error(msg);
+      return;
+    }
     const selectedMessengerObj = activeMessengers.find(
       (m) => m.nama === deliveryMessengerName || m.id === deliveryMessengerName
     );
-    updateOrder(selectedOrder.orderNo, {
-      tanggalPengantaran: deliveryData.tanggalPengantaran,
-      messengerPengantar: selectedMessengerObj?.nama || deliveryMessengerName,
-      assignedMessengerId: selectedMessengerObj?.id || selectedOrder.assignedMessengerId,
-      assignedMessengerName: selectedMessengerObj?.nama || deliveryMessengerName,
-      catatanPengantaran: deliveryData.catatanPengantaran,
-      isDeliveryScheduled: true,
-      deliveryStatus: "Terjadwal Antar",
-    });
-    setIsDeliveryWorkspaceOpen(false);
-    toast.success(`Jadwal pengantaran untuk ${selectedOrder.orderNo} berhasil disimpan (${selectedMessengerObj?.nama || deliveryMessengerName})!`);
-    setSelectedOrder(null);
+    if (isApiMode && !selectedMessengerObj) {
+      const msg = "Messenger pengantar yang dipilih tidak valid atau tidak aktif!";
+      actionFeedback.setError(actionKey, {
+        statusCode: 422,
+        code: "VALIDATION_ERROR",
+        message: msg,
+        field: "messenger",
+      });
+      toast.error(msg);
+      return;
+    }
+
+    await actionFeedback.runAction(
+      actionKey,
+      async () => {
+        const finalMessengerName = selectedMessengerObj?.nama || deliveryMessengerName;
+        const ok = await updateOrderAsync(orderNo, {
+          tanggalPengantaran: deliveryData.tanggalPengantaran,
+          messengerPengantar: finalMessengerName,
+          assignedMessengerId: selectedMessengerObj?.id || selectedOrder.assignedMessengerId,
+          assignedMessengerName: finalMessengerName,
+          catatanPengantaran: deliveryData.catatanPengantaran,
+          isDeliveryScheduled: true,
+          deliveryStatus: "Terjadwal Antar",
+        });
+        if (!ok) {
+          throw new ActionApiError(500, "INTERNAL_SERVER_ERROR", "Gagal menyimpan jadwal pengantaran ke server.");
+        }
+        setIsDeliveryWorkspaceOpen(false);
+        toast.success(`Jadwal pengantaran untuk ${orderNo} berhasil disimpan (${finalMessengerName})!`);
+        setSelectedOrder(null);
+      },
+      {
+        entityLabel: `jadwal pengantaran ${orderNo}`,
+        actionLabel: "menyimpan jadwal pengantaran",
+        onError: (classified) => {
+          toast.error(classified.message);
+        },
+      }
+    );
   };
 
   // Handle direct file upload for handover proof (PDF, JPEG, JPG, PNG <= 5MB with compression)
   const handleDirectHandoverFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
-    if (!file) return;
+    const orderNo = selectedOrder?.orderNo;
+    e.target.value = "";
+    if (!file || !orderNo) return;
 
-    try {
-      setIsCompressingHandover(true);
-      const processed = await processDocumentUpload(file);
-      let uploadedDocId: string | undefined;
-      let finalFileUrl = processed.fileUrl;
+    const actionKey = `m7-handover-upload:${orderNo}`;
+    setIsCompressingHandover(true);
+    await actionFeedback.runAction(
+      actionKey,
+      async () => {
+        const processed = await processDocumentUpload(file);
+        const uploaded = await documentRepository.uploadDocument(processed.file, {
+          orderNo,
+          documentType: "Bukti Serah Terima",
+          metadata: {
+            phase: "AFTER",
+            category: "Bukti Serah Terima",
+          },
+        });
 
-      if (selectedOrder?.orderNo) {
-        try {
-          const uploaded = await documentRepository.uploadDocument(processed.file, {
-            orderNo: selectedOrder.orderNo,
-            documentType: "Bukti Serah Terima",
-            metadata: {
-              phase: "AFTER",
-              category: "Bukti Serah Terima",
-            },
-          });
-          if (uploaded?.id) {
-            uploadedDocId = uploaded.id;
-            finalFileUrl = uploaded.fileUrl;
-          }
-        } catch (uploadErr) {
-          console.warn("Handover upload to server failed, using processed fileUrl:", uploadErr);
+        setDirectHandoverData(prev => ({
+          ...prev,
+          fileUrl: uploaded?.fileUrl || processed.fileUrl,
+          fileName: processed.fileName,
+          fileType: processed.fileType,
+          fileSize: processed.fileSize,
+          documentId: uploaded?.id,
+        }));
+
+        if (processed.compressed && processed.compressionRatio) {
+          toast.success(
+            `Berkas ${file.name} berhasil diproses & dikompres (${formatFileSize(file.size)} ➔ ${formatFileSize(processed.fileSize)}, hemat ${processed.compressionRatio})!`
+          );
+        } else {
+          toast.success(`Berkas ${file.name} (${formatFileSize(processed.fileSize)}) berhasil dilampirkan!`);
         }
+      },
+      {
+        entityLabel: "bukti serah terima",
+        actionLabel: "mengunggah berkas serah terima",
+        onError: (classified) => {
+          toast.error(classified.message);
+        },
       }
-
-      setDirectHandoverData(prev => ({
-        ...prev,
-        fileUrl: finalFileUrl,
-        fileName: processed.fileName,
-        fileType: processed.fileType,
-        fileSize: processed.fileSize,
-        documentId: uploadedDocId,
-      }));
-
-      if (processed.compressed && processed.compressionRatio) {
-        toast.success(
-          `Berkas ${file.name} berhasil diproses & dikompres (${formatFileSize(file.size)} ➔ ${formatFileSize(processed.fileSize)}, hemat ${processed.compressionRatio})!`
-        );
-      } else {
-        toast.success(`Berkas ${file.name} (${formatFileSize(processed.fileSize)}) berhasil dilampirkan!`);
-      }
-    } catch (err: any) {
-      toast.error(err.message || "Gagal memproses berkas serah terima");
-    } finally {
-      setIsCompressingHandover(false);
-      e.target.value = "";
-    }
+    );
+    setIsCompressingHandover(false);
   };
 
   // Stage 7: Save direct handover in office/counter
   const handleSaveDirectHandover = () => {
     if (!selectedOrder) return;
+    const orderNo = selectedOrder.orderNo;
+    const actionKey = `m7-handover-save:${orderNo}`;
+    actionFeedback.clearError(`m7-save-schedule:${orderNo}`);
+    actionFeedback.clearError(actionKey);
+
     if (!directHandoverData.recipientName.trim()) {
-      toast.error("Nama penerima dokumen wajib diisi!");
+      const msg = "Nama penerima dokumen wajib diisi!";
+      actionFeedback.setError(actionKey, {
+        statusCode: 422,
+        code: "VALIDATION_ERROR",
+        message: msg,
+        field: "recipientName",
+      });
+      toast.error(msg);
       return;
     }
     const nowIso = new Date().toISOString();
@@ -1545,23 +2150,81 @@ export function OrderTracking({
     };
 
     confirmAndAdvance(
-      selectedOrder.orderNo,
+      orderNo,
       "Stage 8 — Dokumen Telah Diterima",
       `Apakah Anda yakin serah terima dokumen kepada ${proof.recipientName} (${proof.relationship}) sudah benar dan order dipindahkan ke tahap Dokumen Telah Diterima?`,
       async () => {
-        const updated = await advanceOrderAsync(selectedOrder.orderNo, "Dokumen Telah Diterima", {
+        const updated = await advanceOrderAsync(orderNo, "Dokumen Telah Diterima", {
           deliveryStatus: "Dokumen Diserahkan",
           isReceived: true,
           receiverName: proof.recipientName,
           tanggalDiterima: dateStr,
           deliveryHandover: proof,
         });
-        if (!updated) throw new Error("Gagal memindahkan order ke Dokumen Telah Diterima");
+        if (!updated) {
+          throw new ActionApiError(500, "INTERNAL_SERVER_ERROR", "Gagal memindahkan order ke Dokumen Telah Diterima.");
+        }
 
         setIsDeliveryWorkspaceOpen(false);
         setCurrentTab("Dokumen Telah Diterima");
-        toast.success(`Serah terima dokumen order ${selectedOrder.orderNo} berhasil disimpan & berpindah ke tahap 8!`);
+        toast.success(`Serah terima dokumen order ${orderNo} berhasil disimpan & berpindah ke tahap 8!`);
         setSelectedOrder(null);
+      }
+    );
+  };
+
+  // Stage 8: Upload bukti serah terima dari modal Arsip
+  const handleUploadStage8Proof = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    const orderNo = selectedOrder?.orderNo;
+    e.target.value = "";
+    if (!file || !orderNo) return;
+
+    const actionKey = `m8-proof-upload:${orderNo}`;
+    await actionFeedback.runAction(
+      actionKey,
+      async () => {
+        const processed = await processDocumentUpload(file);
+        const uploaded = await documentRepository.uploadDocument(processed.file, {
+          orderNo,
+          documentType: "Bukti Serah Terima",
+          metadata: {
+            phase: "AFTER",
+            category: "Bukti Serah Terima",
+          },
+        });
+
+        const nowIso = new Date().toISOString();
+        const proof = {
+          recipientName: selectedOrder.customer,
+          relationship: "Pemilik Langsung",
+          photoProofUrl: uploaded?.fileUrl || processed.fileUrl,
+          fileName: processed.fileName,
+          fileType: processed.fileType,
+          fileSize: processed.fileSize,
+          documentId: uploaded?.id,
+          completedAt: nowIso,
+        };
+        const ok = await updateOrderAsync(orderNo, {
+          deliveryHandover: proof,
+          isReceived: true,
+        });
+        if (!ok) {
+          throw new ActionApiError(500, "INTERNAL_SERVER_ERROR", "Gagal menyimpan bukti serah terima ke server.");
+        }
+        setSelectedOrder((prev: any) =>
+          prev && prev.orderNo === orderNo
+            ? { ...prev, deliveryHandover: proof, isReceived: true }
+            : prev
+        );
+        toast.success(`Bukti serah terima (${file.name}) berhasil dilampirkan!`);
+      },
+      {
+        entityLabel: "bukti serah terima",
+        actionLabel: "mengunggah bukti serah terima",
+        onError: (classified) => {
+          toast.error(classified.message);
+        },
       }
     );
   };
@@ -1569,16 +2232,20 @@ export function OrderTracking({
   // Stage 8 -> Riwayat Order (Final Archiving)
   const handleArchiveOrder = () => {
     if (!selectedOrder) return;
+    const orderNo = selectedOrder.orderNo;
+    actionFeedback.clearError(`m8-archive:${orderNo}`);
     confirmAndAdvance(
-      selectedOrder.orderNo,
+      orderNo,
       "Arsip Riwayat Operasional & Rekap Order",
       "Apakah Anda yakin ingin menyelesaikan proses dan mengarsipkan order ini ke Riwayat Order?",
       async () => {
-        const ok = await archiveOrderAsync(selectedOrder.orderNo);
-        if (!ok) throw new Error(`Gagal mengarsipkan order ${selectedOrder.orderNo}.`);
+        const ok = await archiveOrderAsync(orderNo);
+        if (!ok) {
+          throw new ActionApiError(500, "INTERNAL_SERVER_ERROR", `Gagal mengarsipkan order ${orderNo}.`);
+        }
 
         setIsArchiveDialogOpen(false);
-        toast.success(`Order ${selectedOrder.orderNo} berhasil diselesaikan dan diarsipkan ke Riwayat Order!`);
+        toast.success(`Order ${orderNo} berhasil diselesaikan dan diarsipkan ke Riwayat Order!`);
         setSelectedOrder(null);
       }
     );
@@ -1586,6 +2253,8 @@ export function OrderTracking({
 
   // Open Handlers with full data hydration
   const openVerifyWorkspace = (order: any) => {
+    actionFeedback.clearByPrefix("m1-");
+    actionFeedback.clearByPrefix("confirm-payment:");
     setSelectedOrder(order);
     const initialAmount = order?.payment?.nominalPembayaranAwalTerkonfirmasi !== undefined
       ? order.payment.nominalPembayaranAwalTerkonfirmasi
@@ -1599,6 +2268,7 @@ export function OrderTracking({
   };
 
   const openScheduleWorkspace = (order: any) => {
+    actionFeedback.clearByPrefix("m2-");
     setSelectedOrder(order);
     setScheduleData({
       tanggalJemput: order.tanggalJemput || new Date().toISOString().split('T')[0],
@@ -1609,24 +2279,28 @@ export function OrderTracking({
   };
 
   const openDocVerificationWorkspace = (order: any) => {
+    actionFeedback.clearByPrefix("m3-");
     setSelectedOrder(order);
-    setDocState(order.clientDocuments || {
-      stnk: { name: "", status: "Belum Tersedia" },
-      bpkb: { name: "", status: "Belum Tersedia" },
-      ktp: { name: "", status: "Belum Tersedia" },
-      skkp: { name: "", status: "Belum Tersedia" },
-      lainnya: { name: "", status: "Belum Tersedia" },
+    const reqs = getOrderDocumentRequirements(order);
+    const initialDocState: Record<string, any> = { ...(order.clientDocuments || {}) };
+    reqs.forEach((r) => {
+      if (!initialDocState[r.key]) {
+        initialDocState[r.key] = { name: "", status: "Belum Tersedia" };
+      }
     });
+    setDocState(initialDocState);
     setDocNotes(order.documentNotes || "");
     setIsDocVerificationWorkspaceOpen(true);
   };
 
   const openSamsatProgressWorkspace = (order: any) => {
+    actionFeedback.clearByPrefix("m4-");
     setSelectedOrder(order);
     setIsSamsatProgressDialogOpen(true);
   };
 
   const openSamsatScheduleModal = (order: any) => {
+    actionFeedback.clearByPrefix("m4a-");
     setSelectedOrder(order);
 
     const defaultDate = order.tanggalProsesSamsat || getLocalDateString();
@@ -1687,16 +2361,24 @@ export function OrderTracking({
     setIsSamsatScheduleModalOpen(true);
   };
 
-  const handleSaveSamsatSchedule = () => {
+  const handleSaveSamsatSchedule = async () => {
     if (!selectedOrder) return;
+    const orderNo = selectedOrder.orderNo;
+    const actionKey = `m4a-save:${orderNo}`;
+    actionFeedback.clearError(actionKey);
+
     if (!samsatScheduleData.tanggalProsesSamsat) {
-      toast.error("Harap tentukan tanggal mulai proses Samsat!");
+      const msg = "Harap tentukan tanggal mulai proses Samsat!";
+      actionFeedback.setError(actionKey, { statusCode: 422, code: "VALIDATION_ERROR", message: msg, field: "tanggalProsesSamsat" });
+      toast.error(msg);
       return;
     }
 
     const todayStr = getLocalDateString();
     if (samsatScheduleData.tanggalProsesSamsat < todayStr) {
-      toast.error("Tanggal mulai proses Samsat tidak boleh sebelum hari ini.");
+      const msg = "Tanggal mulai proses Samsat tidak boleh sebelum hari ini.";
+      actionFeedback.setError(actionKey, { statusCode: 422, code: "VALIDATION_ERROR", message: msg, field: "tanggalProsesSamsat" });
+      toast.error(msg);
       return;
     }
 
@@ -1704,40 +2386,69 @@ export function OrderTracking({
       const masukDate = selectedOrder.tanggalMasukBerkas.split("T")[0];
       if (masukDate) {
         if (isNaN(Date.parse(masukDate))) {
-          toast.error("Format tanggal berkas diterima tidak valid pada order ini.");
+          const msg = "Format tanggal berkas diterima tidak valid pada order ini.";
+          actionFeedback.setError(actionKey, { statusCode: 422, code: "VALIDATION_ERROR", message: msg });
+          toast.error(msg);
           return;
         }
         if (samsatScheduleData.tanggalProsesSamsat < masukDate) {
-          toast.error(`Tanggal mulai proses Samsat tidak boleh sebelum tanggal berkas diterima (${masukDate}).`);
+          const msg = `Tanggal mulai proses Samsat tidak boleh sebelum tanggal berkas diterima (${masukDate}).`;
+          actionFeedback.setError(actionKey, { statusCode: 422, code: "VALIDATION_ERROR", message: msg, field: "tanggalProsesSamsat" });
+          toast.error(msg);
           return;
         }
       }
     }
 
     if (!samsatScheduleData.samsatMessenger) {
-      toast.error("Harap pilih messenger yang bertanggung jawab!");
+      const msg = "Harap pilih messenger yang bertanggung jawab!";
+      actionFeedback.setError(actionKey, { statusCode: 422, code: "VALIDATION_ERROR", message: msg, field: "samsatMessenger" });
+      toast.error(msg);
       return;
     }
     const selectedMessengerObj = activeMessengers.find(
       (m) => m.nama === samsatScheduleData.samsatMessenger || m.id === samsatScheduleData.samsatMessenger
     );
-    const messengerNama = selectedMessengerObj?.nama || samsatScheduleData.samsatMessenger;
-    const messengerId = selectedMessengerObj?.id;
-    updateOrder(selectedOrder.orderNo, {
-      tanggalProsesSamsat: samsatScheduleData.tanggalProsesSamsat,
-      samsatMessengerId: messengerId,
-      samsatMessengerNama: messengerNama,
-      samsatMessenger: messengerNama,
-      catatanSamsat: samsatScheduleData.catatanSamsat,
-      samsatStatus: "Terjadwal Samsat",
-      isSamsatScheduled: true,
-    });
-    setIsSamsatScheduleModalOpen(false);
-    toast.success(`Jadwal proses Samsat untuk ${selectedOrder.orderNo} berhasil disimpan (${messengerNama})!`);
-    setSelectedOrder(null);
+    if (!selectedMessengerObj) {
+      const msg = "Messenger Samsat yang dipilih tidak valid atau tidak aktif!";
+      actionFeedback.setError(actionKey, { statusCode: 422, code: "VALIDATION_ERROR", message: msg, field: "samsatMessenger" });
+      toast.error(msg);
+      return;
+    }
+
+    await actionFeedback.runAction(
+      actionKey,
+      async () => {
+        const messengerNama = selectedMessengerObj.nama;
+        const messengerId = selectedMessengerObj.id;
+        const ok = await updateOrderAsync(orderNo, {
+          tanggalProsesSamsat: samsatScheduleData.tanggalProsesSamsat,
+          samsatMessengerId: messengerId,
+          samsatMessengerNama: messengerNama,
+          samsatMessenger: messengerNama,
+          catatanSamsat: samsatScheduleData.catatanSamsat,
+          samsatStatus: "Terjadwal Samsat",
+          isSamsatScheduled: true,
+        });
+        if (!ok) {
+          throw new ActionApiError(500, "INTERNAL_SERVER_ERROR", "Gagal menyimpan jadwal proses Samsat ke server.");
+        }
+        setIsSamsatScheduleModalOpen(false);
+        toast.success(`Jadwal proses Samsat untuk ${orderNo} berhasil disimpan (${messengerNama})!`);
+        setSelectedOrder(null);
+      },
+      {
+        entityLabel: `jadwal Samsat ${orderNo}`,
+        actionLabel: "menyimpan jadwal proses Samsat",
+        onError: (classified) => {
+          toast.error(classified.message);
+        },
+      }
+    );
   };
 
   const openSamsatPickupModal = (order: any) => {
+    actionFeedback.clearByPrefix("m4b-");
     setSelectedOrder(order);
     setSamsatPickupData({
       samsatPickupDate: order.samsatPickupDate || new Date().toISOString().split('T')[0],
@@ -1747,53 +2458,100 @@ export function OrderTracking({
     setIsSamsatPickupModalOpen(true);
   };
 
-  const handleSaveSamsatPickupAssignment = () => {
+  const handleSaveSamsatPickupAssignment = async () => {
     if (!selectedOrder) return;
+    const orderNo = selectedOrder.orderNo;
+    const actionKey = `m4b-save:${orderNo}`;
+    actionFeedback.clearError(actionKey);
+
     if (!samsatPickupData.samsatPickupDate) {
-      toast.error("Harap tentukan tanggal penjemputan dokumen hasil Samsat!");
+      const msg = "Harap tentukan tanggal penjemputan dokumen hasil Samsat!";
+      actionFeedback.setError(actionKey, { statusCode: 422, code: "VALIDATION_ERROR", message: msg, field: "samsatPickupDate" });
+      toast.error(msg);
       return;
     }
     if (!samsatPickupData.samsatPickupMessenger) {
-      toast.error("Harap pilih messenger penjemput hasil Samsat!");
+      const msg = "Harap pilih messenger penjemput hasil Samsat!";
+      actionFeedback.setError(actionKey, { statusCode: 422, code: "VALIDATION_ERROR", message: msg, field: "samsatPickupMessenger" });
+      toast.error(msg);
       return;
     }
     const selectedMessengerObj = activeMessengers.find(
       (m) => m.nama === samsatPickupData.samsatPickupMessenger || m.id === samsatPickupData.samsatPickupMessenger
     );
-    const messengerNama = selectedMessengerObj?.nama || samsatPickupData.samsatPickupMessenger;
-    const messengerId = selectedMessengerObj?.id;
-    updateOrder(selectedOrder.orderNo, {
-      samsatPickupDate: samsatPickupData.samsatPickupDate,
-      samsatPickupMessengerId: messengerId,
-      samsatPickupMessengerNama: messengerNama,
-      samsatPickupNotes: samsatPickupData.samsatPickupNotes,
-      samsatPickupStatus: "Terjadwal Jemput Samsat",
-    });
-    setIsSamsatPickupModalOpen(false);
-    toast.success(`Penugasan jemput hasil Samsat ${selectedOrder.orderNo} berhasil disimpan (${messengerNama})!`);
-    setSelectedOrder(null);
+    if (!selectedMessengerObj) {
+      const msg = "Messenger penjemput hasil Samsat tidak valid atau tidak aktif!";
+      actionFeedback.setError(actionKey, { statusCode: 422, code: "VALIDATION_ERROR", message: msg, field: "samsatPickupMessenger" });
+      toast.error(msg);
+      return;
+    }
+
+    await actionFeedback.runAction(
+      actionKey,
+      async () => {
+        const messengerNama = selectedMessengerObj.nama;
+        const messengerId = selectedMessengerObj.id;
+        const ok = await updateOrderAsync(orderNo, {
+          samsatPickupDate: samsatPickupData.samsatPickupDate,
+          samsatPickupMessengerId: messengerId,
+          samsatPickupMessengerNama: messengerNama,
+          samsatPickupNotes: samsatPickupData.samsatPickupNotes,
+          samsatPickupStatus: "Terjadwal Jemput Samsat",
+        });
+        if (!ok) {
+          throw new ActionApiError(500, "INTERNAL_SERVER_ERROR", "Gagal menyimpan penugasan jemput hasil Samsat ke server.");
+        }
+        setIsSamsatPickupModalOpen(false);
+        toast.success(`Penugasan jemput hasil Samsat ${orderNo} berhasil disimpan (${messengerNama})!`);
+        setSelectedOrder(null);
+      },
+      {
+        entityLabel: `penugasan jemput hasil ${orderNo}`,
+        actionLabel: "menyimpan penugasan jemput hasil Samsat",
+        onError: (classified) => {
+          toast.error(classified.message);
+        },
+      }
+    );
   };
 
   const handleRecoverSamsatPickupKendala = async (order: any) => {
-    try {
-      const resAction = await recoverSamsatPickupKendalaAction(order.orderNo, {
-        userId: "usr-admin",
-        userName: userName || "Admin Operasional",
-        role: (userRole || "administrator") as any,
-      });
+    const rowKey = `row-stage4-recover:${order.orderNo}`;
+    await actionFeedback.runAction(
+      rowKey,
+      async () => {
+        const resAction = await recoverSamsatPickupKendalaAction(order.orderNo, {
+          userId: "usr-admin",
+          userName: userName || "Admin Operasional",
+          role: (userRole || "administrator") as any,
+        });
 
-      if (!resAction.success) {
-        toast.error(resAction.error || "Gagal memulihkan kendala");
-        return;
+        if (!resAction.success) {
+          if (resAction.errorObj) {
+            throw resAction.errorObj;
+          }
+          throw new ActionApiError(
+            resAction.statusCode ?? 500,
+            resAction.code || "BUSINESS_RULE_VIOLATION",
+            typeof resAction.error === "string" ? resAction.error : "Gagal memulihkan kendala"
+          );
+        }
+
+        toast.success(`Kendala jemput hasil untuk order ${order.orderNo} berhasil dipulihkan!`);
+      },
+      {
+        entityLabel: `kendala order ${order.orderNo}`,
+        actionLabel: "memulihkan kendala penjemputan",
+        onError: (classified) => {
+          toast.error(classified.message);
+        },
       }
-
-      toast.success(`Kendala jemput hasil untuk order ${order.orderNo} berhasil dipulihkan!`);
-    } catch (err: any) {
-      toast.error(err.message || "Terjadi kesalahan saat memulihkan kendala");
-    }
+    );
   };
 
   const openFinalCostWorkspace = (order: any) => {
+    actionFeedback.clearByPrefix("m5");
+    actionFeedback.clearByPrefix("m6");
     setSelectedOrder(order);
     setIsEditingFinalCost(false); // DEFAULT VIEW-ONLY as required
 
@@ -2097,6 +2855,7 @@ export function OrderTracking({
   };
 
   const openDeliveryWorkspace = (order: any) => {
+    actionFeedback.clearByPrefix("m7-");
     setSelectedOrder(order);
     setDeliveryData({
       tanggalPengantaran: order.tanggalPengantaran || new Date().toISOString().split('T')[0],
@@ -2117,6 +2876,7 @@ export function OrderTracking({
   };
 
   const openArchiveWorkspace = (order: any) => {
+    actionFeedback.clearByPrefix("m8-");
     setSelectedOrder(order);
     setIsArchiveDialogOpen(true);
   };
@@ -2419,26 +3179,36 @@ export function OrderTracking({
                             )}
                           </TableCell>
                           <TableCell className="text-right">
-                            {order.pickupCompleted || order.messengerTaskStatus === "Dokumen Sudah Tersedia" ? (
-                              <Button
-                                size="sm"
-                                className="h-8 gap-1.5 bg-emerald-600 hover:bg-emerald-700 text-white font-medium"
-                                onClick={() => handleAdvanceFromPickup(order)}
-                              >
-                                <ArrowRight className="w-3.5 h-3.5" />
-                                Lanjut ke Verifikasi Dokumen
-                              </Button>
-                            ) : (
-                              <Button
-                                size="sm"
-                                variant={order.isScheduled ? "outline" : "default"}
-                                className="h-8 gap-1.5"
-                                onClick={() => openScheduleWorkspace(order)}
-                              >
-                                <Calendar className="w-3.5 h-3.5" />
-                                {order.isScheduled ? "Ubah Jadwal" : "Jadwalkan"}
-                              </Button>
-                            )}
+                            <div className="flex flex-col items-end gap-1">
+                              {order.pickupCompleted || order.messengerTaskStatus === "Dokumen Sudah Tersedia" ? (
+                                <Button
+                                  size="sm"
+                                  disabled={actionFeedback.isLoading(`row-stage2-advance:${order.orderNo}`) || isAdvancing}
+                                  className="h-8 gap-1.5 bg-emerald-600 hover:bg-emerald-700 text-white font-medium"
+                                  onClick={() => handleAdvanceFromPickup(order)}
+                                >
+                                  <ArrowRight className="w-3.5 h-3.5" />
+                                  Lanjut ke Verifikasi Dokumen
+                                </Button>
+                              ) : (
+                                <Button
+                                  size="sm"
+                                  variant={order.isScheduled ? "outline" : "default"}
+                                  className="h-8 gap-1.5"
+                                  onClick={() => openScheduleWorkspace(order)}
+                                >
+                                  <Calendar className="w-3.5 h-3.5" />
+                                  {order.isScheduled ? "Ubah Jadwal" : "Jadwalkan"}
+                                </Button>
+                              )}
+                              <ActionInlineError
+                                compact
+                                actionKey={`row-stage2-advance:${order.orderNo}`}
+                                error={actionFeedback.getError(`row-stage2-advance:${order.orderNo}`)}
+                                onDismiss={() => actionFeedback.clearError(`row-stage2-advance:${order.orderNo}`)}
+                                className="max-w-[260px]"
+                              />
+                            </div>
                           </TableCell>
                         </TableRow>
                       ))
@@ -2696,85 +3466,114 @@ export function OrderTracking({
                           })()}
                         </TableCell>
                         <TableCell className="text-right">
-                          {order.samsatPickupStatus === "Terkendala" ? (
-                            <Button
-                              size="sm"
-                              variant="outline"
-                              className="h-8 gap-1.5 border-red-500/40 text-red-600 hover:bg-red-500/10 font-medium"
-                              onClick={() => handleRecoverSamsatPickupKendala(order)}
-                            >
-                              <RotateCcw className="w-3.5 h-3.5" />
-                              Pulihkan Kendala
-                            </Button>
-                          ) : order.samsatPickupStatus === "Dokumen Samsat Diterima di Kantor" ? (
-                            <Button
-                              size="sm"
-                              className="h-8 gap-1.5 bg-emerald-600 hover:bg-emerald-700 text-white font-medium"
-                              onClick={() => handleAdvanceFromSamsatResult(order)}
-                            >
-                              <ArrowRight className="w-3.5 h-3.5" />
-                              Lanjut ke Verifikasi Biaya
-                            </Button>
-                          ) : order.samsatStatus === "Selesai" && order.samsatPickupStatus !== "Sedang Jemput Dokumen Samsat" && order.samsatPickupStatus !== "Terjadwal Jemput Samsat" ? (
-                            <Button
-                              size="sm"
-                              className="h-8 gap-1.5 font-medium"
-                              onClick={() => openSamsatPickupModal(order)}
-                            >
-                              <Truck className="w-3.5 h-3.5" />
-                              Tugaskan Jemput Hasil
-                            </Button>
-                          ) : order.samsatPickupStatus === "Terjadwal Jemput Samsat" ? (
-                            <Button
-                              size="sm"
-                              variant="outline"
-                              className="h-8 gap-1.5"
-                              onClick={() => openSamsatPickupModal(order)}
-                            >
-                              <Truck className="w-3.5 h-3.5" />
-                              Ubah Jemput Hasil
-                            </Button>
-                          ) : order.samsatStatus !== "Belum Terjadwal" && (order.samsatStatus === "Terjadwal Samsat" || (order.isSamsatScheduled && order.tanggalProsesSamsat)) && order.samsatStatus !== "Menuju Samsat" && order.samsatStatus !== "Sedang Proses Samsat" && !order.samsatSubstatus ? (
-                            <div className="flex items-center justify-end gap-1.5">
+                          <div className="flex flex-col items-end gap-1">
+                            {order.samsatPickupStatus === "Terkendala" ? (
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                disabled={actionFeedback.isLoading(`row-stage4-recover:${order.orderNo}`)}
+                                className="h-8 gap-1.5 border-red-500/40 text-red-600 hover:bg-red-500/10 font-medium"
+                                onClick={() => handleRecoverSamsatPickupKendala(order)}
+                              >
+                                {actionFeedback.isLoading(`row-stage4-recover:${order.orderNo}`) ? (
+                                  <>
+                                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                                    Memulihkan...
+                                  </>
+                                ) : (
+                                  <>
+                                    <RotateCcw className="w-3.5 h-3.5" />
+                                    Pulihkan Kendala
+                                  </>
+                                )}
+                              </Button>
+                            ) : order.samsatPickupStatus === "Dokumen Samsat Diterima di Kantor" ? (
+                              <Button
+                                size="sm"
+                                disabled={actionFeedback.isLoading(`row-stage4-advance:${order.orderNo}`) || isAdvancing}
+                                className="h-8 gap-1.5 bg-emerald-600 hover:bg-emerald-700 text-white font-medium"
+                                onClick={() => handleAdvanceFromSamsatResult(order)}
+                              >
+                                <ArrowRight className="w-3.5 h-3.5" />
+                                Lanjut ke Verifikasi Biaya
+                              </Button>
+                            ) : order.samsatStatus === "Selesai" && order.samsatPickupStatus !== "Sedang Jemput Dokumen Samsat" && order.samsatPickupStatus !== "Terjadwal Jemput Samsat" ? (
+                              <Button
+                                size="sm"
+                                className="h-8 gap-1.5 font-medium"
+                                onClick={() => openSamsatPickupModal(order)}
+                              >
+                                <Truck className="w-3.5 h-3.5" />
+                                Tugaskan Jemput Hasil
+                              </Button>
+                            ) : order.samsatPickupStatus === "Terjadwal Jemput Samsat" ? (
                               <Button
                                 size="sm"
                                 variant="outline"
                                 className="h-8 gap-1.5"
-                                onClick={() => openSamsatScheduleModal(order)}
+                                onClick={() => openSamsatPickupModal(order)}
                               >
-                                <Calendar className="w-3.5 h-3.5" />
-                                Ubah Jadwal
+                                <Truck className="w-3.5 h-3.5" />
+                                Ubah Jemput Hasil
                               </Button>
+                            ) : order.samsatStatus !== "Belum Terjadwal" && (order.samsatStatus === "Terjadwal Samsat" || (order.isSamsatScheduled && order.tanggalProsesSamsat)) && order.samsatStatus !== "Menuju Samsat" && order.samsatStatus !== "Sedang Proses Samsat" && !order.samsatSubstatus ? (
+                              <div className="flex items-center justify-end gap-1.5">
+                                <Button
+                                  size="sm"
+                                  variant="outline"
+                                  className="h-8 gap-1.5"
+                                  onClick={() => openSamsatScheduleModal(order)}
+                                >
+                                  <Calendar className="w-3.5 h-3.5" />
+                                  Ubah Jadwal
+                                </Button>
+                                <Button
+                                  size="sm"
+                                  variant="outline"
+                                  className="h-8 gap-1.5"
+                                  onClick={() => openSamsatProgressWorkspace(order)}
+                                >
+                                  <Eye className="w-3.5 h-3.5" />
+                                  Detail
+                                </Button>
+                              </div>
+                            ) : order.samsatStatus === "Menuju Samsat" || order.samsatStatus === "Sedang Proses Samsat" || order.samsatSubstatus || order.samsatPickupStatus === "Sedang Jemput Dokumen Samsat" ? (
                               <Button
                                 size="sm"
                                 variant="outline"
                                 className="h-8 gap-1.5"
                                 onClick={() => openSamsatProgressWorkspace(order)}
                               >
-                                <Eye className="w-3.5 h-3.5" />
-                                Detail
+                                <PackageCheck className="w-3.5 h-3.5" />
+                                Detail Progres
                               </Button>
-                            </div>
-                          ) : order.samsatStatus === "Menuju Samsat" || order.samsatStatus === "Sedang Proses Samsat" || order.samsatSubstatus || order.samsatPickupStatus === "Sedang Jemput Dokumen Samsat" ? (
-                            <Button
-                              size="sm"
-                              variant="outline"
-                              className="h-8 gap-1.5"
-                              onClick={() => openSamsatProgressWorkspace(order)}
-                            >
-                              <PackageCheck className="w-3.5 h-3.5" />
-                              Detail Progres
-                            </Button>
-                          ) : (
-                            <Button
-                              size="sm"
-                              className="h-8 gap-1.5"
-                              onClick={() => openSamsatScheduleModal(order)}
-                            >
-                              <Calendar className="w-3.5 h-3.5" />
-                              Jadwalkan Samsat
-                            </Button>
-                          )}
+                            ) : (
+                              <Button
+                                size="sm"
+                                className="h-8 gap-1.5"
+                                onClick={() => openSamsatScheduleModal(order)}
+                              >
+                                <Calendar className="w-3.5 h-3.5" />
+                                Jadwalkan Samsat
+                              </Button>
+                            )}
+                            <ActionInlineError
+                              compact
+                              actionKey={`row-stage4-recover:${order.orderNo}`}
+                              error={actionFeedback.getError(`row-stage4-recover:${order.orderNo}`)}
+                              onRetry={() => handleRecoverSamsatPickupKendala(order)}
+                              isRetrying={actionFeedback.isLoading(`row-stage4-recover:${order.orderNo}`)}
+                              onDismiss={() => actionFeedback.clearError(`row-stage4-recover:${order.orderNo}`)}
+                              className="max-w-[260px]"
+                            />
+                            <ActionInlineError
+                              compact
+                              actionKey={`row-stage4-advance:${order.orderNo}`}
+                              error={actionFeedback.getError(`row-stage4-advance:${order.orderNo}`)}
+                              onDismiss={() => actionFeedback.clearError(`row-stage4-advance:${order.orderNo}`)}
+                              className="max-w-[260px]"
+                            />
+                          </div>
                         </TableCell>
                       </TableRow>
                     ))
@@ -3186,26 +3985,36 @@ export function OrderTracking({
                           )}
                         </TableCell>
                         <TableCell className="text-right">
-                          {order.deliveryStatus === "Dokumen Diserahkan" || order.isReceived ? (
-                            <Button
-                              size="sm"
-                              className="h-8 gap-1.5 bg-emerald-600 hover:bg-emerald-700 text-white font-medium"
-                              onClick={() => handleAdvanceFromDelivery(order)}
-                            >
-                              <CheckCircle2 className="w-3.5 h-3.5" />
-                              Selesaikan Order
-                            </Button>
-                          ) : (
-                            <Button
-                              size="sm"
-                              variant={order.isDeliveryScheduled ? "outline" : "default"}
-                              className="h-8 gap-1.5"
-                              onClick={() => openDeliveryWorkspace(order)}
-                            >
-                              <Truck className="w-3.5 h-3.5" />
-                              {order.isDeliveryScheduled ? "Ubah Jadwal Antar" : "Atur Pengantaran"}
-                            </Button>
-                          )}
+                          <div className="flex flex-col items-end gap-1">
+                            {order.deliveryStatus === "Dokumen Diserahkan" || order.isReceived ? (
+                              <Button
+                                size="sm"
+                                disabled={actionFeedback.isLoading(`row-stage7-advance:${order.orderNo}`) || isAdvancing}
+                                className="h-8 gap-1.5 bg-emerald-600 hover:bg-emerald-700 text-white font-medium"
+                                onClick={() => handleAdvanceFromDelivery(order)}
+                              >
+                                <CheckCircle2 className="w-3.5 h-3.5" />
+                                Selesaikan Order
+                              </Button>
+                            ) : (
+                              <Button
+                                size="sm"
+                                variant={order.isDeliveryScheduled ? "outline" : "default"}
+                                className="h-8 gap-1.5"
+                                onClick={() => openDeliveryWorkspace(order)}
+                              >
+                                <Truck className="w-3.5 h-3.5" />
+                                {order.isDeliveryScheduled ? "Ubah Jadwal Antar" : "Atur Pengantaran"}
+                              </Button>
+                            )}
+                            <ActionInlineError
+                              compact
+                              actionKey={`row-stage7-advance:${order.orderNo}`}
+                              error={actionFeedback.getError(`row-stage7-advance:${order.orderNo}`)}
+                              onDismiss={() => actionFeedback.clearError(`row-stage7-advance:${order.orderNo}`)}
+                              className="max-w-[260px]"
+                            />
+                          </div>
                         </TableCell>
                       </TableRow>
                     ))
@@ -3394,7 +4203,13 @@ export function OrderTracking({
       {/* ======================================================== */}
       {/* 1. OPERATIONAL WORKSPACE: VERIFIKASI (VIEW + VERIFIKASI) */}
       {/* ======================================================== */}
-      <Dialog open={isVerifyWorkspaceOpen} onOpenChange={setIsVerifyWorkspaceOpen}>
+      <Dialog
+        open={isVerifyWorkspaceOpen}
+        onOpenChange={(open) => {
+          if (!open && (actionFeedback.isAnyLoading("m1-") || isVerifyingPayment || isAdvancing)) return;
+          setIsVerifyWorkspaceOpen(open);
+        }}
+      >
         <DialogContent className="w-full sm:max-w-2xl lg:max-w-4xl max-h-[90dvh] bg-card text-card-foreground p-0 overflow-hidden flex flex-col">
           <DialogHeader className="p-4 sm:p-5 pb-3 border-b border-border bg-muted/20 shrink-0">
             <div className="flex flex-wrap items-center justify-between gap-2">
@@ -3724,23 +4539,41 @@ export function OrderTracking({
                             </div>
                           </div>
                         ) : (
-                          <div className="p-3 rounded-md bg-muted/40 border border-border text-xs text-muted-foreground flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
-                            <div className="flex items-center gap-2">
-                              <Info className="w-4 h-4 text-primary shrink-0" />
-                              <span>Bukti pembayaran belum dilampirkan (opsional). Anda dapat mengunggah bukti jika tersedia atau langsung memverifikasi nominal di bawah.</span>
+                          <div className="space-y-2">
+                            <div className="p-3 rounded-md bg-muted/40 border border-border text-xs text-muted-foreground flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
+                              <div className="flex items-center gap-2">
+                                <Info className="w-4 h-4 text-primary shrink-0" />
+                                <span>Bukti pembayaran belum dilampirkan (opsional). Anda dapat mengunggah bukti jika tersedia atau langsung memverifikasi nominal di bawah.</span>
+                              </div>
+                              <label className={cn("shrink-0", actionFeedback.isLoading(`m1-proof:${selectedOrder.orderNo}`) ? "pointer-events-none opacity-60" : "cursor-pointer")}>
+                                <span className="inline-flex items-center justify-center h-7 px-2.5 rounded-md text-xs font-medium border border-border bg-background hover:bg-muted text-foreground gap-1.5 transition-colors shadow-xs">
+                                  {actionFeedback.isLoading(`m1-proof:${selectedOrder.orderNo}`) ? (
+                                    <>
+                                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                                      Mengunggah...
+                                    </>
+                                  ) : (
+                                    <>
+                                      <Upload className="w-3.5 h-3.5" />
+                                      Upload Bukti (Opsional)
+                                    </>
+                                  )}
+                                </span>
+                                <input
+                                  type="file"
+                                  accept=".pdf,.jpg,.jpeg,.png,.heic,.HEIC"
+                                  disabled={actionFeedback.isLoading(`m1-proof:${selectedOrder.orderNo}`)}
+                                  className="hidden"
+                                  onChange={handleUploadStage1Proof}
+                                />
+                              </label>
                             </div>
-                            <label className="cursor-pointer shrink-0">
-                              <span className="inline-flex items-center justify-center h-7 px-2.5 rounded-md text-xs font-medium border border-border bg-background hover:bg-muted text-foreground gap-1.5 transition-colors shadow-xs">
-                                <Upload className="w-3.5 h-3.5" />
-                                Upload Bukti (Opsional)
-                              </span>
-                              <input
-                                type="file"
-                                accept=".pdf,.jpg,.jpeg,.png,.heic,.HEIC"
-                                className="hidden"
-                                onChange={handleUploadStage1Proof}
-                              />
-                            </label>
+                            <ActionInlineError
+                              compact
+                              actionKey={`m1-proof:${selectedOrder.orderNo}`}
+                              error={actionFeedback.getError(`m1-proof:${selectedOrder.orderNo}`)}
+                              onDismiss={() => actionFeedback.clearError(`m1-proof:${selectedOrder.orderNo}`)}
+                            />
                           </div>
                         )}
 
@@ -3755,7 +4588,10 @@ export function OrderTracking({
                               <div className="flex items-center gap-1.5">
                                 <button
                                   type="button"
-                                  onClick={() => setEditPaymentAmount(String(selectedOrder.payment?.totalBiaya || selectedOrder.totalEstimasi || 0))}
+                                  onClick={() => {
+                                    actionFeedback.clearError(`m1-verify-payment:${selectedOrder.orderNo}`);
+                                    setEditPaymentAmount(String(selectedOrder.payment?.totalBiaya || selectedOrder.totalEstimasi || 0));
+                                  }}
                                   className="text-[10px] text-primary hover:underline cursor-pointer"
                                 >
                                   Sesuai Tagihan
@@ -3765,7 +4601,10 @@ export function OrderTracking({
                                     <span className="text-muted-foreground text-[10px]">•</span>
                                     <button
                                       type="button"
-                                      onClick={() => setEditPaymentAmount(String(selectedOrder.payment?.nominalDibayarAwal || 0))}
+                                      onClick={() => {
+                                        actionFeedback.clearError(`m1-verify-payment:${selectedOrder.orderNo}`);
+                                        setEditPaymentAmount(String(selectedOrder.payment?.nominalDibayarAwal || 0));
+                                      }}
                                       className="text-[10px] text-primary hover:underline cursor-pointer"
                                     >
                                       Sesuai Diinput Klien
@@ -3789,6 +4628,7 @@ export function OrderTracking({
                                   value={editPaymentAmount ? Number(editPaymentAmount.replace(/[^0-9]/g, "")).toLocaleString("id-ID") : ""}
                                   onChange={(e) => {
                                     const raw = e.target.value.replace(/[^0-9]/g, "");
+                                    actionFeedback.clearError(`m1-verify-payment:${selectedOrder.orderNo}`);
                                     setEditPaymentAmount(raw);
                                   }}
                                   className="pl-8 bg-background border-border h-8 text-xs font-mono font-bold max-w-sm"
@@ -3870,6 +4710,14 @@ export function OrderTracking({
                                       )}
                                     </Button>
                                   </div>
+                                  <ActionInlineError
+                                    compact
+                                    actionKey={`m1-verify-payment:${selectedOrder.orderNo}`}
+                                    error={actionFeedback.getError(`m1-verify-payment:${selectedOrder.orderNo}`)}
+                                    onRetry={() => handleSavePaymentVerificationAndCorrection()}
+                                    isRetrying={isVerifyingPayment}
+                                    onDismiss={() => actionFeedback.clearError(`m1-verify-payment:${selectedOrder.orderNo}`)}
+                                  />
                                 </div>
                               );
                             })()}
@@ -3958,134 +4806,126 @@ export function OrderTracking({
                   </div>
 
                   <div className="space-y-2">
-                    {[
-                      { key: 'stnk', label: 'STNK Asli' },
-                      { key: 'bpkb', label: 'BPKB Asli' },
-                      { key: 'ktp', label: 'KTP Pemilik Asli' },
-                      { key: 'skkp', label: 'SKKP (Surat Ketetapan Pajak)' },
-                      { key: 'lainnya', label: 'Dokumen Tambahan / Surat Kuasa' },
-                    ].map(doc => {
+                    {getOrderDocumentRequirements(selectedOrder).map((doc: any) => {
                       const item = selectedOrder.clientDocuments?.[doc.key];
                       const isAvailable = Boolean(item?.name && item?.status !== "Belum Tersedia");
                       const fileName = item?.name;
+                      const uploadKey = `m1-doc:${doc.key}:${selectedOrder.orderNo}`;
+                      const removeKey = `m1-doc-remove:${doc.key}:${selectedOrder.orderNo}`;
+                      const isUploadingDoc = actionFeedback.isLoading(uploadKey);
+                      const isRemovingDoc = actionFeedback.isLoading(removeKey);
 
                       return (
                         <div
                           key={doc.key}
-                          className="p-3 rounded-lg border border-border bg-card flex flex-col sm:flex-row sm:items-center justify-between gap-3"
+                          className="p-3 rounded-lg border border-border bg-card space-y-2"
                         >
-                          <div className="flex items-center gap-3 min-w-0">
-                            <div className={cn(
-                              "w-8 h-8 rounded-md flex items-center justify-center shrink-0",
-                              isAvailable ? "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400" : "bg-muted text-muted-foreground"
-                            )}>
-                              {item?.fileType === "pdf" ? <FileIcon className="w-4 h-4" /> : <FileText className="w-4 h-4" />}
-                            </div>
-                            <div className="min-w-0">
-                              <div className="flex items-center gap-2">
-                                <p className="font-semibold text-foreground text-xs">{doc.label}</p>
-                                <Badge status={isAvailable ? "success" : "default"} className="text-[10px] px-1.5 py-0">
-                                  {isAvailable ? (item?.status || "Tersedia") : "Belum Tersedia"}
-                                </Badge>
-                                {item?.fileType && (
-                                  <Badge variant="outline" className="text-[10px] px-1 py-0 border-border text-muted-foreground uppercase">
-                                    {item.fileType}
-                                  </Badge>
-                                )}
+                          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                            <div className="flex items-center gap-3 min-w-0">
+                              <div className={cn(
+                                "w-8 h-8 rounded-md flex items-center justify-center shrink-0",
+                                isAvailable ? "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400" : "bg-muted text-muted-foreground"
+                              )}>
+                                {item?.fileType === "pdf" ? <FileIcon className="w-4 h-4" /> : <FileText className="w-4 h-4" />}
                               </div>
-                              <p className="text-[11px] text-muted-foreground truncate mt-0.5">
-                                {fileName ? fileName : "Berkas fisik belum diunggah"}
-                              </p>
+                              <div className="min-w-0">
+                                <div className="flex items-center gap-2">
+                                  <p className="font-semibold text-foreground text-xs">{doc.label}</p>
+                                  <Badge status={isAvailable ? "success" : "default"} className="text-[10px] px-1.5 py-0">
+                                    {isAvailable ? (item?.status || "Tersedia") : "Belum Tersedia"}
+                                  </Badge>
+                                  {item?.fileType && (
+                                    <Badge variant="outline" className="text-[10px] px-1 py-0 border-border text-muted-foreground uppercase">
+                                      {item.fileType}
+                                    </Badge>
+                                  )}
+                                </div>
+                                <p className="text-[11px] text-muted-foreground truncate mt-0.5">
+                                  {fileName ? fileName : "Berkas fisik belum diunggah"}
+                                </p>
+                              </div>
+                            </div>
+
+                            <div className="flex items-center gap-1.5 shrink-0 pl-11 sm:pl-0">
+                              {fileName && (
+                                <>
+                                  <Button
+                                    type="button"
+                                    size="sm"
+                                    variant="outline"
+                                    className="h-7 text-xs gap-1"
+                                    onClick={() =>
+                                      handleOpenPreview(
+                                        fileName,
+                                        doc.label,
+                                        item?.fileUrl,
+                                        item?.fileType,
+                                        (item as any)?.documentId
+                                      )
+                                    }
+                                  >
+                                    <Eye className="w-3.5 h-3.5" />
+                                    Preview
+                                  </Button>
+                                  <Button
+                                    type="button"
+                                    size="sm"
+                                    variant="ghost"
+                                    disabled={isRemovingDoc || isUploadingDoc}
+                                    className="h-7 text-xs px-2 gap-1 text-destructive hover:bg-destructive/10"
+                                    onClick={() => handleRemoveStage1ClientDoc(doc.key, doc.label, (item as any)?.documentId)}
+                                  >
+                                    {isRemovingDoc ? (
+                                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                                    ) : (
+                                      <Trash2 className="w-3.5 h-3.5" />
+                                    )}
+                                  </Button>
+                                </>
+                              )}
+
+                              <label className={cn(isUploadingDoc || isRemovingDoc ? "pointer-events-none opacity-60" : "cursor-pointer")}>
+                                <span className="inline-flex items-center justify-center h-7 px-2.5 rounded-md text-xs font-medium border border-border bg-muted/40 hover:bg-muted text-foreground transition-colors gap-1">
+                                  {isUploadingDoc ? (
+                                    <>
+                                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                                      Mengunggah...
+                                    </>
+                                  ) : (
+                                    <>
+                                      <Upload className="w-3.5 h-3.5" />
+                                      {fileName ? "Ganti" : "Upload"}
+                                    </>
+                                  )}
+                                </span>
+                                <input
+                                  type="file"
+                                  accept=".pdf,.jpg,.jpeg,.png,.heic,.HEIC"
+                                  disabled={isUploadingDoc || isRemovingDoc}
+                                  className="hidden"
+                                  onChange={(e) => {
+                                    const file = e.target.files?.[0];
+                                    e.target.value = "";
+                                    if (file) {
+                                      handleUploadStage1ClientDoc(doc.key, doc.label, file);
+                                    }
+                                  }}
+                                />
+                              </label>
                             </div>
                           </div>
-
-                          <div className="flex items-center gap-1.5 shrink-0 pl-11 sm:pl-0">
-                            {fileName && (
-                              <>
-                                <Button
-                                  type="button"
-                                  size="sm"
-                                  variant="outline"
-                                  className="h-7 text-xs gap-1"
-                                  onClick={() =>
-                                    handleOpenPreview(
-                                      fileName,
-                                      doc.label,
-                                      item?.fileUrl,
-                                      item?.fileType,
-                                      (item as any)?.documentId
-                                    )
-                                  }
-                                >
-                                  <Eye className="w-3.5 h-3.5" />
-                                  Preview
-                                </Button>
-                                <Button
-                                  type="button"
-                                  size="sm"
-                                  variant="ghost"
-                                  className="h-7 text-xs px-2 gap-1 text-destructive hover:bg-destructive/10"
-                                  onClick={() => {
-                                    const updatedDocs = {
-                                      ...(selectedOrder.clientDocuments || {}),
-                                      [doc.key]: {
-                                        name: "",
-                                        status: "Belum Tersedia",
-                                        isOptional: true,
-                                      },
-                                    };
-                                    updateOrder(selectedOrder.orderNo, { clientDocuments: updatedDocs });
-                                    setSelectedOrder({ ...selectedOrder, clientDocuments: updatedDocs });
-                                    toast.info(`Lampiran ${doc.label} dihapus.`);
-                                  }}
-                                >
-                                  <Trash2 className="w-3.5 h-3.5" />
-                                </Button>
-                              </>
-                            )}
-
-                            <label className="cursor-pointer">
-                              <span className="inline-flex items-center justify-center h-7 px-2.5 rounded-md text-xs font-medium border border-border bg-muted/40 hover:bg-muted text-foreground transition-colors gap-1">
-                                <Upload className="w-3.5 h-3.5" />
-                                {fileName ? "Ganti" : "Upload"}
-                              </span>
-                              <input
-                                type="file"
-                                accept=".pdf,.jpg,.jpeg,.png,.heic,.HEIC"
-                                className="hidden"
-                                onChange={async (e) => {
-                                  if (e.target.files && e.target.files[0]) {
-                                    const file = e.target.files[0];
-                                    try {
-                                      const processed = await processDocumentUpload(file);
-                                      const uploaded = await documentRepository.uploadDocument(processed.file, {
-                                        orderNo: selectedOrder.orderNo,
-                                        documentType: doc.key,
-                                      });
-                                      const updatedDocs = {
-                                        ...(selectedOrder.clientDocuments || {}),
-                                        [doc.key]: {
-                                          name: processed.fileName,
-                                          status: "Baru Diupload",
-                                          updatedAt: new Date().toISOString().split("T")[0],
-                                          fileType: processed.fileType === "pdf" ? "pdf" : "image",
-                                          fileUrl: uploaded.fileUrl,
-                                          documentId: uploaded.id,
-                                          fileSize: formatFileSize(processed.fileSize),
-                                          isOptional: true,
-                                        }
-                                      };
-                                      updateOrder(selectedOrder.orderNo, { clientDocuments: updatedDocs });
-                                      setSelectedOrder({ ...selectedOrder, clientDocuments: updatedDocs });
-                                      toast.success(`${doc.label} (${file.name}) berhasil diunggah.`);
-                                    } catch (err: any) {
-                                      toast.error(err.message || "Gagal mengunggah berkas.");
-                                    }
-                                  }
-                                }}
-                              />
-                            </label>
-                          </div>
+                          <ActionInlineError
+                            compact
+                            actionKey={uploadKey}
+                            error={actionFeedback.getError(uploadKey)}
+                            onDismiss={() => actionFeedback.clearError(uploadKey)}
+                          />
+                          <ActionInlineError
+                            compact
+                            actionKey={removeKey}
+                            error={actionFeedback.getError(removeKey)}
+                            onDismiss={() => actionFeedback.clearError(removeKey)}
+                          />
                         </div>
                       );
                     })}
@@ -4095,26 +4935,53 @@ export function OrderTracking({
             )}
           </ScrollArea>
 
-          <DialogFooter className="p-3 sm:p-4 border-t border-border bg-muted/10 shrink-0 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-            <div>
-              {selectedOrder?.payment?.tipePembayaran === "Bayar di Awal" && !selectedOrder?.payment?.isPaymentVerified && (
-                <p className="text-[11px] text-muted-foreground font-medium">
-                  Klik "Verifikasi & Lanjut" untuk mengonfirmasi nominal dan melanjutkan order ke tahap berikutnya.
-                </p>
-              )}
-            </div>
+          <DialogFooter className="p-3 sm:p-4 border-t border-border bg-muted/10 shrink-0 flex flex-col gap-2.5">
+            {selectedOrder && (
+              <ActionInlineError
+                actionKey={`m1-advance:${selectedOrder.orderNo}`}
+                error={actionFeedback.getError(`m1-advance:${selectedOrder.orderNo}`)}
+                onRetry={handleVerifyOrder}
+                isRetrying={isVerifyingPayment || isAdvancing}
+                onDismiss={() => actionFeedback.clearError(`m1-advance:${selectedOrder.orderNo}`)}
+                className="w-full"
+              />
+            )}
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 w-full">
+              <div>
+                {selectedOrder?.payment?.tipePembayaran === "Bayar di Awal" && !selectedOrder?.payment?.isPaymentVerified && (
+                  <p className="text-[11px] text-muted-foreground font-medium">
+                    Klik "Verifikasi & Lanjut" untuk mengonfirmasi nominal dan melanjutkan order ke tahap berikutnya.
+                  </p>
+                )}
+              </div>
 
-            <div className="flex flex-col-reverse sm:flex-row items-center gap-2 w-full sm:w-auto">
-              <Button variant="outline" onClick={() => setIsVerifyWorkspaceOpen(false)} className="w-full sm:w-auto">
-                Tutup
-              </Button>
-              <Button
-                onClick={handleVerifyOrder}
-                className="gap-2 w-full sm:w-auto"
-              >
-                <CheckCircle className="w-4 h-4" />
-                Verifikasi & Lanjut
-              </Button>
+              <div className="flex flex-col-reverse sm:flex-row items-center gap-2 w-full sm:w-auto">
+                <Button
+                  variant="outline"
+                  disabled={isVerifyingPayment || isAdvancing || actionFeedback.isAnyLoading("m1-")}
+                  onClick={() => setIsVerifyWorkspaceOpen(false)}
+                  className="w-full sm:w-auto"
+                >
+                  Tutup
+                </Button>
+                <Button
+                  onClick={handleVerifyOrder}
+                  disabled={isVerifyingPayment || isAdvancing || actionFeedback.isAnyLoading("m1-")}
+                  className="gap-2 w-full sm:w-auto"
+                >
+                  {(isVerifyingPayment || Boolean(selectedOrder && actionFeedback.isLoading(`m1-advance:${selectedOrder.orderNo}`))) ? (
+                    <>
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                      Memproses...
+                    </>
+                  ) : (
+                    <>
+                      <CheckCircle className="w-4 h-4" />
+                      Verifikasi & Lanjut
+                    </>
+                  )}
+                </Button>
+              </div>
             </div>
           </DialogFooter>
         </DialogContent>
@@ -4123,7 +4990,13 @@ export function OrderTracking({
       {/* ======================================================== */}
       {/* 2. OPERATIONAL WORKSPACE: PENJADWALAN                    */}
       {/* ======================================================== */}
-      <Dialog open={isScheduleWorkspaceOpen} onOpenChange={setIsScheduleWorkspaceOpen}>
+      <Dialog
+        open={isScheduleWorkspaceOpen}
+        onOpenChange={(open) => {
+          if (!open && (actionFeedback.isAnyLoading("m2-") || isAdvancing)) return;
+          setIsScheduleWorkspaceOpen(open);
+        }}
+      >
         <DialogContent className="w-full sm:max-w-2xl lg:max-w-3xl max-h-[90dvh] bg-card text-card-foreground p-0 overflow-hidden flex flex-col">
           <DialogHeader className="p-4 sm:p-5 pb-3 border-b border-border bg-muted/20 shrink-0">
             <div className="flex items-center justify-between">
@@ -4190,7 +5063,10 @@ export function OrderTracking({
                       <Input
                         type="date"
                         value={scheduleData.tanggalJemput}
-                        onChange={(e) => setScheduleData({ ...scheduleData, tanggalJemput: e.target.value })}
+                        onChange={(e) => {
+                          actionFeedback.clearByPrefix("m2-");
+                          setScheduleData({ ...scheduleData, tanggalJemput: e.target.value });
+                        }}
                         className="bg-input-background h-9 text-xs"
                       />
                     </div>
@@ -4198,13 +5074,40 @@ export function OrderTracking({
                       <Label className="text-xs text-foreground">Tugaskan Messenger</Label>
                       <Select
                         value={scheduleData.messenger}
-                        onValueChange={(val) => setScheduleData({ ...scheduleData, messenger: val })}
+                        onValueChange={(val) => {
+                          actionFeedback.clearByPrefix("m2-");
+                          setScheduleData({ ...scheduleData, messenger: val });
+                        }}
+                        disabled={isKaryawanLoading || activeMessengers.length === 0}
                       >
                         <SelectTrigger className="bg-input-background h-9 text-xs">
-                          <SelectValue placeholder="Pilih Messenger Penjemput..." />
+                          <SelectValue placeholder={
+                            isKaryawanLoading
+                              ? "Memuat daftar messenger..."
+                              : karyawanError
+                                ? "Gagal memuat messenger"
+                                : activeMessengers.length === 0
+                                  ? "Tidak ada messenger aktif"
+                                  : "Pilih Messenger Penjemput..."
+                          } />
                         </SelectTrigger>
                         <SelectContent className="z-[100]">
-                          {activeMessengers.length === 0 ? (
+                          {isKaryawanLoading ? (
+                            <div className="p-3 text-center text-xs text-muted-foreground flex items-center justify-center gap-1.5">
+                              <RefreshCw className="w-3.5 h-3.5 animate-spin" /> Memuat data messenger...
+                            </div>
+                          ) : karyawanError ? (
+                            <div className="p-3 text-center text-xs text-destructive space-y-1">
+                              <p>Gagal memuat messenger dari server.</p>
+                              <button
+                                type="button"
+                                onClick={(e) => { e.preventDefault(); refreshKaryawan?.(); }}
+                                className="text-[11px] underline text-primary hover:text-primary/80 font-medium inline-flex items-center gap-1"
+                              >
+                                <RefreshCw className="w-3 h-3" /> Coba Lagi
+                              </button>
+                            </div>
+                          ) : activeMessengers.length === 0 ? (
                             <div className="p-3 text-center text-xs text-muted-foreground">
                               Tidak ada messenger aktif tersedia
                             </div>
@@ -4220,6 +5123,18 @@ export function OrderTracking({
                           )}
                         </SelectContent>
                       </Select>
+                      {karyawanError && (
+                        <p className="text-[11px] text-destructive flex items-center justify-between mt-1">
+                          <span>Gagal memuat messenger: {karyawanError}</span>
+                          <button
+                            type="button"
+                            onClick={() => refreshKaryawan?.()}
+                            className="text-[11px] underline text-primary hover:text-primary/80 font-medium flex items-center gap-1"
+                          >
+                            <RefreshCw className="w-3 h-3" /> Retry
+                          </button>
+                        </p>
+                      )}
                     </div>
                   </div>
 
@@ -4228,7 +5143,10 @@ export function OrderTracking({
                     <Input
                       placeholder="Contoh: Jemput dokumen sebelum jam 12 siang, hubungi satpam komplek"
                       value={scheduleData.catatanPenjadwalan}
-                      onChange={(e) => setScheduleData({ ...scheduleData, catatanPenjadwalan: e.target.value })}
+                      onChange={(e) => {
+                        actionFeedback.clearByPrefix("m2-");
+                        setScheduleData({ ...scheduleData, catatanPenjadwalan: e.target.value });
+                      }}
                       className="bg-input-background h-9 text-xs"
                     />
                   </div>
@@ -4237,18 +5155,61 @@ export function OrderTracking({
             )}
           </ScrollArea>
 
-          <DialogFooter className="p-3 sm:p-4 border-t border-border bg-muted/10 shrink-0 flex flex-col-reverse sm:flex-row gap-2 justify-end">
-            <Button variant="outline" onClick={() => setIsScheduleWorkspaceOpen(false)} disabled={isAdvancing} className="w-full sm:w-auto">
-              Batal
-            </Button>
-            <Button variant="secondary" onClick={handleSaveScheduleOnly} disabled={isAdvancing} className="gap-1.5 w-full sm:w-auto font-medium">
-              <Calendar className="w-4 h-4" />
-              Simpan Jadwal
-            </Button>
-            <Button onClick={handleSaveScheduleAndAdvance} disabled={isAdvancing} className="gap-1.5 w-full sm:w-auto font-medium bg-primary text-primary-foreground">
-              <ArrowRight className="w-4 h-4" />
-              Simpan Jadwal & Lanjut ke Verifikasi Dokumen
-            </Button>
+          <DialogFooter className="p-3 sm:p-4 border-t border-border bg-muted/10 shrink-0 flex flex-col gap-2.5">
+            {selectedOrder && (
+              <>
+                <ActionInlineError
+                  actionKey={`m2-save:${selectedOrder.orderNo}`}
+                  error={actionFeedback.getError(`m2-save:${selectedOrder.orderNo}`)}
+                  onRetry={handleSaveScheduleOnly}
+                  isRetrying={actionFeedback.isLoading(`m2-save:${selectedOrder.orderNo}`)}
+                  onDismiss={() => actionFeedback.clearError(`m2-save:${selectedOrder.orderNo}`)}
+                  className="w-full"
+                />
+                <ActionInlineError
+                  actionKey={`m2-advance:${selectedOrder.orderNo}`}
+                  error={actionFeedback.getError(`m2-advance:${selectedOrder.orderNo}`)}
+                  onDismiss={() => actionFeedback.clearError(`m2-advance:${selectedOrder.orderNo}`)}
+                  className="w-full"
+                />
+              </>
+            )}
+            <div className="flex flex-col-reverse sm:flex-row gap-2 justify-end w-full">
+              <Button
+                variant="outline"
+                onClick={() => setIsScheduleWorkspaceOpen(false)}
+                disabled={isAdvancing || actionFeedback.isAnyLoading("m2-")}
+                className="w-full sm:w-auto"
+              >
+                Batal
+              </Button>
+              <Button
+                variant="secondary"
+                onClick={handleSaveScheduleOnly}
+                disabled={actionFeedback.isAnyLoading("m2-") || isAdvancing || isKaryawanLoading || activeMessengers.length === 0 || !scheduleData.messenger || !activeMessengers.some((m) => m.nama === scheduleData.messenger || m.id === scheduleData.messenger)}
+                className="gap-1.5 w-full sm:w-auto font-medium"
+              >
+                {selectedOrder && actionFeedback.isLoading(`m2-save:${selectedOrder.orderNo}`) ? (
+                  <>
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                    Menyimpan...
+                  </>
+                ) : (
+                  <>
+                    <Calendar className="w-4 h-4" />
+                    Simpan Jadwal
+                  </>
+                )}
+              </Button>
+              <Button
+                onClick={handleSaveScheduleAndAdvance}
+                disabled={actionFeedback.isAnyLoading("m2-") || isAdvancing || isKaryawanLoading || activeMessengers.length === 0 || !scheduleData.messenger || !activeMessengers.some((m) => m.nama === scheduleData.messenger || m.id === scheduleData.messenger)}
+                className="gap-1.5 w-full sm:w-auto font-medium bg-primary text-primary-foreground"
+              >
+                <ArrowRight className="w-4 h-4" />
+                Simpan Jadwal & Lanjut ke Verifikasi Dokumen
+              </Button>
+            </div>
           </DialogFooter>
         </DialogContent>
       </Dialog>
@@ -4256,7 +5217,13 @@ export function OrderTracking({
       {/* ======================================================== */}
       {/* 3. OPERATIONAL WORKSPACE: VERIFIKASI DOKUMEN             */}
       {/* ======================================================== */}
-      <Dialog open={isDocVerificationWorkspaceOpen} onOpenChange={setIsDocVerificationWorkspaceOpen}>
+      <Dialog
+        open={isDocVerificationWorkspaceOpen}
+        onOpenChange={(open) => {
+          if (!open && (actionFeedback.isAnyLoading("m3-") || isAdvancing)) return;
+          setIsDocVerificationWorkspaceOpen(open);
+        }}
+      >
         <DialogContent className="w-full sm:max-w-2xl lg:max-w-3xl max-h-[90dvh] bg-card text-card-foreground p-0 overflow-hidden flex flex-col">
           <DialogHeader className="p-4 sm:p-5 pb-3 border-b border-border bg-muted/20 shrink-0">
             <div className="flex items-center justify-between">
@@ -4350,70 +5317,90 @@ export function OrderTracking({
                   ].map((doc) => {
                     const item = docState[doc.key] || { name: "", status: "Belum Tersedia" };
                     const isAvailable = item.status === "Sudah Tersedia" || item.status === "Baru Diupload" || item.status === "Diperbarui";
+                    const docActionKey = `m3-doc:${doc.key}:${selectedOrder.orderNo}`;
+                    const isUploadingDoc = actionFeedback.isLoading(docActionKey);
 
                     return (
                       <div
                         key={doc.key}
-                        className="p-3.5 rounded-lg border border-border bg-card flex flex-col sm:flex-row sm:items-center justify-between gap-3"
+                        className="p-3.5 rounded-lg border border-border bg-card space-y-2"
                       >
-                        <div className="flex items-center gap-3">
-                          <div className={cn(
-                            "w-8 h-8 rounded-md flex items-center justify-center shrink-0",
-                            isAvailable ? "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400" : "bg-muted text-muted-foreground"
-                          )}>
-                            <FileText className="w-4 h-4" />
-                          </div>
-                          <div>
-                            <div className="flex items-center gap-2">
-                              <p className="font-semibold text-foreground text-xs">{doc.label}</p>
-                              <Badge status={isAvailable ? "success" : "warning"} className="text-[10px] px-1.5 py-0">
-                                {item.status}
-                              </Badge>
+                        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                          <div className="flex items-center gap-3">
+                            <div className={cn(
+                              "w-8 h-8 rounded-md flex items-center justify-center shrink-0",
+                              isAvailable ? "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400" : "bg-muted text-muted-foreground"
+                            )}>
+                              <FileText className="w-4 h-4" />
                             </div>
-                            <p className="text-[11px] text-muted-foreground mt-0.5">
-                              {item.name ? item.name : "Berkas fisik belum diunggah"}
-                            </p>
+                            <div>
+                              <div className="flex items-center gap-2">
+                                <p className="font-semibold text-foreground text-xs">{doc.label}</p>
+                                <Badge status={isAvailable ? "success" : "warning"} className="text-[10px] px-1.5 py-0">
+                                  {item.status}
+                                </Badge>
+                              </div>
+                              <p className="text-[11px] text-muted-foreground mt-0.5">
+                                {item.name ? item.name : "Berkas fisik belum diunggah"}
+                              </p>
+                            </div>
+                          </div>
+
+                          <div className="flex items-center gap-2 shrink-0">
+                            {item.name && (
+                              <Button
+                                type="button"
+                                size="sm"
+                                variant="outline"
+                                className="h-7 text-xs gap-1"
+                                onClick={() => {
+                                  handleOpenPreview(
+                                    item.name,
+                                    doc.label,
+                                    item.fileUrl,
+                                    item.fileType || (item.name.toLowerCase().endsWith(".pdf") ? "pdf" : "image")
+                                  );
+                                }}
+                              >
+                                <Eye className="w-3.5 h-3.5" />
+                                Preview
+                              </Button>
+                            )}
+                            <label className={cn(isUploadingDoc ? "pointer-events-none opacity-60" : "cursor-pointer")}>
+                              <span className="inline-flex items-center justify-center h-7 px-2.5 rounded-md text-xs font-medium border border-border bg-muted/40 hover:bg-muted text-foreground transition-colors gap-1">
+                                {isUploadingDoc ? (
+                                  <>
+                                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                                    Mengunggah...
+                                  </>
+                                ) : (
+                                  <>
+                                    <Upload className="w-3.5 h-3.5" />
+                                    {item.name ? "Ganti File" : "Upload File"}
+                                  </>
+                                )}
+                              </span>
+                              <input
+                                type="file"
+                                accept=".pdf,.jpg,.jpeg,.png,.heic,.HEIC"
+                                disabled={isUploadingDoc}
+                                className="hidden"
+                                onChange={(e) => {
+                                  if (e.target.files && e.target.files[0]) {
+                                    handleDocUpload(doc.key, doc.label, e.target.files[0]);
+                                    e.target.value = "";
+                                  }
+                                }}
+                              />
+                            </label>
                           </div>
                         </div>
-
-                        <div className="flex items-center gap-2 shrink-0">
-                          {item.name && (
-                            <Button
-                              type="button"
-                              size="sm"
-                              variant="outline"
-                              className="h-7 text-xs gap-1"
-                              onClick={() => {
-                                handleOpenPreview(
-                                  item.name,
-                                  doc.label,
-                                  item.fileUrl,
-                                  item.fileType || (item.name.toLowerCase().endsWith(".pdf") ? "pdf" : "image")
-                                );
-                              }}
-                            >
-                              <Eye className="w-3.5 h-3.5" />
-                              Preview
-                            </Button>
-                          )}
-                          <label className="cursor-pointer">
-                            <span className="inline-flex items-center justify-center h-7 px-2.5 rounded-md text-xs font-medium border border-border bg-muted/40 hover:bg-muted text-foreground transition-colors gap-1">
-                              <Upload className="w-3.5 h-3.5" />
-                              {item.name ? "Ganti File" : "Upload File"}
-                            </span>
-                            <input
-                              type="file"
-                              accept=".pdf,.jpg,.jpeg,.png,.heic,.HEIC"
-                              className="hidden"
-                              onChange={(e) => {
-                                if (e.target.files && e.target.files[0]) {
-                                  handleDocUpload(doc.key, doc.label, e.target.files[0]);
-                                  e.target.value = "";
-                                }
-                              }}
-                            />
-                          </label>
-                        </div>
+                        <ActionInlineError
+                          compact
+                          actionKey={docActionKey}
+                          error={actionFeedback.getError(docActionKey)}
+                          onDismiss={() => actionFeedback.clearError(docActionKey)}
+                        />
                       </div>
                     );
                   })}
@@ -4432,70 +5419,90 @@ export function OrderTracking({
                   ].map((doc) => {
                     const item = docState[doc.key] || { name: "", status: "Belum Tersedia" };
                     const isAvailable = item.status === "Sudah Tersedia" || item.status === "Baru Diupload" || item.status === "Diperbarui";
+                    const docActionKey = `m3-doc:${doc.key}:${selectedOrder.orderNo}`;
+                    const isUploadingDoc = actionFeedback.isLoading(docActionKey);
 
                     return (
                       <div
                         key={doc.key}
-                        className="p-3.5 rounded-lg border border-border bg-card flex flex-col sm:flex-row sm:items-center justify-between gap-3"
+                        className="p-3.5 rounded-lg border border-border bg-card space-y-2"
                       >
-                        <div className="flex items-center gap-3">
-                          <div className={cn(
-                            "w-8 h-8 rounded-md flex items-center justify-center shrink-0",
-                            isAvailable ? "bg-primary/10 text-primary" : "bg-muted text-muted-foreground"
-                          )}>
-                            <FileText className="w-4 h-4" />
-                          </div>
-                          <div>
-                            <div className="flex items-center gap-2">
-                              <p className="font-semibold text-foreground text-xs">{doc.label}</p>
-                              <Badge status={isAvailable ? "success" : "neutral"} className="text-[10px] px-1.5 py-0">
-                                {item.status}
-                              </Badge>
+                        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                          <div className="flex items-center gap-3">
+                            <div className={cn(
+                              "w-8 h-8 rounded-md flex items-center justify-center shrink-0",
+                              isAvailable ? "bg-primary/10 text-primary" : "bg-muted text-muted-foreground"
+                            )}>
+                              <FileText className="w-4 h-4" />
                             </div>
-                            <p className="text-[11px] text-muted-foreground mt-0.5">
-                              {item.name ? item.name : "Opsional jika dibutuhkan"}
-                            </p>
+                            <div>
+                              <div className="flex items-center gap-2">
+                                <p className="font-semibold text-foreground text-xs">{doc.label}</p>
+                                <Badge status={isAvailable ? "success" : "neutral"} className="text-[10px] px-1.5 py-0">
+                                  {item.status}
+                                </Badge>
+                              </div>
+                              <p className="text-[11px] text-muted-foreground mt-0.5">
+                                {item.name ? item.name : "Opsional jika dibutuhkan"}
+                              </p>
+                            </div>
+                          </div>
+
+                          <div className="flex items-center gap-2 shrink-0">
+                            {item.name && (
+                              <Button
+                                type="button"
+                                size="sm"
+                                variant="outline"
+                                className="h-7 text-xs gap-1"
+                                onClick={() => {
+                                  handleOpenPreview(
+                                    item.name,
+                                    doc.label,
+                                    item.fileUrl,
+                                    item.fileType || (item.name.toLowerCase().endsWith(".pdf") ? "pdf" : "image")
+                                  );
+                                }}
+                              >
+                                <Eye className="w-3.5 h-3.5" />
+                                Preview
+                              </Button>
+                            )}
+                            <label className={cn(isUploadingDoc ? "pointer-events-none opacity-60" : "cursor-pointer")}>
+                              <span className="inline-flex items-center justify-center h-7 px-2.5 rounded-md text-xs font-medium border border-border bg-muted/40 hover:bg-muted text-foreground transition-colors gap-1">
+                                {isUploadingDoc ? (
+                                  <>
+                                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                                    Mengunggah...
+                                  </>
+                                ) : (
+                                  <>
+                                    <Upload className="w-3.5 h-3.5" />
+                                    {item.name ? "Ganti" : "Upload"}
+                                  </>
+                                )}
+                              </span>
+                              <input
+                                type="file"
+                                accept=".pdf,.jpg,.jpeg,.png,.heic,.HEIC"
+                                disabled={isUploadingDoc}
+                                className="hidden"
+                                onChange={(e) => {
+                                  if (e.target.files && e.target.files[0]) {
+                                    handleDocUpload(doc.key, doc.label, e.target.files[0]);
+                                    e.target.value = "";
+                                  }
+                                }}
+                              />
+                            </label>
                           </div>
                         </div>
-
-                        <div className="flex items-center gap-2 shrink-0">
-                          {item.name && (
-                            <Button
-                              type="button"
-                              size="sm"
-                              variant="outline"
-                              className="h-7 text-xs gap-1"
-                              onClick={() => {
-                                handleOpenPreview(
-                                  item.name,
-                                  doc.label,
-                                  item.fileUrl,
-                                  item.fileType || (item.name.toLowerCase().endsWith(".pdf") ? "pdf" : "image")
-                                );
-                              }}
-                            >
-                              <Eye className="w-3.5 h-3.5" />
-                              Preview
-                            </Button>
-                          )}
-                          <label className="cursor-pointer">
-                            <span className="inline-flex items-center justify-center h-7 px-2.5 rounded-md text-xs font-medium border border-border bg-muted/40 hover:bg-muted text-foreground transition-colors gap-1">
-                              <Upload className="w-3.5 h-3.5" />
-                              {item.name ? "Ganti" : "Upload"}
-                            </span>
-                            <input
-                              type="file"
-                              accept=".pdf,.jpg,.jpeg,.png,.heic,.HEIC"
-                              className="hidden"
-                              onChange={(e) => {
-                                if (e.target.files && e.target.files[0]) {
-                                  handleDocUpload(doc.key, doc.label, e.target.files[0]);
-                                  e.target.value = "";
-                                }
-                              }}
-                            />
-                          </label>
-                        </div>
+                        <ActionInlineError
+                          compact
+                          actionKey={docActionKey}
+                          error={actionFeedback.getError(docActionKey)}
+                          onDismiss={() => actionFeedback.clearError(docActionKey)}
+                        />
                       </div>
                     );
                   })}
@@ -4504,14 +5511,33 @@ export function OrderTracking({
             )}
           </ScrollArea>
 
-          <DialogFooter className="p-3 sm:p-4 border-t border-border bg-muted/10 shrink-0 flex flex-col-reverse sm:flex-row gap-2">
-            <Button variant="outline" onClick={() => setIsDocVerificationWorkspaceOpen(false)} className="w-full sm:w-auto">
-              Batal
-            </Button>
-            <Button onClick={handleVerifyDocuments} className="gap-2 w-full sm:w-auto">
-              <CheckCircle className="w-4 h-4" />
-              Verifikasi & Lanjut ke Samsat
-            </Button>
+          <DialogFooter className="p-3 sm:p-4 border-t border-border bg-muted/10 shrink-0 flex flex-col gap-2.5">
+            {selectedOrder && (
+              <ActionInlineError
+                actionKey={`m3-advance:${selectedOrder.orderNo}`}
+                error={actionFeedback.getError(`m3-advance:${selectedOrder.orderNo}`)}
+                onDismiss={() => actionFeedback.clearError(`m3-advance:${selectedOrder.orderNo}`)}
+                className="w-full"
+              />
+            )}
+            <div className="flex flex-col-reverse sm:flex-row gap-2 justify-end w-full">
+              <Button
+                variant="outline"
+                disabled={actionFeedback.isAnyLoading("m3-") || isAdvancing}
+                onClick={() => setIsDocVerificationWorkspaceOpen(false)}
+                className="w-full sm:w-auto"
+              >
+                Batal
+              </Button>
+              <Button
+                onClick={handleVerifyDocuments}
+                disabled={actionFeedback.isAnyLoading("m3-") || isAdvancing}
+                className="gap-2 w-full sm:w-auto"
+              >
+                <CheckCircle className="w-4 h-4" />
+                Verifikasi & Lanjut ke Samsat
+              </Button>
+            </div>
           </DialogFooter>
         </DialogContent>
       </Dialog>
@@ -4854,16 +5880,30 @@ export function OrderTracking({
             })()}
           </ScrollArea>
 
-          <DialogFooter className="p-3 sm:p-4 border-t border-border bg-muted/10 shrink-0 flex flex-col-reverse sm:flex-row gap-2 sm:justify-end">
-            <Button variant="outline" onClick={() => setIsSamsatProgressDialogOpen(false)} className="w-full sm:w-auto">
-              Tutup
-            </Button>
-            {canManage(4) && selectedOrder?.samsatPickupStatus === "Dokumen Samsat Diterima di Kantor" && (
-              <Button onClick={handleAdvanceFromSamsat} className="gap-2 w-full sm:w-auto bg-emerald-600 hover:bg-emerald-700 text-white font-medium">
-                <ArrowRight className="w-4 h-4" />
-                Lanjut ke Verifikasi Biaya Final
-              </Button>
+          <DialogFooter className="p-3 sm:p-4 border-t border-border bg-muted/10 shrink-0 flex flex-col gap-2.5">
+            {selectedOrder && (
+              <ActionInlineError
+                actionKey={`m4-advance:${selectedOrder.orderNo}`}
+                error={actionFeedback.getError(`m4-advance:${selectedOrder.orderNo}`)}
+                onDismiss={() => actionFeedback.clearError(`m4-advance:${selectedOrder.orderNo}`)}
+                className="w-full"
+              />
             )}
+            <div className="flex flex-col-reverse sm:flex-row gap-2 sm:justify-end w-full">
+              <Button variant="outline" onClick={() => setIsSamsatProgressDialogOpen(false)} className="w-full sm:w-auto">
+                Tutup
+              </Button>
+              {canManage(4) && selectedOrder?.samsatPickupStatus === "Dokumen Samsat Diterima di Kantor" && (
+                <Button
+                  disabled={isAdvancing}
+                  onClick={handleAdvanceFromSamsat}
+                  className="gap-2 w-full sm:w-auto bg-emerald-600 hover:bg-emerald-700 text-white font-medium"
+                >
+                  <ArrowRight className="w-4 h-4" />
+                  Lanjut ke Verifikasi Biaya Final
+                </Button>
+              )}
+            </div>
           </DialogFooter>
         </DialogContent>
       </Dialog>
@@ -4871,7 +5911,13 @@ export function OrderTracking({
       {/* ======================================================== */}
       {/* 4a. OPERATIONAL WORKSPACE: JADWALKAN PROSES SAMSAT      */}
       {/* ======================================================== */}
-      <Dialog open={isSamsatScheduleModalOpen} onOpenChange={setIsSamsatScheduleModalOpen}>
+      <Dialog
+        open={isSamsatScheduleModalOpen}
+        onOpenChange={(open) => {
+          if (!open && actionFeedback.isAnyLoading("m4a-")) return;
+          setIsSamsatScheduleModalOpen(open);
+        }}
+      >
         <DialogContent className="w-full sm:max-w-2xl lg:max-w-3xl max-h-[90dvh] bg-card text-card-foreground p-0 overflow-hidden flex flex-col">
           <DialogHeader className="p-4 sm:p-5 pb-3 border-b border-border bg-muted/20 shrink-0">
             <div className="flex items-center justify-between">
@@ -4930,7 +5976,10 @@ export function OrderTracking({
                       <Input
                         type="date"
                         value={samsatScheduleData.tanggalProsesSamsat}
-                        onChange={(e) => setSamsatScheduleData({ ...samsatScheduleData, tanggalProsesSamsat: e.target.value })}
+                        onChange={(e) => {
+                          actionFeedback.clearByPrefix("m4a-");
+                          setSamsatScheduleData({ ...samsatScheduleData, tanggalProsesSamsat: e.target.value });
+                        }}
                         className="bg-input-background h-9 text-xs"
                       />
                     </div>
@@ -4938,13 +5987,40 @@ export function OrderTracking({
                       <Label className="text-xs text-foreground">Tugaskan Messenger Samsat</Label>
                       <Select
                         value={samsatScheduleData.samsatMessenger}
-                        onValueChange={(val) => setSamsatScheduleData({ ...samsatScheduleData, samsatMessenger: val })}
+                        onValueChange={(val) => {
+                          actionFeedback.clearByPrefix("m4a-");
+                          setSamsatScheduleData({ ...samsatScheduleData, samsatMessenger: val });
+                        }}
+                        disabled={isKaryawanLoading || activeMessengers.length === 0}
                       >
                         <SelectTrigger className="bg-input-background h-9 text-xs">
-                          <SelectValue placeholder="Pilih Messenger Samsat..." />
+                          <SelectValue placeholder={
+                            isKaryawanLoading
+                              ? "Memuat daftar messenger..."
+                              : karyawanError
+                                ? "Gagal memuat messenger"
+                                : activeMessengers.length === 0
+                                  ? "Tidak ada messenger aktif"
+                                  : "Pilih Messenger Samsat..."
+                          } />
                         </SelectTrigger>
                         <SelectContent className="z-[100]">
-                          {activeMessengers.length === 0 ? (
+                          {isKaryawanLoading ? (
+                            <div className="p-3 text-center text-xs text-muted-foreground flex items-center justify-center gap-1.5">
+                              <RefreshCw className="w-3.5 h-3.5 animate-spin" /> Memuat data messenger...
+                            </div>
+                          ) : karyawanError ? (
+                            <div className="p-3 text-center text-xs text-destructive space-y-1">
+                              <p>Gagal memuat messenger dari server.</p>
+                              <button
+                                type="button"
+                                onClick={(e) => { e.preventDefault(); refreshKaryawan?.(); }}
+                                className="text-[11px] underline text-primary hover:text-primary/80 font-medium inline-flex items-center gap-1"
+                              >
+                                <RefreshCw className="w-3 h-3" /> Coba Lagi
+                              </button>
+                            </div>
+                          ) : activeMessengers.length === 0 ? (
                             <div className="p-3 text-center text-xs text-muted-foreground">
                               Tidak ada messenger aktif tersedia
                             </div>
@@ -4960,6 +6036,18 @@ export function OrderTracking({
                           )}
                         </SelectContent>
                       </Select>
+                      {karyawanError && (
+                        <p className="text-[11px] text-destructive flex items-center justify-between mt-1">
+                          <span>Gagal memuat messenger: {karyawanError}</span>
+                          <button
+                            type="button"
+                            onClick={() => refreshKaryawan?.()}
+                            className="text-[11px] underline text-primary hover:text-primary/80 font-medium flex items-center gap-1"
+                          >
+                            <RefreshCw className="w-3 h-3" /> Retry
+                          </button>
+                        </p>
+                      )}
                     </div>
                   </div>
 
@@ -4968,7 +6056,10 @@ export function OrderTracking({
                     <Input
                       placeholder="Contoh: Utamakan antrean loket mutasi pagi hari, cek blokir dahulu"
                       value={samsatScheduleData.catatanSamsat}
-                      onChange={(e) => setSamsatScheduleData({ ...samsatScheduleData, catatanSamsat: e.target.value })}
+                      onChange={(e) => {
+                        actionFeedback.clearByPrefix("m4a-");
+                        setSamsatScheduleData({ ...samsatScheduleData, catatanSamsat: e.target.value });
+                      }}
                       className="bg-input-background h-9 text-xs"
                     />
                   </div>
@@ -4977,14 +6068,50 @@ export function OrderTracking({
             )}
           </ScrollArea>
 
-          <DialogFooter className="p-3 sm:p-4 border-t border-border bg-muted/10 shrink-0 flex flex-col-reverse sm:flex-row gap-2 justify-end">
-            <Button variant="outline" onClick={() => setIsSamsatScheduleModalOpen(false)} className="w-full sm:w-auto">
-              Batal
-            </Button>
-            <Button onClick={handleSaveSamsatSchedule} className="gap-1.5 w-full sm:w-auto font-medium">
-              <Calendar className="w-4 h-4" />
-              Simpan Jadwal Samsat
-            </Button>
+          <DialogFooter className="p-3 sm:p-4 border-t border-border bg-muted/10 shrink-0 flex flex-col gap-2.5">
+            {selectedOrder && (
+              <ActionInlineError
+                actionKey={`m4a-save:${selectedOrder.orderNo}`}
+                error={actionFeedback.getError(`m4a-save:${selectedOrder.orderNo}`)}
+                onRetry={handleSaveSamsatSchedule}
+                isRetrying={actionFeedback.isLoading(`m4a-save:${selectedOrder.orderNo}`)}
+                onDismiss={() => actionFeedback.clearError(`m4a-save:${selectedOrder.orderNo}`)}
+                className="w-full"
+              />
+            )}
+            <div className="flex flex-col-reverse sm:flex-row gap-2 justify-end w-full">
+              <Button
+                variant="outline"
+                disabled={Boolean(selectedOrder && actionFeedback.isLoading(`m4a-save:${selectedOrder.orderNo}`))}
+                onClick={() => setIsSamsatScheduleModalOpen(false)}
+                className="w-full sm:w-auto"
+              >
+                Batal
+              </Button>
+              <Button
+                onClick={handleSaveSamsatSchedule}
+                disabled={
+                  Boolean(selectedOrder && actionFeedback.isLoading(`m4a-save:${selectedOrder.orderNo}`)) ||
+                  isKaryawanLoading ||
+                  activeMessengers.length === 0 ||
+                  !samsatScheduleData.samsatMessenger ||
+                  !activeMessengers.some((m) => m.nama === samsatScheduleData.samsatMessenger || m.id === samsatScheduleData.samsatMessenger)
+                }
+                className="gap-1.5 w-full sm:w-auto font-medium"
+              >
+                {selectedOrder && actionFeedback.isLoading(`m4a-save:${selectedOrder.orderNo}`) ? (
+                  <>
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                    Menyimpan...
+                  </>
+                ) : (
+                  <>
+                    <Calendar className="w-4 h-4" />
+                    Simpan Jadwal Samsat
+                  </>
+                )}
+              </Button>
+            </div>
           </DialogFooter>
         </DialogContent>
       </Dialog>
@@ -4992,7 +6119,13 @@ export function OrderTracking({
       {/* ======================================================== */}
       {/* 4b. OPERATIONAL WORKSPACE: PENUGASAN JEMPUT HASIL SAMSAT */}
       {/* ======================================================== */}
-      <Dialog open={isSamsatPickupModalOpen} onOpenChange={setIsSamsatPickupModalOpen}>
+      <Dialog
+        open={isSamsatPickupModalOpen}
+        onOpenChange={(open) => {
+          if (!open && actionFeedback.isAnyLoading("m4b-")) return;
+          setIsSamsatPickupModalOpen(open);
+        }}
+      >
         <DialogContent className="w-full sm:max-w-2xl lg:max-w-3xl max-h-[90dvh] bg-card text-card-foreground p-0 overflow-hidden flex flex-col">
           <DialogHeader className="p-4 sm:p-5 pb-3 border-b border-border bg-muted/20 shrink-0">
             <div className="flex items-center justify-between">
@@ -5049,7 +6182,10 @@ export function OrderTracking({
                       <Input
                         type="date"
                         value={samsatPickupData.samsatPickupDate}
-                        onChange={(e) => setSamsatPickupData({ ...samsatPickupData, samsatPickupDate: e.target.value })}
+                        onChange={(e) => {
+                          actionFeedback.clearByPrefix("m4b-");
+                          setSamsatPickupData({ ...samsatPickupData, samsatPickupDate: e.target.value });
+                        }}
                         className="bg-input-background h-9 text-xs"
                       />
                     </div>
@@ -5057,13 +6193,40 @@ export function OrderTracking({
                       <Label className="text-xs text-foreground">Tugaskan Messenger Penjemput</Label>
                       <Select
                         value={samsatPickupData.samsatPickupMessenger}
-                        onValueChange={(val) => setSamsatPickupData({ ...samsatPickupData, samsatPickupMessenger: val })}
+                        onValueChange={(val) => {
+                          actionFeedback.clearByPrefix("m4b-");
+                          setSamsatPickupData({ ...samsatPickupData, samsatPickupMessenger: val });
+                        }}
+                        disabled={isKaryawanLoading || activeMessengers.length === 0}
                       >
                         <SelectTrigger className="bg-input-background h-9 text-xs">
-                          <SelectValue placeholder="Pilih Messenger..." />
+                          <SelectValue placeholder={
+                            isKaryawanLoading
+                              ? "Memuat daftar messenger..."
+                              : karyawanError
+                                ? "Gagal memuat messenger"
+                                : activeMessengers.length === 0
+                                  ? "Tidak ada messenger aktif"
+                                  : "Pilih Messenger..."
+                          } />
                         </SelectTrigger>
                         <SelectContent className="z-[100]">
-                          {activeMessengers.length === 0 ? (
+                          {isKaryawanLoading ? (
+                            <div className="p-3 text-center text-xs text-muted-foreground flex items-center justify-center gap-1.5">
+                              <RefreshCw className="w-3.5 h-3.5 animate-spin" /> Memuat data messenger...
+                            </div>
+                          ) : karyawanError ? (
+                            <div className="p-3 text-center text-xs text-destructive space-y-1">
+                              <p>Gagal memuat messenger dari server.</p>
+                              <button
+                                type="button"
+                                onClick={(e) => { e.preventDefault(); refreshKaryawan?.(); }}
+                                className="text-[11px] underline text-primary hover:text-primary/80 font-medium inline-flex items-center gap-1"
+                              >
+                                <RefreshCw className="w-3 h-3" /> Coba Lagi
+                              </button>
+                            </div>
+                          ) : activeMessengers.length === 0 ? (
                             <div className="p-3 text-center text-xs text-muted-foreground">
                               Tidak ada messenger aktif tersedia
                             </div>
@@ -5079,6 +6242,18 @@ export function OrderTracking({
                           )}
                         </SelectContent>
                       </Select>
+                      {karyawanError && (
+                        <p className="text-[11px] text-destructive flex items-center justify-between mt-1">
+                          <span>Gagal memuat messenger: {karyawanError}</span>
+                          <button
+                            type="button"
+                            onClick={() => refreshKaryawan?.()}
+                            className="text-[11px] underline text-primary hover:text-primary/80 font-medium flex items-center gap-1"
+                          >
+                            <RefreshCw className="w-3 h-3" /> Retry
+                          </button>
+                        </p>
+                      )}
                     </div>
                   </div>
 
@@ -5087,7 +6262,10 @@ export function OrderTracking({
                     <Input
                       placeholder="Contoh: Ambil berkas di loket penyerahan, pastikan notice pajak asli tercetak"
                       value={samsatPickupData.samsatPickupNotes}
-                      onChange={(e) => setSamsatPickupData({ ...samsatPickupData, samsatPickupNotes: e.target.value })}
+                      onChange={(e) => {
+                        actionFeedback.clearByPrefix("m4b-");
+                        setSamsatPickupData({ ...samsatPickupData, samsatPickupNotes: e.target.value });
+                      }}
                       className="bg-input-background h-9 text-xs"
                     />
                   </div>
@@ -5096,14 +6274,50 @@ export function OrderTracking({
             )}
           </ScrollArea>
 
-          <DialogFooter className="p-3 sm:p-4 border-t border-border bg-muted/10 shrink-0 flex flex-col-reverse sm:flex-row gap-2 justify-end">
-            <Button variant="outline" onClick={() => setIsSamsatPickupModalOpen(false)} className="w-full sm:w-auto">
-              Batal
-            </Button>
-            <Button onClick={handleSaveSamsatPickupAssignment} className="gap-1.5 w-full sm:w-auto font-medium">
-              <Truck className="w-4 h-4" />
-              Tugaskan Messenger Jemput Hasil
-            </Button>
+          <DialogFooter className="p-3 sm:p-4 border-t border-border bg-muted/10 shrink-0 flex flex-col gap-2.5">
+            {selectedOrder && (
+              <ActionInlineError
+                actionKey={`m4b-save:${selectedOrder.orderNo}`}
+                error={actionFeedback.getError(`m4b-save:${selectedOrder.orderNo}`)}
+                onRetry={handleSaveSamsatPickupAssignment}
+                isRetrying={actionFeedback.isLoading(`m4b-save:${selectedOrder.orderNo}`)}
+                onDismiss={() => actionFeedback.clearError(`m4b-save:${selectedOrder.orderNo}`)}
+                className="w-full"
+              />
+            )}
+            <div className="flex flex-col-reverse sm:flex-row gap-2 justify-end w-full">
+              <Button
+                variant="outline"
+                disabled={Boolean(selectedOrder && actionFeedback.isLoading(`m4b-save:${selectedOrder.orderNo}`))}
+                onClick={() => setIsSamsatPickupModalOpen(false)}
+                className="w-full sm:w-auto"
+              >
+                Batal
+              </Button>
+              <Button
+                onClick={handleSaveSamsatPickupAssignment}
+                disabled={
+                  Boolean(selectedOrder && actionFeedback.isLoading(`m4b-save:${selectedOrder.orderNo}`)) ||
+                  isKaryawanLoading ||
+                  activeMessengers.length === 0 ||
+                  !samsatPickupData.samsatPickupMessenger ||
+                  !activeMessengers.some((m) => m.nama === samsatPickupData.samsatPickupMessenger || m.id === samsatPickupData.samsatPickupMessenger)
+                }
+                className="gap-1.5 w-full sm:w-auto font-medium"
+              >
+                {selectedOrder && actionFeedback.isLoading(`m4b-save:${selectedOrder.orderNo}`) ? (
+                  <>
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                    Menyimpan...
+                  </>
+                ) : (
+                  <>
+                    <Truck className="w-4 h-4" />
+                    Tugaskan Messenger Jemput Hasil
+                  </>
+                )}
+              </Button>
+            </div>
           </DialogFooter>
         </DialogContent>
       </Dialog>
@@ -5111,7 +6325,22 @@ export function OrderTracking({
       {/* ======================================================== */}
       {/* 5 & 6. OPERATIONAL WORKSPACE: VERIFIKASI ULANG & SUPERVISI */}
       {/* ======================================================== */}
-      <Dialog open={isFinalCostDialogOpen} onOpenChange={setIsFinalCostDialogOpen}>
+      <Dialog
+        open={isFinalCostDialogOpen}
+        onOpenChange={(open) => {
+          if (
+            !open &&
+            (isSubmittingApproval ||
+              isSubmittingFinalCost ||
+              actionFeedback.isAnyLoading("m5") ||
+              actionFeedback.isAnyLoading("m6") ||
+              isAdvancing)
+          ) {
+            return;
+          }
+          setIsFinalCostDialogOpen(open);
+        }}
+      >
         <DialogContent className="w-full sm:max-w-3xl lg:max-w-5xl max-h-[90dvh] bg-card text-card-foreground p-0 overflow-hidden flex flex-col">
           <DialogHeader className="p-4 sm:p-5 pb-3 border-b border-border bg-muted/20 shrink-0">
             <div className="flex items-center justify-between">
@@ -5618,7 +6847,10 @@ export function OrderTracking({
                           <Input
                             placeholder="Nama item biaya..."
                             value={newCostItemName}
-                            onChange={(e) => setNewCostItemName(e.target.value)}
+                            onChange={(e) => {
+                              actionFeedback.clearError(`m56-custom-cost:${selectedOrder.orderNo}`);
+                              setNewCostItemName(e.target.value);
+                            }}
                             className="bg-input-background h-8 text-xs sm:col-span-1"
                           />
                           <Select
@@ -5649,15 +6881,30 @@ export function OrderTracking({
                             className="bg-input-background h-8 text-xs font-mono"
                           />
                         </div>
+                        <ActionInlineError
+                          compact
+                          actionKey={`m56-custom-cost:${selectedOrder.orderNo}`}
+                          error={actionFeedback.getError(`m56-custom-cost:${selectedOrder.orderNo}`)}
+                          onDismiss={() => actionFeedback.clearError(`m56-custom-cost:${selectedOrder.orderNo}`)}
+                        />
                         <Button
                           type="button"
                           size="sm"
                           className="h-8 gap-1.5 text-xs"
                           onClick={() => {
+                            const customKey = `m56-custom-cost:${selectedOrder.orderNo}`;
                             if (!newCostItemName.trim()) {
-                              toast.error("Nama item biaya wajib diisi!");
+                              const msg = "Nama item biaya wajib diisi!";
+                              actionFeedback.setError(customKey, {
+                                statusCode: 422,
+                                code: "VALIDATION_ERROR",
+                                message: msg,
+                                field: "newCostItemName",
+                              });
+                              toast.error(msg);
                               return;
                             }
+                            actionFeedback.clearError(customKey);
                             const amount = parseFloat(newCostItemAmount || "0");
                             const base = parseFloat(newCostItemBasePrice || "0");
                             const newItem: CustomCostItem = {
@@ -5884,13 +7131,7 @@ export function OrderTracking({
                           <Badge status="neutral" className="text-[10px]">Asli / Masuk</Badge>
                         </div>
                         <div className="space-y-1.5">
-                          {[
-                            { key: 'stnk', label: 'STNK Asli' },
-                            { key: 'bpkb', label: 'BPKB Asli' },
-                            { key: 'ktp', label: 'KTP Pemilik Asli' },
-                            { key: 'skkp', label: 'SKKP (Surat Ketetapan Pajak)' },
-                            { key: 'lainnya', label: 'Dokumen Tambahan / Surat Kuasa' },
-                          ].map((d) => {
+                          {getOrderDocumentRequirements(selectedOrder).map((d: any) => {
                             const doc = selectedOrder.clientDocuments?.[d.key];
                             const docName = doc?.name || `${d.key}.pdf`;
                             return (
@@ -5944,47 +7185,64 @@ export function OrderTracking({
 
                         <div className="space-y-1.5 min-h-[60px]">
                           {uploadedNewDocs.length > 0 ? (
-                            uploadedNewDocs.map((doc) => (
-                              <div key={doc.id} className="flex items-center justify-between p-2 rounded bg-emerald-500/5 border border-emerald-500/20 text-xs">
-                                <div className="flex items-center gap-2 min-w-0">
-                                  <FileCheck className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400 shrink-0" />
-                                  <div className="min-w-0">
-                                    <span className="text-[11px] text-foreground font-medium truncate block">{doc.name}</span>
-                                    {doc.fileSize && <span className="text-[9px] text-muted-foreground block">{doc.fileSize}</span>}
+                            uploadedNewDocs.map((doc) => {
+                              const removeDocKey = `m56-doc-remove:${doc.id}:${selectedOrder.orderNo}`;
+                              const isRemovingThisDoc = actionFeedback.isLoading(removeDocKey);
+                              return (
+                                <div key={doc.id} className="space-y-1">
+                                  <div className="flex items-center justify-between p-2 rounded bg-emerald-500/5 border border-emerald-500/20 text-xs">
+                                    <div className="flex items-center gap-2 min-w-0">
+                                      <FileCheck className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400 shrink-0" />
+                                      <div className="min-w-0">
+                                        <span className="text-[11px] text-foreground font-medium truncate block">{doc.name}</span>
+                                        {doc.fileSize && <span className="text-[9px] text-muted-foreground block">{doc.fileSize}</span>}
+                                      </div>
+                                    </div>
+                                    <div className="flex items-center gap-1 shrink-0">
+                                      <Button
+                                        type="button"
+                                        size="sm"
+                                        variant="ghost"
+                                        className="h-6 text-[11px] gap-1 px-2"
+                                        onClick={() => {
+                                          handleOpenPreview(
+                                            doc.name,
+                                            "Dokumen Hasil Samsat",
+                                            doc.fileUrl,
+                                            doc.fileType,
+                                            doc.id
+                                          );
+                                        }}
+                                      >
+                                        <Eye className="w-3 h-3 text-primary" />
+                                        Lihat
+                                      </Button>
+                                      <Button
+                                        type="button"
+                                        size="sm"
+                                        variant="ghost"
+                                        disabled={isRemovingThisDoc}
+                                        className="h-6 w-6 p-0 text-destructive hover:bg-destructive/10"
+                                        onClick={() => handleRemoveUploadedDoc(doc.id)}
+                                        title="Hapus Dokumen"
+                                      >
+                                        {isRemovingThisDoc ? (
+                                          <Loader2 className="w-3 h-3 animate-spin" />
+                                        ) : (
+                                          <Trash2 className="w-3 h-3" />
+                                        )}
+                                      </Button>
+                                    </div>
                                   </div>
+                                  <ActionInlineError
+                                    compact
+                                    actionKey={removeDocKey}
+                                    error={actionFeedback.getError(removeDocKey)}
+                                    onDismiss={() => actionFeedback.clearError(removeDocKey)}
+                                  />
                                 </div>
-                                <div className="flex items-center gap-1 shrink-0">
-                                  <Button
-                                    type="button"
-                                    size="sm"
-                                    variant="ghost"
-                                    className="h-6 text-[11px] gap-1 px-2"
-                                    onClick={() => {
-                                      handleOpenPreview(
-                                        doc.name,
-                                        "Dokumen Hasil Samsat",
-                                        doc.fileUrl,
-                                        doc.fileType,
-                                        doc.id
-                                      );
-                                    }}
-                                  >
-                                    <Eye className="w-3 h-3 text-primary" />
-                                    Lihat
-                                  </Button>
-                                  <Button
-                                    type="button"
-                                    size="sm"
-                                    variant="ghost"
-                                    className="h-6 w-6 p-0 text-destructive hover:bg-destructive/10"
-                                    onClick={() => handleRemoveUploadedDoc(doc.id)}
-                                    title="Hapus Dokumen"
-                                  >
-                                    <Trash2 className="w-3 h-3" />
-                                  </Button>
-                                </div>
-                              </div>
-                            ))
+                              );
+                            })
                           ) : (
                             <div className="p-4 text-center text-muted-foreground text-xs border border-dashed rounded-lg bg-muted/10 space-y-1">
                               <p className="text-[11px]">Belum ada dokumen baru atau hasil Samsat diunggah.</p>
@@ -6077,6 +7335,13 @@ export function OrderTracking({
                                 className="h-8 text-xs bg-background"
                               />
                             </div>
+                            <ActionInlineError
+                              actionKey={`m5-approve-docs:${selectedOrder.orderNo}`}
+                              error={actionFeedback.getError(`m5-approve-docs:${selectedOrder.orderNo}`)}
+                              onRetry={handleApproveStage5Documents}
+                              isRetrying={isSubmittingApproval}
+                              onDismiss={() => actionFeedback.clearError(`m5-approve-docs:${selectedOrder.orderNo}`)}
+                            />
                             <div className="flex justify-end">
                               <Button
                                 type="button"
@@ -6085,8 +7350,17 @@ export function OrderTracking({
                                 disabled={isSubmittingApproval}
                                 className="h-8 text-xs font-semibold gap-1.5 bg-emerald-600 hover:bg-emerald-700 text-white"
                               >
-                                <CheckCircle2 className="w-3.5 h-3.5" />
-                                {isSubmittingApproval ? "Menyimpan..." : "Setujui Dokumen (Stage 5)"}
+                                {isSubmittingApproval ? (
+                                  <>
+                                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                                    Menyimpan...
+                                  </>
+                                ) : (
+                                  <>
+                                    <CheckCircle2 className="w-3.5 h-3.5" />
+                                    Setujui Dokumen (Stage 5)
+                                  </>
+                                )}
                               </Button>
                             </div>
                           </div>
@@ -6170,6 +7444,13 @@ export function OrderTracking({
                                     className="h-8 text-xs bg-background"
                                   />
                                 </div>
+                                <ActionInlineError
+                                  actionKey={`m6-approve-docs:${selectedOrder.orderNo}`}
+                                  error={actionFeedback.getError(`m6-approve-docs:${selectedOrder.orderNo}`)}
+                                  onRetry={handleApproveStage6Documents}
+                                  isRetrying={isSubmittingApproval}
+                                  onDismiss={() => actionFeedback.clearError(`m6-approve-docs:${selectedOrder.orderNo}`)}
+                                />
                                 <div className="flex justify-end">
                                   <Button
                                     type="button"
@@ -6178,8 +7459,17 @@ export function OrderTracking({
                                     disabled={isSubmittingApproval}
                                     className="h-8 text-xs font-semibold gap-1.5 bg-emerald-600 hover:bg-emerald-700 text-white"
                                   >
-                                    <ShieldCheck className="w-3.5 h-3.5" />
-                                    {isSubmittingApproval ? "Menyimpan..." : "Setujui Dokumen (Supervisor Stage 6)"}
+                                    {isSubmittingApproval ? (
+                                      <>
+                                        <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                                        Menyimpan...
+                                      </>
+                                    ) : (
+                                      <>
+                                        <ShieldCheck className="w-3.5 h-3.5" />
+                                        Setujui Dokumen (Supervisor Stage 6)
+                                      </>
+                                    )}
                                   </Button>
                                 </div>
                               </>
@@ -6198,52 +7488,85 @@ export function OrderTracking({
             })()}
           </ScrollArea>
 
-          <DialogFooter className="p-4 border-t border-border bg-muted/10 shrink-0 flex flex-col-reverse sm:flex-row sm:justify-between items-stretch sm:items-center gap-2">
-            <Button variant="outline" onClick={() => setIsFinalCostDialogOpen(false)} disabled={isSubmittingFinalCost} className="w-full sm:w-auto">
-              {currentTab === "Supervisi" && !canManage(6) ? "Tutup" : "Batal"}
-            </Button>
-            {currentTab === "Supervisi" ? (
-              canManage(6) ? (
+          <DialogFooter className="p-4 border-t border-border bg-muted/10 shrink-0 flex flex-col gap-2.5">
+            {selectedOrder && (
+              <ActionInlineError
+                actionKey={currentTab === "Supervisi" ? `m6-advance:${selectedOrder.orderNo}` : `m5-advance:${selectedOrder.orderNo}`}
+                error={actionFeedback.getError(currentTab === "Supervisi" ? `m6-advance:${selectedOrder.orderNo}` : `m5-advance:${selectedOrder.orderNo}`)}
+                onDismiss={() => actionFeedback.clearError(currentTab === "Supervisi" ? `m6-advance:${selectedOrder.orderNo}` : `m5-advance:${selectedOrder.orderNo}`)}
+                className="w-full"
+              />
+            )}
+            <div className="flex flex-col-reverse sm:flex-row sm:justify-between items-stretch sm:items-center gap-2 w-full">
+              <Button
+                variant="outline"
+                onClick={() => setIsFinalCostDialogOpen(false)}
+                disabled={isSubmittingFinalCost || isSubmittingApproval || isAdvancing}
+                className="w-full sm:w-auto"
+              >
+                {currentTab === "Supervisi" && !canManage(6) ? "Tutup" : "Batal"}
+              </Button>
+              {currentTab === "Supervisi" ? (
+                canManage(6) ? (
+                  <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
+                    {!isStage6DocApproved && (
+                      <span className="text-[11px] text-amber-600 dark:text-amber-400 flex items-center gap-1">
+                        <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
+                        Setujui dokumen SPV terlebih dahulu
+                      </span>
+                    )}
+                    <Button 
+                      onClick={() => handleSaveFinalCost(true)} 
+                      disabled={isSubmittingFinalCost || isSubmittingApproval || isAdvancing || !isStage6DocApproved}
+                      className="gap-2 bg-emerald-600 hover:bg-emerald-700 text-white w-full sm:w-auto font-medium"
+                    >
+                      {isSubmittingFinalCost ? (
+                        <>
+                          <Loader2 className="w-4 h-4 animate-spin" />
+                          Memproses...
+                        </>
+                      ) : (
+                        <>
+                          <CheckCircle className="w-4 h-4" />
+                          Approve Supervisi & Lanjut ke Pengantaran
+                        </>
+                      )}
+                    </Button>
+                  </div>
+                ) : (
+                  <div className="flex items-center gap-2 text-xs text-muted-foreground italic">
+                    <ShieldAlert className="w-4 h-4 text-amber-500 shrink-0" />
+                    <span>Mode Tinjauan: Approval supervisi hanya dapat dilakukan oleh Supervisor / SVP</span>
+                  </div>
+                )
+              ) : (
                 <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
-                  {!isStage6DocApproved && (
+                  {!isStage5DocApproved && (
                     <span className="text-[11px] text-amber-600 dark:text-amber-400 flex items-center gap-1">
                       <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
-                      Setujui dokumen SPV terlebih dahulu
+                      Setujui dokumen terlebih dahulu
                     </span>
                   )}
                   <Button 
-                    onClick={() => handleSaveFinalCost(true)} 
-                    disabled={isSubmittingFinalCost || !isStage6DocApproved}
-                    className="gap-2 bg-emerald-600 hover:bg-emerald-700 text-white w-full sm:w-auto font-medium"
+                    onClick={() => handleSaveFinalCost(false)} 
+                    disabled={isSubmittingFinalCost || isSubmittingApproval || isAdvancing || !isStage5DocApproved}
+                    className="gap-2 w-full sm:w-auto font-medium"
                   >
-                    <CheckCircle className="w-4 h-4" />
-                    {isSubmittingFinalCost ? "Memproses..." : "Approve Supervisi & Lanjut ke Pengantaran"}
+                    {isSubmittingFinalCost ? (
+                      <>
+                        <Loader2 className="w-4 h-4 animate-spin" />
+                        Menyimpan...
+                      </>
+                    ) : (
+                      <>
+                        <CheckCircle className="w-4 h-4" />
+                        Simpan Rekonsiliasi
+                      </>
+                    )}
                   </Button>
                 </div>
-              ) : (
-                <div className="flex items-center gap-2 text-xs text-muted-foreground italic">
-                  <ShieldAlert className="w-4 h-4 text-amber-500 shrink-0" />
-                  <span>Mode Tinjauan: Approval supervisi hanya dapat dilakukan oleh Supervisor / SVP</span>
-                </div>
-              )
-            ) : (
-              <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
-                {!isStage5DocApproved && (
-                  <span className="text-[11px] text-amber-600 dark:text-amber-400 flex items-center gap-1">
-                    <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
-                    Setujui dokumen terlebih dahulu
-                  </span>
-                )}
-                <Button 
-                  onClick={() => handleSaveFinalCost(false)} 
-                  disabled={isSubmittingFinalCost || !isStage5DocApproved}
-                  className="gap-2 w-full sm:w-auto font-medium"
-                >
-                  <CheckCircle className="w-4 h-4" />
-                  {isSubmittingFinalCost ? "Menyimpan..." : "Simpan Rekonsiliasi"}
-                </Button>
-              </div>
-            )}
+              )}
+            </div>
           </DialogFooter>
         </DialogContent>
       </Dialog>
@@ -6251,7 +7574,13 @@ export function OrderTracking({
       {/* ======================================================== */}
       {/* 7. OPERATIONAL WORKSPACE: PENGANTARAN                     */}
       {/* ======================================================== */}
-      <Dialog open={isDeliveryWorkspaceOpen} onOpenChange={setIsDeliveryWorkspaceOpen}>
+      <Dialog
+        open={isDeliveryWorkspaceOpen}
+        onOpenChange={(open) => {
+          if (!open && (isCompressingHandover || actionFeedback.isAnyLoading("m7-") || isAdvancing)) return;
+          setIsDeliveryWorkspaceOpen(open);
+        }}
+      >
         <DialogContent className="w-full sm:max-w-2xl lg:max-w-3xl max-h-[90dvh] bg-card text-card-foreground p-0 overflow-hidden flex flex-col">
           <DialogHeader className="p-4 sm:p-5 pb-3 border-b border-border bg-muted/20 shrink-0">
             <div className="flex items-center justify-between">
@@ -6410,7 +7739,10 @@ export function OrderTracking({
                         <Input
                           type="date"
                           value={deliveryData.tanggalPengantaran}
-                          onChange={(e) => setDeliveryData({ ...deliveryData, tanggalPengantaran: e.target.value })}
+                          onChange={(e) => {
+                            actionFeedback.clearError(`m7-save-schedule:${selectedOrder.orderNo}`);
+                            setDeliveryData({ ...deliveryData, tanggalPengantaran: e.target.value });
+                          }}
                           className="bg-input-background h-9 text-xs"
                         />
                       </div>
@@ -6418,7 +7750,10 @@ export function OrderTracking({
                         <Label className="text-xs text-foreground">Tugaskan Messenger</Label>
                         <Select
                           value={deliveryData.messenger}
-                          onValueChange={(val) => setDeliveryData({ ...deliveryData, messenger: val })}
+                          onValueChange={(val) => {
+                            actionFeedback.clearError(`m7-save-schedule:${selectedOrder.orderNo}`);
+                            setDeliveryData({ ...deliveryData, messenger: val });
+                          }}
                         >
                           <SelectTrigger className="bg-input-background h-9 text-xs">
                             <SelectValue placeholder="Pilih Messenger" />
@@ -6439,7 +7774,10 @@ export function OrderTracking({
                       <Input
                         placeholder="Contoh: Serahkan langsung ke pelanggan, minta bukti tanda terima ttd"
                         value={deliveryData.catatanPengantaran}
-                        onChange={(e) => setDeliveryData({ ...deliveryData, catatanPengantaran: e.target.value })}
+                        onChange={(e) => {
+                          actionFeedback.clearError(`m7-save-schedule:${selectedOrder.orderNo}`);
+                          setDeliveryData({ ...deliveryData, catatanPengantaran: e.target.value });
+                        }}
                         className="bg-input-background h-9 text-xs"
                       />
                     </div>
@@ -6460,7 +7798,10 @@ export function OrderTracking({
                         <Input
                           placeholder="Nama lengkap penerima..."
                           value={directHandoverData.recipientName}
-                          onChange={(e) => setDirectHandoverData({ ...directHandoverData, recipientName: e.target.value })}
+                          onChange={(e) => {
+                            actionFeedback.clearError(`m7-handover-save:${selectedOrder.orderNo}`);
+                            setDirectHandoverData({ ...directHandoverData, recipientName: e.target.value });
+                          }}
                           className="bg-input-background h-9 text-xs"
                         />
                       </div>
@@ -6509,10 +7850,10 @@ export function OrderTracking({
                       <div className="flex items-center gap-3">
                         <label className="cursor-pointer">
                           <span className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium border border-border bg-primary/10 text-primary hover:bg-primary/20 transition-colors">
-                            {isCompressingHandover ? (
+                            {isCompressingHandover || actionFeedback.isLoading(`m7-handover-upload:${selectedOrder.orderNo}`) ? (
                               <>
                                 <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                                Mengompres Berkas...
+                                Mengunggah & Kompres...
                               </>
                             ) : (
                               <>
@@ -6524,7 +7865,7 @@ export function OrderTracking({
                           <input
                             type="file"
                             accept=".pdf,.jpg,.jpeg,.png,.heic,.HEIC"
-                            disabled={isCompressingHandover}
+                            disabled={isCompressingHandover || actionFeedback.isLoading(`m7-handover-upload:${selectedOrder.orderNo}`)}
                             className="hidden"
                             onChange={handleDirectHandoverFileUpload}
                           />
@@ -6548,6 +7889,12 @@ export function OrderTracking({
                           </div>
                         )}
                       </div>
+                      <ActionInlineError
+                        compact
+                        actionKey={`m7-handover-upload:${selectedOrder.orderNo}`}
+                        error={actionFeedback.getError(`m7-handover-upload:${selectedOrder.orderNo}`)}
+                        onDismiss={() => actionFeedback.clearError(`m7-handover-upload:${selectedOrder.orderNo}`)}
+                      />
                     </div>
                   </Card>
                 )}
@@ -6555,22 +7902,64 @@ export function OrderTracking({
             )}
           </ScrollArea>
 
-          <DialogFooter className="p-4 border-t border-border bg-muted/10 shrink-0 flex flex-col-reverse sm:flex-row sm:justify-between items-stretch sm:items-center gap-2">
-            <Button variant="outline" onClick={() => setIsDeliveryWorkspaceOpen(false)} className="w-full sm:w-auto">
-              Batal
-            </Button>
-            <div className="flex flex-col sm:flex-row gap-2">
-              {deliveryMode === "langsung" ? (
-                <Button onClick={handleSaveDirectHandover} className="gap-2 bg-emerald-600 hover:bg-emerald-700 text-white w-full sm:w-auto font-medium">
-                  <CheckCircle2 className="w-4 h-4" />
-                  Simpan & Selesaikan Serah Terima (Ke Tahap 8)
-                </Button>
-              ) : (
-                <Button onClick={handleSaveDelivery} className="gap-2 w-full sm:w-auto font-medium">
-                  <Truck className="w-4 h-4" />
-                  Simpan Jadwal Pengantaran
-                </Button>
-              )}
+          <DialogFooter className="p-4 border-t border-border bg-muted/10 shrink-0 flex flex-col gap-2.5">
+            {selectedOrder && (
+              <>
+                <ActionInlineError
+                  actionKey={`m7-handover-save:${selectedOrder.orderNo}`}
+                  error={actionFeedback.getError(`m7-handover-save:${selectedOrder.orderNo}`)}
+                  onDismiss={() => actionFeedback.clearError(`m7-handover-save:${selectedOrder.orderNo}`)}
+                  className="w-full"
+                />
+                <ActionInlineError
+                  actionKey={`m7-save-schedule:${selectedOrder.orderNo}`}
+                  error={actionFeedback.getError(`m7-save-schedule:${selectedOrder.orderNo}`)}
+                  onRetry={handleSaveDelivery}
+                  isRetrying={actionFeedback.isLoading(`m7-save-schedule:${selectedOrder.orderNo}`)}
+                  onDismiss={() => actionFeedback.clearError(`m7-save-schedule:${selectedOrder.orderNo}`)}
+                  className="w-full"
+                />
+              </>
+            )}
+            <div className="flex flex-col-reverse sm:flex-row sm:justify-between items-stretch sm:items-center gap-2 w-full">
+              <Button
+                variant="outline"
+                disabled={isCompressingHandover || actionFeedback.isAnyLoading("m7-") || isAdvancing}
+                onClick={() => setIsDeliveryWorkspaceOpen(false)}
+                className="w-full sm:w-auto"
+              >
+                Batal
+              </Button>
+              <div className="flex flex-col sm:flex-row gap-2">
+                {deliveryMode === "langsung" ? (
+                  <Button
+                    onClick={handleSaveDirectHandover}
+                    disabled={isCompressingHandover || actionFeedback.isAnyLoading("m7-") || isAdvancing}
+                    className="gap-2 bg-emerald-600 hover:bg-emerald-700 text-white w-full sm:w-auto font-medium"
+                  >
+                    <CheckCircle2 className="w-4 h-4" />
+                    Simpan & Selesaikan Serah Terima (Ke Tahap 8)
+                  </Button>
+                ) : (
+                  <Button
+                    onClick={handleSaveDelivery}
+                    disabled={isCompressingHandover || actionFeedback.isAnyLoading("m7-") || isAdvancing}
+                    className="gap-2 w-full sm:w-auto font-medium"
+                  >
+                    {selectedOrder && actionFeedback.isLoading(`m7-save-schedule:${selectedOrder.orderNo}`) ? (
+                      <>
+                        <Loader2 className="w-4 h-4 animate-spin" />
+                        Menyimpan...
+                      </>
+                    ) : (
+                      <>
+                        <Truck className="w-4 h-4" />
+                        Simpan Jadwal Pengantaran
+                      </>
+                    )}
+                  </Button>
+                )}
+              </div>
             </div>
           </DialogFooter>
         </DialogContent>
@@ -6579,7 +7968,13 @@ export function OrderTracking({
       {/* ======================================================== */}
       {/* 8. ARCHIVE CONFIRMATION DIALOG: SIMPAN KE RIWAYAT ORDER */}
       {/* ======================================================== */}
-      <Dialog open={isArchiveDialogOpen} onOpenChange={setIsArchiveDialogOpen}>
+      <Dialog
+        open={isArchiveDialogOpen}
+        onOpenChange={(open) => {
+          if (!open && (actionFeedback.isAnyLoading("m8-") || isAdvancing)) return;
+          setIsArchiveDialogOpen(open);
+        }}
+      >
         <DialogContent className="w-full sm:max-w-xl max-h-[90dvh] bg-card text-card-foreground p-4 sm:p-5 overflow-y-auto">
           <DialogHeader>
             <DialogTitle className="text-base font-semibold flex items-center gap-2 text-foreground">
@@ -6739,68 +8134,32 @@ export function OrderTracking({
                     ) : (
                       <label className="cursor-pointer">
                         <span className="inline-flex items-center gap-1 px-2 py-1 text-[11px] font-medium rounded border border-border bg-primary/10 text-primary hover:bg-primary/20">
-                          <Upload className="w-3 h-3" /> Unggah Bukti
+                          {actionFeedback.isLoading(`m8-proof-upload:${selectedOrder.orderNo}`) ? (
+                            <>
+                              <Loader2 className="w-3 h-3 animate-spin" /> Mengunggah...
+                            </>
+                          ) : (
+                            <>
+                              <Upload className="w-3 h-3" /> Unggah Bukti
+                            </>
+                          )}
                         </span>
                         <input
                           type="file"
                           accept=".pdf,.jpg,.jpeg,.png,.heic,.HEIC"
+                          disabled={actionFeedback.isLoading(`m8-proof-upload:${selectedOrder.orderNo}`)}
                           className="hidden"
-                          onChange={async (e) => {
-                            const file = e.target.files?.[0];
-                            if (!file) return;
-                            try {
-                              const processed = await processDocumentUpload(file);
-                              let uploadedDocId: string | undefined;
-                              let finalFileUrl = processed.fileUrl;
-
-                              if (selectedOrder?.orderNo) {
-                                try {
-                                  const uploaded = await documentRepository.uploadDocument(processed.file, {
-                                    orderNo: selectedOrder.orderNo,
-                                    documentType: "Bukti Serah Terima",
-                                    metadata: {
-                                      phase: "AFTER",
-                                      category: "Bukti Serah Terima",
-                                    },
-                                  });
-                                  if (uploaded?.id) {
-                                    uploadedDocId = uploaded.id;
-                                    finalFileUrl = uploaded.fileUrl;
-                                  }
-                                } catch (uploadErr) {
-                                  console.warn("Handover upload failed:", uploadErr);
-                                }
-                              }
-
-                              const nowIso = new Date().toISOString();
-                              const proof = {
-                                recipientName: selectedOrder.customer,
-                                relationship: "Pemilik Langsung",
-                                photoProofUrl: finalFileUrl,
-                                fileName: processed.fileName,
-                                fileType: processed.fileType,
-                                fileSize: processed.fileSize,
-                                documentId: uploadedDocId,
-                                completedAt: nowIso,
-                              };
-                              updateOrder(selectedOrder.orderNo, {
-                                deliveryHandover: proof,
-                                isReceived: true,
-                              });
-                              setSelectedOrder((prev: any) => prev ? {
-                                ...prev,
-                                deliveryHandover: proof,
-                                isReceived: true,
-                              } : null);
-                              toast.success(`Bukti serah terima (${file.name}) berhasil dilampirkan!`);
-                            } catch (err: any) {
-                              toast.error(err.message || "Gagal mengunggah bukti serah terima");
-                            }
-                          }}
+                          onChange={handleUploadStage8Proof}
                         />
                       </label>
                     )}
                   </div>
+                  <ActionInlineError
+                    compact
+                    actionKey={`m8-proof-upload:${selectedOrder.orderNo}`}
+                    error={actionFeedback.getError(`m8-proof-upload:${selectedOrder.orderNo}`)}
+                    onDismiss={() => actionFeedback.clearError(`m8-proof-upload:${selectedOrder.orderNo}`)}
+                  />
 
                   {selectedOrder.deliveryHandover || selectedOrder.deliveryProof ? (
                     <div className="p-3 rounded-lg bg-emerald-500/5 border border-emerald-500/20 text-xs space-y-1.5">
@@ -6895,14 +8254,33 @@ export function OrderTracking({
             );
           })()}
 
-          <DialogFooter className="gap-2 flex flex-col-reverse sm:flex-row sm:justify-end pt-2 border-t border-border">
-            <Button variant="outline" onClick={() => setIsArchiveDialogOpen(false)} className="w-full sm:w-auto">
-              Batal
-            </Button>
-            <Button onClick={handleArchiveOrder} className="gap-1.5 bg-emerald-600 hover:bg-emerald-700 text-white w-full sm:w-auto">
-              <Check className="w-4 h-4" />
-              Selesaikan Alur & Arsipkan Order
-            </Button>
+          <DialogFooter className="gap-2.5 flex flex-col pt-2 border-t border-border">
+            {selectedOrder && (
+              <ActionInlineError
+                actionKey={`m8-archive:${selectedOrder.orderNo}`}
+                error={actionFeedback.getError(`m8-archive:${selectedOrder.orderNo}`)}
+                onDismiss={() => actionFeedback.clearError(`m8-archive:${selectedOrder.orderNo}`)}
+                className="w-full"
+              />
+            )}
+            <div className="gap-2 flex flex-col-reverse sm:flex-row sm:justify-end w-full">
+              <Button
+                variant="outline"
+                disabled={actionFeedback.isAnyLoading("m8-") || isAdvancing}
+                onClick={() => setIsArchiveDialogOpen(false)}
+                className="w-full sm:w-auto"
+              >
+                Batal
+              </Button>
+              <Button
+                onClick={handleArchiveOrder}
+                disabled={actionFeedback.isAnyLoading("m8-") || isAdvancing}
+                className="gap-1.5 bg-emerald-600 hover:bg-emerald-700 text-white w-full sm:w-auto"
+              >
+                <Check className="w-4 h-4" />
+                Selesaikan Alur & Arsipkan Order
+              </Button>
+            </div>
           </DialogFooter>
         </DialogContent>
       </Dialog>
@@ -6910,7 +8288,13 @@ export function OrderTracking({
       {/* ======================================================== */}
       {/* UPLOAD DOKUMEN BARU MODAL (Nama Dokumen + File)          */}
       {/* ======================================================== */}
-      <Dialog open={isUploadNewDocModalOpen} onOpenChange={setIsUploadNewDocModalOpen}>
+      <Dialog
+        open={isUploadNewDocModalOpen}
+        onOpenChange={(open) => {
+          if (!open && isSubmittingNewDoc) return;
+          setIsUploadNewDocModalOpen(open);
+        }}
+      >
         <DialogContent className="w-full sm:max-w-md bg-card text-card-foreground p-5">
           <DialogHeader>
             <DialogTitle className="text-sm font-semibold flex items-center gap-2">
@@ -6931,9 +8315,11 @@ export function OrderTracking({
               <Input
                 placeholder="Contoh: STNK Asli Baru, SKPD / Pajak Baru, Faktur..."
                 value={newDocName}
+                disabled={isSubmittingNewDoc}
                 onChange={(e) => {
                   setNewDocName(e.target.value);
                   setNewDocError("");
+                  actionFeedback.clearError(`upload-new-doc:${selectedOrder?.orderNo || "none"}`);
                 }}
                 className="bg-input-background h-9 text-xs"
               />
@@ -6949,17 +8335,27 @@ export function OrderTracking({
                   id="new-doc-file-input"
                   type="file"
                   accept=".pdf,.jpg,.jpeg,.png,.heic,.HEIC"
+                  disabled={isSubmittingNewDoc}
                   className="hidden"
                   onChange={(e) => {
                     if (e.target.files && e.target.files[0]) {
                       const f = e.target.files[0];
+                      const docKey = `upload-new-doc:${selectedOrder?.orderNo || "none"}`;
                       const isPdf = f.type === "application/pdf" || f.name.toLowerCase().endsWith(".pdf");
                       if (isPdf && f.size > 5 * 1024 * 1024) {
-                        setNewDocError("Ukuran file PDF melebihi batas 5MB. Pilih berkas yang lebih kecil.");
+                        const sizeMsg = "Ukuran file PDF melebihi batas 5MB. Pilih berkas yang lebih kecil.";
+                        setNewDocError(sizeMsg);
+                        actionFeedback.setError(docKey, {
+                          statusCode: 422,
+                          code: "VALIDATION_ERROR",
+                          message: sizeMsg,
+                          field: "newDocFile",
+                        });
                         return;
                       }
                       setNewDocFile(f);
                       setNewDocError("");
+                      actionFeedback.clearError(docKey);
                       if (!newDocName.trim()) {
                         const baseName = f.name.replace(/\.[^/.]+$/, "").replace(/_/g, " ");
                         setNewDocName(baseName);
@@ -6972,6 +8368,7 @@ export function OrderTracking({
                     type="button"
                     variant="outline"
                     size="sm"
+                    disabled={isSubmittingNewDoc}
                     onClick={() => document.getElementById("new-doc-file-input")?.click()}
                     className="h-9 text-xs gap-1.5 shrink-0"
                   >
@@ -6989,12 +8386,22 @@ export function OrderTracking({
             </div>
 
             {/* Upload Error Message */}
-            {newDocError && (
-              <div className="p-2.5 rounded bg-destructive/10 border border-destructive/20 text-destructive text-xs flex items-center gap-2">
-                <AlertCircle className="w-4 h-4 shrink-0" />
-                <span>{newDocError}</span>
-              </div>
-            )}
+            <ActionInlineError
+              actionKey={`upload-new-doc:${selectedOrder?.orderNo || "none"}`}
+              error={
+                (selectedOrder && actionFeedback.getError(`upload-new-doc:${selectedOrder.orderNo}`)) ||
+                actionFeedback.getError("upload-new-doc:none") ||
+                newDocError ||
+                null
+              }
+              onRetry={handleSaveNewDocument}
+              isRetrying={isSubmittingNewDoc}
+              onDismiss={() => {
+                setNewDocError("");
+                actionFeedback.clearError(`upload-new-doc:${selectedOrder?.orderNo || "none"}`);
+                actionFeedback.clearError("upload-new-doc:none");
+              }}
+            />
           </div>
 
           <DialogFooter className="gap-2 sm:gap-0 sm:justify-end">
@@ -7011,9 +8418,16 @@ export function OrderTracking({
               size="sm"
               disabled={isSubmittingNewDoc}
               onClick={handleSaveNewDocument}
-              className="h-8 text-xs bg-primary text-primary-foreground hover:bg-primary/90 font-medium"
+              className="h-8 text-xs bg-primary text-primary-foreground hover:bg-primary/90 font-medium gap-1.5"
             >
-              {isSubmittingNewDoc ? "Mengunggah..." : "Simpan Dokumen"}
+              {isSubmittingNewDoc ? (
+                <>
+                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                  Mengunggah...
+                </>
+              ) : (
+                "Simpan Dokumen"
+              )}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -7185,7 +8599,8 @@ export function OrderTracking({
               <CheckCircle className="w-4 h-4 text-emerald-600" />
               Konfirmasi Verifikasi Pembayaran Awal
             </AlertDialogTitle>
-            <AlertDialogDescription className="text-xs text-muted-foreground pt-1 space-y-3">
+            <AlertDialogDescription asChild>
+              <div className="text-xs text-muted-foreground pt-1 space-y-3">
               <p className="leading-relaxed">
                 Pastikan nominal pembayaran untuk order ini sesuai bukti transfer / kas loket. Setelah dikonfirmasi, nominal terkonfirmasi menjadi acuan perhitungan sisa tagihan atau kelebihan bayar.
               </p>
@@ -7219,8 +8634,19 @@ export function OrderTracking({
                   )}
                 </div>
               )}
+              </div>
             </AlertDialogDescription>
           </AlertDialogHeader>
+          {selectedOrder && (
+            <ActionInlineError
+              actionKey={`confirm-payment:${selectedOrder.orderNo}`}
+              error={actionFeedback.getError(`confirm-payment:${selectedOrder.orderNo}`)}
+              onRetry={handleMarkPaymentVerified}
+              isRetrying={isVerifyingPayment}
+              onDismiss={() => actionFeedback.clearError(`confirm-payment:${selectedOrder.orderNo}`)}
+              className="mt-2"
+            />
+          )}
           <AlertDialogFooter className="mt-4 gap-2">
             <AlertDialogCancel disabled={isVerifyingPayment} className="h-8 text-xs font-medium">
               Batal
@@ -7247,14 +8673,25 @@ export function OrderTracking({
       </AlertDialog>
 
       {/* Confirmation Dialog: Pindah Proses Selanjutnya (Popup Pengingat Verifikasi) */}
-      <AlertDialog open={advanceConfirmData?.isOpen || false} onOpenChange={(open) => { if (!open) setAdvanceConfirmData(null); }}>
+      <AlertDialog
+        open={advanceConfirmData?.isOpen || false}
+        onOpenChange={(open) => {
+          if (!open && !isAdvancing) {
+            if (advanceConfirmData?.orderNo) {
+              actionFeedback.clearError(`confirm-advance:${advanceConfirmData.orderNo}`);
+            }
+            setAdvanceConfirmData(null);
+          }
+        }}
+      >
         <AlertDialogContent className="border-border sm:max-w-md bg-card">
           <AlertDialogHeader>
             <AlertDialogTitle className="text-base font-semibold flex items-center gap-2 text-foreground">
               <AlertTriangle className="w-4 h-4 text-amber-500 shrink-0" />
               Konfirmasi Pindah Proses Selanjutnya
             </AlertDialogTitle>
-            <AlertDialogDescription className="text-xs text-muted-foreground pt-1 space-y-2.5">
+            <AlertDialogDescription asChild>
+              <div className="text-xs text-muted-foreground pt-1 space-y-2.5">
               <p className="leading-relaxed">
                 Apakah Anda yakin ingin memindahkan order <strong className="text-foreground font-mono font-semibold">{advanceConfirmData?.orderNo}</strong> ke proses berikutnya?
               </p>
@@ -7271,10 +8708,28 @@ export function OrderTracking({
                   {advanceConfirmData?.summaryText}
                 </p>
               </div>
+              </div>
             </AlertDialogDescription>
           </AlertDialogHeader>
+          {advanceConfirmData?.orderNo && (
+            <ActionInlineError
+              actionKey={`confirm-advance:${advanceConfirmData.orderNo}`}
+              error={actionFeedback.getError(`confirm-advance:${advanceConfirmData.orderNo}`)}
+              onRetry={() => {
+                if (advanceConfirmData?.onConfirm) {
+                  advanceConfirmData.onConfirm();
+                }
+              }}
+              isRetrying={isAdvancing}
+              onDismiss={() => actionFeedback.clearError(`confirm-advance:${advanceConfirmData.orderNo}`)}
+              className="mt-2"
+            />
+          )}
           <AlertDialogFooter className="mt-3 gap-2">
-            <AlertDialogCancel className="h-8 text-xs font-medium">
+            <AlertDialogCancel
+              disabled={isAdvancing}
+              className="h-8 text-xs font-medium"
+            >
               Batal / Periksa Kembali
             </AlertDialogCancel>
             <AlertDialogAction
@@ -7285,7 +8740,7 @@ export function OrderTracking({
                   await advanceConfirmData.onConfirm();
                 }
               }}
-              className="h-8 text-xs bg-primary hover:bg-primary/90 text-primary-foreground font-semibold shadow-xs flex items-center gap-1.5"
+              className="h-8 text-xs bg-primary hover:bg-primary/90 text-primary-foreground font-semibold shadow-xs flex items-center gap-1.5 disabled:opacity-50 disabled:cursor-not-allowed"
             >
               {isAdvancing ? (
                 <>

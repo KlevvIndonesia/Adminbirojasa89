@@ -56,10 +56,6 @@ export function createRateLimiter(options: {
   }
 
   const middleware = (req: Request, res: Response, next: NextFunction): void => {
-    if (skipInTests && process.env.NODE_ENV === "test") {
-      return next();
-    }
-
     const ip = getClientIp(req);
     const now = Date.now();
 
@@ -78,6 +74,10 @@ export function createRateLimiter(options: {
     res.setHeader("X-RateLimit-Limit", maxRequests);
     res.setHeader("X-RateLimit-Remaining", remaining);
     res.setHeader("X-RateLimit-Reset", resetTime);
+
+    if (skipInTests && process.env.NODE_ENV === "test") {
+      return next();
+    }
 
     if (record.timestamps.length >= maxRequests) {
       res.setHeader("Retry-After", resetTime);
@@ -141,4 +141,41 @@ export const uploadRateLimiter = createRateLimiter({
   maxRequests: CONFIG.RATE_LIMIT_UPLOAD_MAX,
   message: "Terlalu banyak permintaan upload berkas. Silakan tunggu sebentar sebelum mencoba kembali.",
 });
+
+/**
+ * Public General API Rate Limiter:
+ * - Window: 15 minutes
+ * - Max: 300 requests per IP
+ */
+export const publicGeneralRateLimiter = createRateLimiter({
+  windowMs: 15 * 60 * 1000,
+  maxRequests: 300,
+  message: "Batas permintaan Public API tercapai. Silakan coba beberapa saat lagi.",
+  skipInTests: true,
+});
+
+/**
+ * Public Order Creation Rate Limiter (Anti-Spam / Anti-Abuse):
+ * - Window: 15 minutes
+ * - Max: 30 order creation requests per IP
+ */
+export const publicOrderRateLimiter = createRateLimiter({
+  windowMs: 15 * 60 * 1000,
+  maxRequests: 30,
+  message: "Terlalu banyak permintaan pembuatan order. Silakan tunggu beberapa saat.",
+  skipInTests: true,
+});
+
+/**
+ * Public Order Tracking Rate Limiter (Anti-Enumeration / Anti-Scraping):
+ * - Window: 1 minute
+ * - Max: 60 queries per IP
+ */
+export const publicTrackingRateLimiter = createRateLimiter({
+  windowMs: 60 * 1000,
+  maxRequests: 60,
+  message: "Terlalu banyak permintaan tracking order. Silakan tunggu sebentar sebelum mencoba kembali.",
+  skipInTests: true,
+});
+
 

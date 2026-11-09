@@ -9,13 +9,26 @@
 
 import { OperationalOrder, StageName, STAGES } from "../../domain/order/types";
 import { IOrderDataProvider } from "../mock/mockOrderProvider";
-import { createInitialOrders } from "../mock/orderMockData";
+// createInitialOrders removed from api provider to prevent mock data leakage in production/API mode
 import { APP_CONFIG } from "../../app/config/appConfig";
 import { toast } from "sonner";
+import {
+  ActionApiError,
+  fetchWithTimeout,
+  parseApiErrorResponse,
+} from "../../app/utils/actionErrorClassifier";
+
+function createEmptyActiveOrders(): Record<StageName, OperationalOrder[]> {
+  const result = {} as Record<StageName, OperationalOrder[]>;
+  for (const stage of STAGES) {
+    result[stage] = [];
+  }
+  return result;
+}
 
 export class ApiOrderProvider implements IOrderDataProvider {
   private baseUrl: string;
-  private activeOrders: Record<StageName, OperationalOrder[]> = createInitialOrders();
+  private activeOrders: Record<StageName, OperationalOrder[]> = createEmptyActiveOrders();
   private archivedOrders: OperationalOrder[] = [];
   private listeners: Set<() => void> = new Set();
   private isInitialized = false;
@@ -146,6 +159,7 @@ export class ApiOrderProvider implements IOrderDataProvider {
     const authHeaders = this.getAuthHeader();
     if (!authHeaders.Authorization) {
       this.isInitialized = true;
+      this.activeOrders = createEmptyActiveOrders();
       this.notify();
       return;
     }
@@ -273,36 +287,37 @@ export class ApiOrderProvider implements IOrderDataProvider {
     const tempOrderNo = tempOrder.orderNo;
     const idempotencyKey = (tempOrder as any).clientRequestId || tempOrderNo;
     try {
-      const res = await fetch(`${this.baseUrl}/orders`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "X-Idempotency-Key": idempotencyKey,
-          ...this.getAuthHeader(),
+      const res = await fetchWithTimeout(
+        `${this.baseUrl}/orders`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "X-Idempotency-Key": idempotencyKey,
+            ...this.getAuthHeader(),
+          },
+          body: JSON.stringify({
+            ...tempOrder,
+            clientRequestId: idempotencyKey,
+          }),
         },
-        body: JSON.stringify({
-          ...tempOrder,
-          clientRequestId: idempotencyKey,
-        }),
-      });
+        15000
+      );
 
       if (!res.ok) {
-        if (res.status === 401 && typeof window !== "undefined") {
-          window.dispatchEvent(new CustomEvent("sun89_auth_unauthorized"));
-        }
-        let errMessage = `HTTP ${res.status}`;
-        try {
-          const errPayload = await res.json();
-          if (errPayload.message) errMessage = errPayload.message;
-        } catch {
-          // ignore json parse error
-        }
-        throw new Error(`Order creation failed on backend: ${errMessage}`);
+        throw await parseApiErrorResponse(
+          res,
+          `Gagal membuat order pada server (HTTP ${res.status}).`
+        );
       }
 
       const payload = await res.json();
       if (!payload.success || !payload.data) {
-        throw new Error(payload.message || "Failed to create order on backend.");
+        throw new ActionApiError(
+          res.status || 500,
+          payload?.error?.code || "INTERNAL_SERVER_ERROR",
+          payload?.error?.message || payload?.message || "Gagal membuat order di server."
+        );
       }
 
       const canonicalOrder: OperationalOrder = payload.data;
@@ -355,6 +370,12 @@ export class ApiOrderProvider implements IOrderDataProvider {
       }
       this.bumpDataVersion();
       this.notify();
+      if (err && typeof err === "object" && !(err as any).statusCode && !(err as any).code) {
+        const netErr: any = new Error("Tidak dapat terhubung ke server. Periksa koneksi Anda dan coba kembali.");
+        netErr.statusCode = 0;
+        netErr.code = "NETWORK_ERROR";
+        throw netErr;
+      }
       throw err;
     }
   }
@@ -392,6 +413,56 @@ export class ApiOrderProvider implements IOrderDataProvider {
     return await this.syncOrderToBackend(order, targetStage);
   }
 
+  private sanitizeUpdatesForPut(updates: Partial<OperationalOrder>): Record<string, unknown> {
+    const protectedFields = new Set([
+      "orderNo", "id", "createdAt", "updatedAt", "currentStep", "currentStageName",
+      "stageBeforeCancel", "isArchived", "isCancelled", "cancelledAt", "cancelledBy",
+      "cancellationReason", "approvedBySpv", "spvApprovedAt", "spvName", "spvNotes",
+      "stage6Approved", "stage6ApprovedBy", "stage6ApprovedAt", "stage5Verified",
+      "stage5VerifiedBy", "stage5VerifiedAt", "approvedDocsSnapshot", "documentApproval",
+      "documentsVerified", "isVerified", "finalCost", "finalCostBreakdown", "finalBiayaJasa",
+      "finalPkb", "finalSwdkllj", "finalDendaSwdkllj", "finalMutasiKeluar", "finalMutasiMasuk",
+      "finalBiayaLainnya", "settlementCondition", "refundStatus", "refundAmount",
+      "refundProcessedAt", "refundProcessedBy", "totalBiaya", "paymentStatus",
+      // Cost verification protection
+      "isCostVerified", "is_cost_verified", "costCompletenessStatus", "cost_completeness_status",
+      "costVerifiedAt", "cost_verified_at", "costVerifiedBy", "cost_verified_by",
+      "costSnapshot", "cost_snapshot", "costBreakdown", "cost_breakdown",
+    ]);
+    const sanitizedUpdates: Record<string, unknown> = {};
+    for (const [key, val] of Object.entries(updates)) {
+      if (!protectedFields.has(key)) {
+        sanitizedUpdates[key] = val;
+      }
+    }
+    if (sanitizedUpdates.payment && typeof sanitizedUpdates.payment === "object" && !Array.isArray(sanitizedUpdates.payment)) {
+      const protectedPaymentFields = new Set([
+        "isPaymentVerified", "is_payment_verified", "isVerified", "is_verified",
+        "paymentVerifiedAt", "payment_verified_at", "paymentVerifiedBy", "payment_verified_by",
+        "isCostVerified", "is_cost_verified", "costCompletenessStatus", "cost_completeness_status",
+        "costVerifiedAt", "cost_verified_at", "costVerifiedBy", "cost_verified_by",
+        "nominalDibayarAwal", "nominal_dibayar_awal",
+        "nominalPembayaranAwalTerkonfirmasi", "nominal_pembayaran_awal_terkonfirmasi",
+        "paymentRecords", "payment_records", "riwayatKoreksiPembayaran", "riwayat_koreksi_pembayaran",
+        "settlementCondition", "settlement_condition", "refundStatus", "refund_status",
+        "refundAmount", "refund_amount", "refundProcessedAt", "refund_processed_at",
+        "refundProcessedBy", "refund_processed_by",
+      ]);
+      const cleanPayment: Record<string, unknown> = {};
+      for (const [pk, pv] of Object.entries(sanitizedUpdates.payment)) {
+        if (!protectedPaymentFields.has(pk) && pv !== undefined) {
+          cleanPayment[pk] = pv;
+        }
+      }
+      if (Object.keys(cleanPayment).length > 0) {
+        sanitizedUpdates.payment = cleanPayment;
+      } else {
+        delete sanitizedUpdates.payment;
+      }
+    }
+    return sanitizedUpdates;
+  }
+
   public updateOrder(orderNo: string, updates: Partial<OperationalOrder>): boolean {
     let updated = false;
 
@@ -422,27 +493,10 @@ export class ApiOrderProvider implements IOrderDataProvider {
       this.bumpDataVersion();
       this.notify();
 
-      // Sanitize protected fields before sending PUT to backend (enforces P1-B protection compatibility)
-      const protectedFields = new Set([
-        "orderNo", "id", "createdAt", "updatedAt", "currentStep", "currentStageName",
-        "stageBeforeCancel", "isArchived", "isCancelled", "cancelledAt", "cancelledBy",
-        "cancellationReason", "approvedBySpv", "spvApprovedAt", "spvName", "spvNotes",
-        "stage6Approved", "stage6ApprovedBy", "stage6ApprovedAt", "stage5Verified",
-        "stage5VerifiedBy", "stage5VerifiedAt", "approvedDocsSnapshot", "documentApproval",
-        "documentsVerified", "isVerified", "finalCost", "finalCostBreakdown", "finalBiayaJasa",
-        "finalPkb", "finalSwdkllj", "finalDendaSwdkllj", "finalMutasiKeluar", "finalMutasiMasuk",
-        "finalBiayaLainnya", "settlementCondition", "refundStatus", "refundAmount",
-        "refundProcessedAt", "refundProcessedBy", "totalBiaya", "paymentStatus",
-        // Cost verification protection
-        "isCostVerified", "is_cost_verified", "costCompletenessStatus", "cost_completeness_status",
-        "costVerifiedAt", "cost_verified_at", "costVerifiedBy", "cost_verified_by",
-        "costSnapshot", "cost_snapshot", "costBreakdown", "cost_breakdown"
-      ]);
-      const sanitizedUpdates: Record<string, any> = {};
-      for (const [key, val] of Object.entries(updates)) {
-        if (!protectedFields.has(key)) {
-          sanitizedUpdates[key] = val;
-        }
+      // Sanitize protected root and payment fields before sending PUT to backend
+      const sanitizedUpdates = this.sanitizeUpdatesForPut(updates);
+      if (Object.keys(sanitizedUpdates).length === 0) {
+        return updated;
       }
 
       fetch(`${this.baseUrl}/orders/${encodeURIComponent(orderNo)}`, {
@@ -475,40 +529,71 @@ export class ApiOrderProvider implements IOrderDataProvider {
   }
 
   public async updateOrderAsync(orderNo: string, updates: Partial<OperationalOrder>): Promise<boolean> {
-    const updated = this.updateOrder(orderNo, updates);
-    const protectedFields = new Set([
-      "orderNo", "id", "createdAt", "updatedAt", "currentStep", "currentStageName",
-      "stageBeforeCancel", "isArchived", "isCancelled", "cancelledAt", "cancelledBy",
-      "cancellationReason", "approvedBySpv", "spvApprovedAt", "spvName", "spvNotes",
-      "stage6Approved", "stage6ApprovedBy", "stage6ApprovedAt", "stage5Verified",
-      "stage5VerifiedBy", "stage5VerifiedAt", "approvedDocsSnapshot", "documentApproval",
-      "documentsVerified", "isVerified", "finalCost", "finalCostBreakdown", "finalBiayaJasa",
-      "finalPkb", "finalSwdkllj", "finalDendaSwdkllj", "finalMutasiKeluar", "finalMutasiMasuk",
-      "finalBiayaLainnya", "settlementCondition", "refundStatus", "refundAmount",
-      "refundProcessedAt", "refundProcessedBy", "totalBiaya", "paymentStatus"
-    ]);
-    const sanitizedUpdates: Record<string, any> = {};
-    for (const [key, val] of Object.entries(updates)) {
-      if (!protectedFields.has(key)) {
-        sanitizedUpdates[key] = val;
+    const sanitizedUpdates = this.sanitizeUpdatesForPut(updates);
+    try {
+      const res = await fetchWithTimeout(
+        `${this.baseUrl}/orders/${encodeURIComponent(orderNo)}`,
+        {
+          method: "PUT",
+          headers: { "Content-Type": "application/json", ...this.getAuthHeader() },
+          body: JSON.stringify(sanitizedUpdates),
+        },
+        15000
+      );
+      if (!res.ok) {
+        throw await parseApiErrorResponse(
+          res,
+          `Gagal memperbarui data order ${orderNo} di server.`
+        );
       }
-    }
-    const res = await fetch(`${this.baseUrl}/orders/${encodeURIComponent(orderNo)}`, {
-      method: "PUT",
-      headers: { "Content-Type": "application/json", ...this.getAuthHeader() },
-      body: JSON.stringify(sanitizedUpdates),
-    });
-    if (!res.ok) {
-      let errMsg = `HTTP ${res.status}`;
+
+      let serverOrder: Partial<OperationalOrder> | null = null;
       try {
-        const errPayload = await res.json();
-        if (errPayload.message || errPayload.error?.message) {
-          errMsg = errPayload.message || errPayload.error?.message;
+        const resPayload = await res.json();
+        if (resPayload?.data && typeof resPayload.data === "object") {
+          serverOrder = resPayload.data;
         }
       } catch {}
-      throw new Error(errMsg);
+
+      // Backend confirmed success: apply updates to in-memory cache
+      let updated = false;
+      for (const stage of STAGES) {
+        const idx = this.activeOrders[stage]?.findIndex((o) => o.orderNo === orderNo) ?? -1;
+        if (idx !== -1) {
+          this.activeOrders[stage][idx] = {
+            ...this.activeOrders[stage][idx],
+            ...updates,
+            ...(serverOrder || {}),
+          };
+          updated = true;
+          break;
+        }
+      }
+
+      if (!updated) {
+        const archIdx = this.archivedOrders.findIndex((o) => o.orderNo === orderNo);
+        if (archIdx !== -1) {
+          this.archivedOrders[archIdx] = {
+            ...this.archivedOrders[archIdx],
+            ...updates,
+            ...(serverOrder || {}),
+          };
+          updated = true;
+        }
+      }
+
+      this.bumpDataVersion();
+      this.notify();
+      return true;
+    } catch (err: any) {
+      if (err && typeof err === "object" && !(err as any).statusCode && !(err as any).code) {
+        const netErr: any = new Error("Tidak dapat terhubung ke server. Periksa koneksi Anda dan coba kembali.");
+        netErr.statusCode = 0;
+        netErr.code = "NETWORK_ERROR";
+        throw netErr;
+      }
+      throw err;
     }
-    return updated;
   }
 
   public async advanceOrderAsync(
@@ -518,26 +603,30 @@ export class ApiOrderProvider implements IOrderDataProvider {
   ): Promise<OperationalOrder> {
     this.inFlightMutationCount++;
     try {
-      const res = await fetch(`${this.baseUrl}/orders/${encodeURIComponent(orderNo)}/advance`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", ...this.getAuthHeader() },
-        body: JSON.stringify({ targetStage, updates }),
-      });
+      const res = await fetchWithTimeout(
+        `${this.baseUrl}/orders/${encodeURIComponent(orderNo)}/advance`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json", ...this.getAuthHeader() },
+          body: JSON.stringify({ targetStage, updates }),
+        },
+        15000
+      );
 
       if (!res.ok) {
-        let errMsg = `HTTP ${res.status}`;
-        try {
-          const errPayload = await res.json();
-          if (errPayload.error?.message || errPayload.message) {
-            errMsg = errPayload.error?.message || errPayload.message;
-          }
-        } catch {}
-        throw new Error(errMsg);
+        throw await parseApiErrorResponse(
+          res,
+          `Gagal memajukan order ${orderNo} ke tahap ${targetStage}.`
+        );
       }
 
       const payload = await res.json();
       if (!payload.success || !payload.data) {
-        throw new Error(payload.message || `Gagal memajukan order ${orderNo} ke ${targetStage}`);
+        throw new ActionApiError(
+          res.status || 500,
+          payload?.error?.code || "INTERNAL_SERVER_ERROR",
+          payload?.error?.message || payload?.message || `Gagal memajukan order ${orderNo} ke ${targetStage}`
+        );
       }
 
       const serverOrder: OperationalOrder = payload.data;
@@ -582,26 +671,30 @@ export class ApiOrderProvider implements IOrderDataProvider {
   ): Promise<OperationalOrder> {
     this.inFlightMutationCount++;
     try {
-      const res = await fetch(`${this.baseUrl}/orders/${encodeURIComponent(orderNo)}/rollback`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", ...this.getAuthHeader() },
-        body: JSON.stringify({ targetStage, updates }),
-      });
+      const res = await fetchWithTimeout(
+        `${this.baseUrl}/orders/${encodeURIComponent(orderNo)}/rollback`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json", ...this.getAuthHeader() },
+          body: JSON.stringify({ targetStage, updates }),
+        },
+        15000
+      );
 
       if (!res.ok) {
-        let errMsg = `HTTP ${res.status}`;
-        try {
-          const errPayload = await res.json();
-          if (errPayload.error?.message || errPayload.message) {
-            errMsg = errPayload.error?.message || errPayload.message;
-          }
-        } catch {}
-        throw new Error(errMsg);
+        throw await parseApiErrorResponse(
+          res,
+          `Gagal mengembalikan order ${orderNo} ke tahap ${targetStage}.`
+        );
       }
 
       const payload = await res.json();
       if (!payload.success || !payload.data) {
-        throw new Error(payload.message || `Gagal me-rollback order ${orderNo} ke ${targetStage}`);
+        throw new ActionApiError(
+          res.status || 500,
+          payload?.error?.code || "INTERNAL_SERVER_ERROR",
+          payload?.error?.message || payload?.message || `Gagal me-rollback order ${orderNo} ke ${targetStage}`
+        );
       }
 
       const serverOrder: OperationalOrder = payload.data;
@@ -641,20 +734,17 @@ export class ApiOrderProvider implements IOrderDataProvider {
   public async archiveOrderAsync(orderNo: string): Promise<boolean> {
     this.inFlightMutationCount++;
     try {
-      const res = await fetch(`${this.baseUrl}/orders/${encodeURIComponent(orderNo)}/archive`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", ...this.getAuthHeader() },
-      });
+      const res = await fetchWithTimeout(
+        `${this.baseUrl}/orders/${encodeURIComponent(orderNo)}/archive`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json", ...this.getAuthHeader() },
+        },
+        15000
+      );
 
       if (!res.ok) {
-        let errMsg = `HTTP ${res.status}`;
-        try {
-          const errPayload = await res.json();
-          if (errPayload.error?.message || errPayload.message) {
-            errMsg = errPayload.error?.message || errPayload.message;
-          }
-        } catch {}
-        throw new Error(errMsg);
+        throw await parseApiErrorResponse(res, `Gagal mengarsipkan order ${orderNo}.`);
       }
 
       let archivedOrder: OperationalOrder | undefined;
@@ -715,41 +805,37 @@ export class ApiOrderProvider implements IOrderDataProvider {
     const cleanNo = (orderNo || "").trim().toUpperCase();
     if (!cleanNo) return false;
 
-    // Remove from in-memory active orders
-    let found = false;
+    const res = await fetchWithTimeout(
+      `${this.baseUrl}/orders/${encodeURIComponent(cleanNo)}`,
+      {
+        method: "DELETE",
+        headers: { ...this.getAuthHeader() },
+      },
+      15000
+    );
+
+    if (!res.ok) {
+      throw await parseApiErrorResponse(
+        res,
+        `Gagal menghapus data order ${cleanNo} di server.`
+      );
+    }
+
+    // Remove from in-memory caches strictly after backend confirms deletion
     for (const stage of Object.keys(this.activeOrders) as StageName[]) {
-      const initialLen = this.activeOrders[stage]?.length ?? 0;
       this.activeOrders[stage] = (this.activeOrders[stage] || []).filter(
         (o) => (o.orderNo || "").toUpperCase() !== cleanNo
       );
-      if (this.activeOrders[stage].length < initialLen) {
-        found = true;
-      }
     }
 
-    // Remove from in-memory archived orders
     const archIdx = this.archivedOrders.findIndex((o) => (o.orderNo || "").toUpperCase() === cleanNo);
     if (archIdx !== -1) {
       this.archivedOrders.splice(archIdx, 1);
-      found = true;
     }
 
-    if (found) {
-      this.bumpDataVersion();
-      this.notify();
-    }
-
-    // Call backend DELETE /orders/:orderNo
-    try {
-      const res = await fetch(`${this.baseUrl}/orders/${encodeURIComponent(cleanNo)}`, {
-        method: "DELETE",
-        headers: { ...this.getAuthHeader() },
-      });
-      return res.ok;
-    } catch (err) {
-      console.warn("[ApiOrderProvider] Error during hard delete order request:", err);
-      return false;
-    }
+    this.bumpDataVersion();
+    this.notify();
+    return true;
   }
 
   public clearArchivedOrders(): boolean {
@@ -771,136 +857,171 @@ export class ApiOrderProvider implements IOrderDataProvider {
     const cleanNo = (orderNo || "").trim().toUpperCase();
     const reasonText = (reason || "").trim() || "Pembatalan melalui Admin";
 
-    // Optimistic update
+    const res = await fetchWithTimeout(
+      `${this.baseUrl}/orders/${encodeURIComponent(cleanNo)}/cancel`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...this.getAuthHeader() },
+        body: JSON.stringify({ reason: reasonText }),
+      },
+      15000
+    );
+
+    if (!res.ok) {
+      throw await parseApiErrorResponse(
+        res,
+        `Gagal membatalkan order ${cleanNo}.`
+      );
+    }
+
+    const resJson = await res.json().catch(() => ({}));
+    const updatedOrder: OperationalOrder | undefined = resJson.data;
+
+    let placed = false;
     for (const stage of STAGES) {
       const idx = this.activeOrders[stage]?.findIndex((o) => o.orderNo.toUpperCase() === cleanNo) ?? -1;
       if (idx !== -1) {
         const ord = this.activeOrders[stage][idx];
         this.activeOrders[stage][idx] = {
           ...ord,
+          ...(updatedOrder || {}),
           currentStageName: "Dibatalkan" as any,
           stageBeforeCancel: (ord as any).stageBeforeCancel || stage,
-          catatanOrder: `${ord.catatanOrder ? ord.catatanOrder + " | " : ""}Dibatalkan: ${reasonText}`,
+          catatanOrder:
+            (updatedOrder as any)?.catatanOrder ||
+            `${ord.catatanOrder ? ord.catatanOrder + " | " : ""}Dibatalkan: ${reasonText}`,
         };
         (this.activeOrders[stage][idx] as any).isCancelled = true;
         (this.activeOrders[stage][idx] as any).status = "Dibatalkan";
         (this.activeOrders[stage][idx] as any).cancellationReason = reasonText;
+        placed = true;
         break;
       }
     }
 
-    const archIdx = this.archivedOrders.findIndex((o) => o.orderNo.toUpperCase() === cleanNo);
-    if (archIdx !== -1) {
-      const ord = this.archivedOrders[archIdx];
-      this.archivedOrders[archIdx] = {
-        ...ord,
+    if (!placed) {
+      const archIdx = this.archivedOrders.findIndex((o) => o.orderNo.toUpperCase() === cleanNo);
+      if (archIdx !== -1) {
+        const ord = this.archivedOrders[archIdx];
+        this.archivedOrders[archIdx] = {
+          ...ord,
+          ...(updatedOrder || {}),
+          currentStageName: "Dibatalkan" as any,
+          catatanOrder:
+            (updatedOrder as any)?.catatanOrder ||
+            `${ord.catatanOrder ? ord.catatanOrder + " | " : ""}Dibatalkan: ${reasonText}`,
+        };
+        (this.archivedOrders[archIdx] as any).isCancelled = true;
+        (this.archivedOrders[archIdx] as any).status = "Dibatalkan";
+        (this.archivedOrders[archIdx] as any).cancellationReason = reasonText;
+        placed = true;
+      }
+    }
+
+    if (!placed && updatedOrder) {
+      this.archivedOrders.unshift({
+        ...updatedOrder,
         currentStageName: "Dibatalkan" as any,
-        catatanOrder: `${ord.catatanOrder ? ord.catatanOrder + " | " : ""}Dibatalkan: ${reasonText}`,
-      };
-      (this.archivedOrders[archIdx] as any).isCancelled = true;
-      (this.archivedOrders[archIdx] as any).status = "Dibatalkan";
-      (this.archivedOrders[archIdx] as any).cancellationReason = reasonText;
+        isCancelled: true,
+        status: "Dibatalkan",
+        cancellationReason: reasonText,
+      });
     }
 
     this.bumpDataVersion();
     this.notify();
-
-    try {
-      const res = await fetch(`${this.baseUrl}/orders/${encodeURIComponent(cleanNo)}/cancel`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", ...this.getAuthHeader() },
-        body: JSON.stringify({ reason: reasonText }),
-      });
-      if (!res.ok) {
-        const errData = await res.json().catch(() => ({}));
-        const errorMsg = errData.error?.message || errData.message || `Gagal membatalkan order (HTTP ${res.status})`;
-        throw new Error(errorMsg);
-      }
-
-      const resJson = await res.json().catch(() => ({}));
-      const updatedOrder: OperationalOrder | undefined = resJson.data;
-
-      if (updatedOrder) {
-        let placed = false;
-        for (const stage of STAGES) {
-          const idx = this.activeOrders[stage]?.findIndex((o) => o.orderNo.toUpperCase() === cleanNo) ?? -1;
-          if (idx !== -1) {
-            this.activeOrders[stage][idx] = {
-              ...this.activeOrders[stage][idx],
-              ...updatedOrder,
-              currentStageName: "Dibatalkan" as any,
-              stageBeforeCancel: (this.activeOrders[stage][idx] as any).stageBeforeCancel || stage,
-            };
-            (this.activeOrders[stage][idx] as any).isCancelled = true;
-            (this.activeOrders[stage][idx] as any).status = "Dibatalkan";
-            (this.activeOrders[stage][idx] as any).cancellationReason = reasonText;
-            placed = true;
-            break;
-          }
-        }
-        if (!placed) {
-          const aIdx = this.archivedOrders.findIndex((o) => o.orderNo.toUpperCase() === cleanNo);
-          if (aIdx !== -1) {
-            this.archivedOrders[aIdx] = {
-              ...this.archivedOrders[aIdx],
-              ...updatedOrder,
-              currentStageName: "Dibatalkan" as any,
-            };
-            (this.archivedOrders[aIdx] as any).isCancelled = true;
-            (this.archivedOrders[aIdx] as any).status = "Dibatalkan";
-            (this.archivedOrders[aIdx] as any).cancellationReason = reasonText;
-            placed = true;
-          }
-        }
-        if (!placed) {
-          this.archivedOrders.unshift({
-            ...updatedOrder,
-            currentStageName: "Dibatalkan" as any,
-            isCancelled: true,
-            status: "Dibatalkan",
-            cancellationReason: reasonText,
-          });
-        }
-      }
-
-      this.bumpDataVersion();
-      this.notify();
-      return true;
-    } catch (err) {
-      console.error("Failed to cancel order on backend:", err);
-      throw err;
-    }
+    return true;
   }
 
-  public verifyPayment(orderNo: string, verifierName: string = "Admin", confirmedAmount?: number, notes?: string, proofPayload?: any): boolean {
+  /**
+   * Updates local in-memory cache from an already-confirmed backend order response
+   * without triggering an extra PUT request.
+   */
+  public applyServerOrderSnapshot(orderNo: string, updates: Partial<OperationalOrder>): boolean {
+    let applied = false;
+    for (const stage of STAGES) {
+      const idx = this.activeOrders[stage]?.findIndex((o) => o.orderNo === orderNo) ?? -1;
+      if (idx !== -1) {
+        this.activeOrders[stage][idx] = {
+          ...this.activeOrders[stage][idx],
+          ...updates,
+        };
+        applied = true;
+        break;
+      }
+    }
+    if (!applied) {
+      const archIdx = this.archivedOrders.findIndex((o) => o.orderNo === orderNo);
+      if (archIdx !== -1) {
+        this.archivedOrders[archIdx] = {
+          ...this.archivedOrders[archIdx],
+          ...updates,
+        };
+        applied = true;
+      }
+    }
+    if (applied) {
+      this.bumpDataVersion();
+      this.notify();
+    }
+    return applied;
+  }
+
+  public async verifyPaymentAsync(
+    orderNo: string,
+    verifierName: string = "Admin",
+    confirmedAmount?: number,
+    notes?: string,
+    proofPayload?: any
+  ): Promise<OperationalOrder> {
     const targetOrder = this.getOrderByNo(orderNo);
-    if (!targetOrder) return false;
+    const totalBiaya = targetOrder?.payment?.totalBiaya || targetOrder?.totalEstimasi || 0;
+    const paid =
+      confirmedAmount !== undefined
+        ? Math.max(0, confirmedAmount)
+        : targetOrder?.payment?.nominalDibayarAwal !== undefined
+        ? targetOrder.payment.nominalDibayarAwal
+        : targetOrder?.payment?.dibayar && targetOrder.payment.dibayar > 0
+        ? targetOrder.payment.dibayar
+        : totalBiaya;
+    const effectiveProof = proofPayload || targetOrder?.payment?.buktiPembayaran;
+
+    const res = await fetchWithTimeout(
+      `${this.baseUrl}/orders/${encodeURIComponent(orderNo)}/verify-payment`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...this.getAuthHeader() },
+        body: JSON.stringify({
+          verifierName,
+          confirmedAmount: paid,
+          notes,
+          buktiPembayaran: effectiveProof,
+        }),
+      },
+      15000
+    );
+
+    if (!res.ok) {
+      throw await parseApiErrorResponse(
+        res,
+        `Gagal memverifikasi pembayaran untuk order ${orderNo}.`
+      );
+    }
+
+    const payload = await res.json().catch(() => ({}));
+    const serverOrder: OperationalOrder | undefined = payload?.data;
+
+    if (serverOrder && typeof serverOrder === "object") {
+      this.applyServerOrderSnapshot(orderNo, serverOrder);
+      return this.getOrderByNo(orderNo) || serverOrder;
+    }
 
     const nowStr = new Date().toISOString();
-    const totalBiaya = targetOrder.payment?.totalBiaya || targetOrder.totalEstimasi || 0;
-    const paid = confirmedAmount !== undefined
-      ? Math.max(0, confirmedAmount)
-      : (targetOrder.payment?.nominalDibayarAwal !== undefined
-          ? targetOrder.payment.nominalDibayarAwal
-          : (targetOrder.payment?.dibayar && targetOrder.payment.dibayar > 0 ? targetOrder.payment.dibayar : totalBiaya));
     const sisa = Math.max(0, totalBiaya - paid);
     const overpayment = Math.max(0, paid - totalBiaya);
     const statusPembayaran = paid >= totalBiaya ? "Lunas" : paid > 0 ? "Kurang Bayar" : "Belum Bayar";
-
-    const prev = targetOrder.payment?.nominalPembayaranAwalTerkonfirmasi ?? targetOrder.payment?.nominalDibayarAwal ?? targetOrder.payment?.dibayar ?? 0;
-    const riwayat = [...(targetOrder.payment?.riwayatKoreksiPembayaran || [])];
-    if (prev !== paid || notes) {
-      riwayat.push({
-        nominalLama: prev,
-        nominalBaru: paid,
-        tanggal: nowStr,
-        admin: verifierName,
-        catatan: notes,
-      });
-    }
-
-    const updatedPayment = {
-      ...targetOrder.payment,
+    const fallbackPayment = {
+      ...(targetOrder?.payment || {}),
       isPaymentVerified: true,
       paymentVerifiedAt: nowStr,
       paymentVerifiedBy: verifierName,
@@ -909,41 +1030,18 @@ export class ApiOrderProvider implements IOrderDataProvider {
       dibayar: paid,
       kurang: sisa,
       overpayment,
-      tanggalBayar: nowStr.split("T")[0],
-      riwayatKoreksiPembayaran: riwayat,
-    };
-
-    // Update in-memory state
-    this.updateOrder(orderNo, { payment: updatedPayment });
-
-    // Persist to dedicated Express endpoint /api/orders/:orderNo/verify-payment
-    const effectiveProof = proofPayload || targetOrder.payment?.buktiPembayaran;
-    const existingRecords = targetOrder.payment?.paymentRecords || [];
-    const newRecord: any = {
-      id: `pay-verif-${Date.now()}`,
-      nominal: paid,
-      tanggal: nowStr,
-      metodePembayaran: targetOrder.payment?.metodePembayaran || "Transfer Bank",
-      namaBank: targetOrder.payment?.namaBank,
-      namaRekening: targetOrder.payment?.namaRekening,
-      noRekening: targetOrder.payment?.noRekening,
       buktiPembayaran: effectiveProof,
-      statusVerifikasi: "TERVERIFIKASI",
-      verifiedAt: nowStr,
-      verifiedBy: verifierName,
-      catatan: notes,
+      tanggalBayar: nowStr.split("T")[0],
     };
-    updatedPayment.buktiPembayaran = effectiveProof;
-    updatedPayment.paymentRecords = [...existingRecords, newRecord];
+    this.applyServerOrderSnapshot(orderNo, { payment: fallbackPayment as any });
+    return this.getOrderByNo(orderNo) || ({ ...(targetOrder || { orderNo }), payment: fallbackPayment } as OperationalOrder);
+  }
 
-    fetch(`${this.baseUrl}/orders/${encodeURIComponent(orderNo)}/verify-payment`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", ...this.getAuthHeader() },
-      body: JSON.stringify({ verifierName, confirmedAmount: paid, notes, buktiPembayaran: effectiveProof }),
-    }).catch(() => {
-      // background sync fallback
+  public verifyPayment(orderNo: string, verifierName: string = "Admin", confirmedAmount?: number, notes?: string, proofPayload?: any): boolean {
+    this.verifyPaymentAsync(orderNo, verifierName, confirmedAmount, notes, proofPayload).catch((err) => {
+      console.error("[ApiOrderProvider] verifyPayment error:", err);
+      toast.error(err?.message || "Gagal memverifikasi pembayaran order.");
     });
-
     return true;
   }
 }

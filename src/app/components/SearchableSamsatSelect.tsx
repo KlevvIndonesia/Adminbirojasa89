@@ -3,11 +3,12 @@ import { Check, ChevronDown, Search, X } from "lucide-react";
 import { Popover, PopoverContent, PopoverTrigger } from "./ui/popover";
 import { Input } from "./ui/input";
 import { pricingStore } from "../data/pricingStore";
+import type { SamsatMasterItem } from "../../domain/pricing/types";
 import { cn } from "./ui/utils";
 
 export interface SearchableSamsatSelectProps {
   value: string;
-  onValueChange: (value: string) => void;
+  onValueChange: (value: string, item?: SamsatMasterItem) => void;
   placeholder?: string;
   disabled?: boolean;
   error?: boolean;
@@ -131,7 +132,7 @@ export function SearchableSamsatSelect({
                   key={samsat.id}
                   type="button"
                   onClick={() => {
-                    onValueChange(samsat.wilayah);
+                    onValueChange(samsat.wilayah, samsat);
                     setOpen(false);
                   }}
                   className={cn(

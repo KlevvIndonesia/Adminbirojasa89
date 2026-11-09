@@ -891,306 +891,310 @@ export function MessengerTask() {
   };
 
   return (
-    <div className="flex-1 flex flex-col min-h-full space-y-4 p-3 sm:p-4 md:p-6 w-full min-w-0 text-left">
-      {/* Top Header & Tab Navigation */}
-      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 border-b border-border/80 pb-3 shrink-0">
-        <div>
-          <h1 className="text-xl font-semibold text-foreground tracking-tight">Messenger Task</h1>
-          <p className="text-xs text-muted-foreground mt-0.5">Kelola tugas operasional messenger dan pantau riwayat penyelesaian tugas</p>
-        </div>
+    <div className="flex-1 flex flex-col min-h-full space-y-3 p-3 sm:p-4 md:p-4 w-full min-w-0 text-left">
+      {/* Active Tasks & History Link Toolbar */}
+      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-end gap-2 pb-0.5 shrink-0">
+        <Badge variant="outline" className="text-xs font-medium px-2.5 py-1 gap-1.5 border-primary/20 bg-primary/5 text-primary self-start sm:self-auto">
+          <Truck className="w-3.5 h-3.5" />
+          <span>Tugas Aktif Lapangan: {taskData.length}</span>
+        </Badge>
 
-        {/* Active Tasks & History Link Toolbar */}
-        <div className="flex items-center gap-2">
-          <Badge variant="outline" className="text-xs font-semibold px-2.5 py-1 gap-1.5 border-primary/20 bg-primary/5 text-primary">
-            <Truck className="w-3.5 h-3.5" />
-            <span>Tugas Aktif Lapangan: {taskData.length}</span>
-          </Badge>
-
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => navigate("/messenger/history")}
-            className="h-9 px-3 text-xs font-semibold gap-1.5 rounded-lg border-primary/40 text-primary hover:bg-primary/10"
-            title="Buka Halaman Lengkap Messenger History (Arsip Detail & Pengajuan Biaya)"
-          >
-            <Receipt className="w-4 h-4" />
-            <span>Portal Messenger History & Biaya</span>
-            <ExternalLink className="w-3.5 h-3.5" />
-          </Button>
-        </div>
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={() => navigate("/messenger/history")}
+          className="h-8 px-2.5 text-xs font-medium gap-1.5 rounded-lg border-primary/40 text-primary hover:bg-primary/10 self-start sm:self-auto"
+          title="Buka Halaman Lengkap Messenger History (Arsip Detail & Pengajuan Biaya)"
+        >
+          <Receipt className="w-3.5 h-3.5" />
+          <span>Portal Messenger History & Biaya</span>
+          <ExternalLink className="w-3 h-3" />
+        </Button>
       </div>
 
       <>
         {/* Quick Stats for Active Tasks */}
-          <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 shrink-0">
-            <motion.div
-              initial={{ opacity: 0, y: 20 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={{ delay: 0.1 }}
-            >
-              <Card className="p-3.5 border border-border/80 bg-card shadow-2xs">
-                <div className="flex items-center gap-3">
-                  <div className="p-2.5 rounded-xl bg-amber-500/10 text-amber-600 dark:text-amber-400 shrink-0">
-                    <AlertCircle className="w-5 h-5" />
-                  </div>
-                  <div>
-                    <p className="text-xs font-medium text-muted-foreground">Belum Diambil</p>
-                    <h3 className="text-2xl font-bold font-mono tabular-nums text-foreground mt-0.5">{statusCounts.belumDiambil}</h3>
-                  </div>
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-2.5 shrink-0">
+          <motion.div
+            initial={{ opacity: 0, y: 15 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ delay: 0.05 }}
+          >
+            <Card className="p-3 border border-border/80 bg-card shadow-2xs">
+              <div className="flex items-center gap-2.5">
+                <div className="p-2 rounded-lg bg-amber-500/10 text-amber-600 dark:text-amber-400 shrink-0">
+                  <AlertCircle className="w-4 h-4" />
                 </div>
-              </Card>
-            </motion.div>
-
-            <motion.div
-              initial={{ opacity: 0, y: 20 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={{ delay: 0.15 }}
-            >
-              <Card className="p-3.5 border border-border/80 bg-card shadow-2xs">
-                <div className="flex items-center gap-3">
-                  <div className="p-2.5 rounded-xl bg-blue-500/10 text-blue-600 dark:text-blue-400 shrink-0">
-                    <Clock className="w-5 h-5" />
-                  </div>
-                  <div>
-                    <p className="text-xs font-medium text-muted-foreground">Dalam Proses</p>
-                    <h3 className="text-2xl font-bold font-mono tabular-nums text-foreground mt-0.5">{statusCounts.dalamProses}</h3>
-                  </div>
+                <div>
+                  <p className="text-xs font-medium text-muted-foreground">Belum Diambil</p>
+                  <h3 className="text-xl font-semibold font-mono tabular-nums text-foreground mt-0.5">{statusCounts.belumDiambil}</h3>
                 </div>
-              </Card>
-            </motion.div>
-
-            <motion.div
-              initial={{ opacity: 0, y: 20 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={{ delay: 0.2 }}
-            >
-              <Card className="p-3.5 border border-border/80 bg-card shadow-2xs">
-                <div className="flex items-center gap-3">
-                  <div className="p-2.5 rounded-xl bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 shrink-0">
-                    <CheckCircle className="w-5 h-5" />
-                  </div>
-                  <div>
-                    <p className="text-xs font-medium text-muted-foreground">Selesai Lapangan</p>
-                    <h3 className="text-2xl font-bold font-mono tabular-nums text-foreground mt-0.5">{statusCounts.selesai}</h3>
-                  </div>
-                </div>
-              </Card>
-            </motion.div>
-
-            <motion.div
-              initial={{ opacity: 0, y: 20 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={{ delay: 0.25 }}
-            >
-              <Card className="p-3.5 border border-border/80 bg-card shadow-2xs">
-                <div className="flex items-center gap-3">
-                  <div className="p-2.5 rounded-xl bg-rose-500/10 text-rose-600 dark:text-rose-400 shrink-0">
-                    <AlertCircle className="w-5 h-5" />
-                  </div>
-                  <div>
-                    <p className="text-xs font-medium text-muted-foreground">Pending / Menunggu</p>
-                    <h3 className="text-2xl font-bold font-mono tabular-nums text-foreground mt-0.5">{statusCounts.pending}</h3>
-                  </div>
-                </div>
-              </Card>
-            </motion.div>
-          </div>
+              </div>
+            </Card>
+          </motion.div>
 
           <motion.div
-            initial={{ opacity: 0, y: 20 }}
+            initial={{ opacity: 0, y: 15 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ delay: 0.1 }}
+          >
+            <Card className="p-3 border border-border/80 bg-card shadow-2xs">
+              <div className="flex items-center gap-2.5">
+                <div className="p-2 rounded-lg bg-blue-500/10 text-blue-600 dark:text-blue-400 shrink-0">
+                  <Clock className="w-4 h-4" />
+                </div>
+                <div>
+                  <p className="text-xs font-medium text-muted-foreground">Dalam Proses</p>
+                  <h3 className="text-xl font-semibold font-mono tabular-nums text-foreground mt-0.5">{statusCounts.dalamProses}</h3>
+                </div>
+              </div>
+            </Card>
+          </motion.div>
+
+          <motion.div
+            initial={{ opacity: 0, y: 15 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ delay: 0.15 }}
+          >
+            <Card className="p-3 border border-border/80 bg-card shadow-2xs">
+              <div className="flex items-center gap-2.5">
+                <div className="p-2 rounded-lg bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 shrink-0">
+                  <CheckCircle className="w-4 h-4" />
+                </div>
+                <div>
+                  <p className="text-xs font-medium text-muted-foreground">Selesai Lapangan</p>
+                  <h3 className="text-xl font-semibold font-mono tabular-nums text-foreground mt-0.5">{statusCounts.selesai}</h3>
+                </div>
+              </div>
+            </Card>
+          </motion.div>
+
+          <motion.div
+            initial={{ opacity: 0, y: 15 }}
             animate={{ opacity: 1, y: 0 }}
             transition={{ delay: 0.2 }}
-            className="flex-1 flex flex-col min-h-0"
           >
-            <Card className="p-4 sm:p-5 border border-border/80 bg-card shadow-xs flex-1 flex flex-col min-h-0">
-              {/* Active Tasks Filters */}
-              <div className="flex flex-col sm:flex-row gap-2 mb-4 shrink-0 items-stretch sm:items-center">
-                <div className="relative flex-1">
-                  <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 w-4 h-4 text-muted-foreground" />
-                  <Input 
-                    placeholder="Cari nomor order, nama customer, messenger, atau nomor polisi..." 
-                    className="pl-10 bg-input-background border-border h-9 text-xs"
-                    value={searchTerm}
-                    onChange={(e) => {
-                      setSearchTerm(e.target.value);
-                      handleFilterChange();
-                    }}
-                  />
+            <Card className="p-3 border border-border/80 bg-card shadow-2xs">
+              <div className="flex items-center gap-2.5">
+                <div className="p-2 rounded-lg bg-rose-500/10 text-rose-600 dark:text-rose-400 shrink-0">
+                  <AlertCircle className="w-4 h-4" />
                 </div>
-                <Select 
-                  value={filterAssignment} 
-                  onValueChange={(value) => {
-                    setFilterAssignment(value as any);
-                    handleFilterChange();
-                  }}
-                >
-                  <SelectTrigger className="w-full sm:w-[155px] bg-input-background border-border h-9 text-xs">
-                    <SelectValue placeholder="Semua Penugasan" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="all" className="text-xs">Semua Penugasan</SelectItem>
-                    <SelectItem value="unassigned" className="text-xs font-semibold text-amber-600 dark:text-amber-400">Belum Ditugaskan</SelectItem>
-                    <SelectItem value="assigned" className="text-xs text-emerald-600 dark:text-emerald-400 font-medium">Sudah Ditugaskan</SelectItem>
-                  </SelectContent>
-                </Select>
-                <Select 
-                  value={filterMessenger} 
-                  onValueChange={(value) => {
-                    setFilterMessenger(value);
-                    handleFilterChange();
-                  }}
-                >
-                  <SelectTrigger className="w-full sm:w-[160px] bg-input-background border-border h-9 text-xs">
-                    <SelectValue placeholder="Semua Messenger" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="all" className="text-xs">Semua Messenger</SelectItem>
-                    {filterMessengers.map((messenger) => (
-                      <SelectItem key={messenger} value={messenger} className="text-xs">
-                        {messenger}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-                <Select 
-                  value={filterTaskType} 
-                  onValueChange={(value) => {
-                    setFilterTaskType(value);
-                    handleFilterChange();
-                  }}
-                >
-                  <SelectTrigger className="w-full sm:w-[160px] bg-input-background border-border h-9 text-xs">
-                    <SelectValue placeholder="Semua Jenis Tugas" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="all" className="text-xs">Semua Jenis Tugas</SelectItem>
-                    <SelectItem value="Jemput Dokumen" className="text-xs">Jemput Dokumen</SelectItem>
-                    <SelectItem value="Proses Samsat" className="text-xs">Proses Samsat</SelectItem>
-                    <SelectItem value="Pengantaran Dokumen" className="text-xs">Pengantaran Dokumen</SelectItem>
-                  </SelectContent>
-                </Select>
-                <Select 
-                  value={filterStatus} 
-                  onValueChange={(value) => {
-                    setFilterStatus(value);
-                    handleFilterChange();
-                  }}
-                >
-                  <SelectTrigger className="w-full sm:w-[150px] bg-input-background border-border h-9 text-xs">
-                    <SelectValue placeholder="Semua Status" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="all" className="text-xs">Semua Status</SelectItem>
-                    <SelectItem value="Belum Diambil" className="text-xs">Belum Diambil</SelectItem>
-                    <SelectItem value="Dalam Proses" className="text-xs">Dalam Proses</SelectItem>
-                    <SelectItem value="Selesai" className="text-xs">Selesai</SelectItem>
-                    <SelectItem value="Pending" className="text-xs">Pending</SelectItem>
-                    <SelectItem value="Dibatalkan" className="text-xs">Dibatalkan</SelectItem>
-                  </SelectContent>
-                </Select>
-                {hasActiveFilters && (
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={handleResetFilters}
-                    className="border-border text-xs h-9 gap-1 text-muted-foreground hover:text-foreground shrink-0"
-                  >
-                    <RotateCcw className="w-3.5 h-3.5" />
-                    Reset
-                  </Button>
-                )}
-                <Button className="bg-primary hover:bg-primary/90 h-9 text-xs shrink-0" onClick={() => setIsAddDialogOpen(true)}>
-                  <Plus className="w-4 h-4 mr-1.5" />
-                  Tugas Baru
-                </Button>
+                <div>
+                  <p className="text-xs font-medium text-muted-foreground">Pending / Menunggu</p>
+                  <h3 className="text-xl font-semibold font-mono tabular-nums text-foreground mt-0.5">{statusCounts.pending}</h3>
+                </div>
               </div>
+            </Card>
+          </motion.div>
+        </div>
 
-              {/* Table of Active Tasks */}
-              <div className="rounded-lg border border-border bg-card overflow-hidden shadow-2xs flex-1 flex flex-col min-h-0">
-                <div className="w-full flex-1 flex flex-col min-h-0">
-                  <Table 
-                    containerClassName="overflow-y-auto overflow-x-auto max-h-[calc(100vh-320px)] sm:max-h-[calc(100vh-340px)] min-h-[160px]"
-                    className={`w-full min-w-[850px] ${paginatedData.length === 0 ? "h-full" : ""}`}
-                  >
-                    <TableHeader className="sticky top-0 z-10 bg-card border-b border-border/80 shadow-2xs">
-                      <TableRow className="hover:bg-transparent">
-                        <TableHead className="w-12 h-9 px-3 text-xs font-semibold text-muted-foreground uppercase tracking-wider text-center bg-card">No</TableHead>
-                        <TableHead className="h-9 px-3 text-xs font-semibold text-muted-foreground uppercase tracking-wider bg-card">Nomor Order</TableHead>
-                        <TableHead className="h-9 px-3 text-xs font-semibold text-muted-foreground uppercase tracking-wider bg-card">Messenger</TableHead>
-                        <TableHead className="h-9 px-3 text-xs font-semibold text-muted-foreground uppercase tracking-wider bg-card">Nama Customer</TableHead>
-                        <TableHead className="h-9 px-3 text-xs font-semibold text-muted-foreground uppercase tracking-wider bg-card">Jenis Pengurusan</TableHead>
-                        <TableHead className="h-9 px-3 text-xs font-semibold text-muted-foreground uppercase tracking-wider bg-card">Keterangan Tugas</TableHead>
-                        <TableHead className="h-9 px-3 text-xs font-semibold text-muted-foreground uppercase tracking-wider bg-card">Lokasi</TableHead>
-                        <TableHead className="h-9 px-3 text-xs font-semibold text-muted-foreground uppercase tracking-wider bg-card">Tgl Terima</TableHead>
-                        <TableHead className="h-9 px-3 text-xs font-semibold text-muted-foreground uppercase tracking-wider text-center bg-card">Status</TableHead>
-                        <TableHead className="h-9 px-3 text-xs font-semibold text-muted-foreground uppercase tracking-wider text-center w-[130px] bg-card">Aksi</TableHead>
-                      </TableRow>
-                    </TableHeader>
-                    <TableBody>
-                      {paginatedData.length > 0 ? (
-                        paginatedData.map((task, index) => (
-                          <TableRow key={task.id} className="hover:bg-muted/30 transition-colors border-b border-border/60 last:border-0 h-10">
-                            <TableCell className="w-12 text-muted-foreground text-center font-mono text-xs">{startIndex + index + 1}</TableCell>
-                            <TableCell className="font-mono text-primary font-medium text-xs">
+        <motion.div
+          initial={{ opacity: 0, y: 15 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ delay: 0.15 }}
+          className="flex-1 flex flex-col min-h-0"
+        >
+          <Card className="p-3 sm:p-4 border border-border/80 bg-card shadow-2xs flex-1 flex flex-col min-h-0 rounded-xl">
+            {/* Active Tasks Filters */}
+            <div className="flex flex-col sm:flex-row gap-2 mb-3 shrink-0 items-stretch sm:items-center">
+              <div className="relative flex-1">
+                <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground" />
+                <Input 
+                  placeholder="Cari nomor order, nama customer, messenger, atau nomor polisi..." 
+                  className="pl-9 bg-input-background border-border h-8 text-xs font-normal"
+                  value={searchTerm}
+                  onChange={(e) => {
+                    setSearchTerm(e.target.value);
+                    handleFilterChange();
+                  }}
+                />
+              </div>
+              <Select 
+                value={filterAssignment} 
+                onValueChange={(value) => {
+                  setFilterAssignment(value as any);
+                  handleFilterChange();
+                }}
+              >
+                <SelectTrigger className="w-full sm:w-[155px] bg-input-background border-border h-8 text-xs font-normal">
+                  <SelectValue placeholder="Semua Penugasan" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all" className="text-xs">Semua Penugasan</SelectItem>
+                  <SelectItem value="unassigned" className="text-xs font-medium text-amber-600 dark:text-amber-400">Belum Ditugaskan</SelectItem>
+                  <SelectItem value="assigned" className="text-xs text-emerald-600 dark:text-emerald-400 font-medium">Sudah Ditugaskan</SelectItem>
+                </SelectContent>
+              </Select>
+              <Select 
+                value={filterMessenger} 
+                onValueChange={(value) => {
+                  setFilterMessenger(value);
+                  handleFilterChange();
+                }}
+              >
+                <SelectTrigger className="w-full sm:w-[160px] bg-input-background border-border h-8 text-xs font-normal">
+                  <SelectValue placeholder="Semua Messenger" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all" className="text-xs">Semua Messenger</SelectItem>
+                  {filterMessengers.map((messenger) => (
+                    <SelectItem key={messenger} value={messenger} className="text-xs">
+                      {messenger}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <Select 
+                value={filterTaskType} 
+                onValueChange={(value) => {
+                  setFilterTaskType(value);
+                  handleFilterChange();
+                }}
+              >
+                <SelectTrigger className="w-full sm:w-[160px] bg-input-background border-border h-8 text-xs font-normal">
+                  <SelectValue placeholder="Semua Jenis Tugas" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all" className="text-xs">Semua Jenis Tugas</SelectItem>
+                  <SelectItem value="Jemput Dokumen" className="text-xs">Jemput Dokumen</SelectItem>
+                  <SelectItem value="Proses Samsat" className="text-xs">Proses Samsat</SelectItem>
+                  <SelectItem value="Pengantaran Dokumen" className="text-xs">Pengantaran Dokumen</SelectItem>
+                </SelectContent>
+              </Select>
+              <Select 
+                value={filterStatus} 
+                onValueChange={(value) => {
+                  setFilterStatus(value);
+                  handleFilterChange();
+                }}
+              >
+                <SelectTrigger className="w-full sm:w-[150px] bg-input-background border-border h-8 text-xs font-normal">
+                  <SelectValue placeholder="Semua Status" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all" className="text-xs">Semua Status</SelectItem>
+                  <SelectItem value="Belum Diambil" className="text-xs">Belum Diambil</SelectItem>
+                  <SelectItem value="Dalam Proses" className="text-xs">Dalam Proses</SelectItem>
+                  <SelectItem value="Selesai" className="text-xs">Selesai</SelectItem>
+                  <SelectItem value="Pending" className="text-xs">Pending</SelectItem>
+                  <SelectItem value="Dibatalkan" className="text-xs">Dibatalkan</SelectItem>
+                </SelectContent>
+              </Select>
+              {hasActiveFilters && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={handleResetFilters}
+                  className="border-border text-xs h-8 gap-1 text-muted-foreground hover:text-foreground shrink-0 font-medium px-2.5"
+                >
+                  <RotateCcw className="w-3.5 h-3.5" />
+                  Reset
+                </Button>
+              )}
+              <Button className="bg-primary hover:bg-primary/90 h-8 text-xs shrink-0 font-medium px-3" onClick={() => setIsAddDialogOpen(true)}>
+                <Plus className="w-3.5 h-3.5 mr-1" />
+                Tugas Baru
+              </Button>
+            </div>
+
+            {/* Table of Active Tasks */}
+            <div className="rounded-lg border border-border bg-card overflow-hidden shadow-2xs flex-1 flex flex-col min-h-0">
+              <div className="w-full flex-1 flex flex-col min-h-0">
+                <Table 
+                  containerClassName="overflow-y-auto overflow-x-auto max-h-[calc(100vh-320px)] sm:max-h-[calc(100vh-340px)] min-h-[160px]"
+                  className={`w-full min-w-[850px] ${paginatedData.length === 0 ? "h-full" : ""}`}
+                >
+                  <TableHeader className="sticky top-0 z-10 bg-card border-b border-border/80 shadow-2xs">
+                    <TableRow className="hover:bg-transparent">
+                      <TableHead className="w-10 h-8 px-2 text-center text-[11px] font-medium text-muted-foreground uppercase tracking-wider bg-card">No</TableHead>
+                      <TableHead className="h-8 px-2.5 text-[11px] font-medium text-muted-foreground uppercase tracking-wider bg-card">Nomor Order</TableHead>
+                      <TableHead className="h-8 px-2.5 text-[11px] font-medium text-muted-foreground uppercase tracking-wider bg-card">Messenger</TableHead>
+                      <TableHead className="h-8 px-2.5 text-[11px] font-medium text-muted-foreground uppercase tracking-wider bg-card">Nama Customer</TableHead>
+                      <TableHead className="h-8 px-2.5 text-[11px] font-medium text-muted-foreground uppercase tracking-wider bg-card">Jenis Pengurusan</TableHead>
+                      <TableHead className="h-8 px-2.5 text-[11px] font-medium text-muted-foreground uppercase tracking-wider bg-card">Keterangan Tugas</TableHead>
+                      <TableHead className="h-8 px-2.5 text-[11px] font-medium text-muted-foreground uppercase tracking-wider bg-card">Lokasi</TableHead>
+                      <TableHead className="h-8 px-2.5 text-[11px] font-medium text-muted-foreground uppercase tracking-wider bg-card">Tgl Terima</TableHead>
+                      <TableHead className="h-8 px-2.5 text-[11px] font-medium text-muted-foreground uppercase tracking-wider text-center bg-card">Status</TableHead>
+                      <TableHead className="h-8 px-2 text-[11px] font-medium text-muted-foreground uppercase tracking-wider text-center min-w-[130px] xl:min-w-[190px] bg-card">Aksi</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {paginatedData.length > 0 ? (
+                      paginatedData.map((task, index) => {
+                        const isAssigned = isTaskAssignedMessenger(task);
+
+                        const isTaskLocked = Boolean(
+                          isAssigned && (
+                            task.isLocked ||
+                            task.acceptanceStatus === "ACCEPTED" ||
+                            task.status === "Dalam Proses" ||
+                            task.lifecycleStatus === "DITERIMA" ||
+                            task.lifecycleStatus === "SEDANG_DIKERJAKAN" ||
+                            task.acceptanceStatus === "SUPERSEDED"
+                          )
+                        );
+
+                        return (
+                          <TableRow key={task.id} className="hover:bg-muted/30 transition-colors border-b border-border/60 last:border-0 h-9">
+                            <TableCell className="w-10 px-2 py-1.5 text-muted-foreground text-center font-mono text-[11px] font-normal">{startIndex + index + 1}</TableCell>
+                            <TableCell className="px-2.5 py-1.5 font-mono text-primary font-medium text-xs">
                               {task.noBerkas}
                             </TableCell>
-                            <TableCell className="text-xs">
-                              {!task.messenger || task.messenger === "Belum Ditugaskan" || task.messenger === "-" ? (
+                            <TableCell className="px-2.5 py-1.5 text-xs">
+                              {!isAssigned ? (
                                 <Badge variant="outline" className="text-amber-600 dark:text-amber-400 border-amber-500/40 bg-amber-500/10 font-medium text-[11px] px-1.5 py-0.5">
                                   Belum Ditugaskan
                                 </Badge>
                               ) : (
                                 <div>
-                                  <span className="text-foreground font-medium block">{task.messenger}</span>
-                                  {task.acceptanceStatus === "PENDING" && task.status !== "Selesai" && (
-                                    <Badge variant="outline" className="text-[10px] font-semibold px-1.5 py-0 bg-amber-500/15 text-amber-700 dark:text-amber-400 border-amber-300 dark:border-amber-800 flex items-center gap-1 w-fit mt-0.5">
+                                  <span className="text-foreground font-medium text-xs block leading-tight">
+                                    {task.messenger && task.messenger !== "Belum Ditugaskan" && task.messenger !== "-"
+                                      ? task.messenger
+                                      : (task.assignedMessengerId || "Kurir Ditugaskan")}
+                                  </span>
+                                  {task.acceptanceStatus === "PENDING" && !isTaskLocked && task.status !== "Selesai" && (
+                                    <Badge variant="outline" className="text-[10px] font-medium px-1.5 py-0 bg-amber-500/15 text-amber-700 dark:text-amber-400 border-amber-300 dark:border-amber-800 flex items-center gap-1 w-fit mt-0.5">
                                       <Clock className="w-2.5 h-2.5" />
                                       Menunggu Diterima
                                     </Badge>
                                   )}
-                                  {(task.isLocked || task.acceptanceStatus === "ACCEPTED") && task.status !== "Selesai" && (
-                                    <Badge variant="outline" className="text-[10px] font-semibold px-1.5 py-0 bg-blue-500/15 text-blue-700 dark:text-blue-300 border-blue-300 dark:border-blue-800 flex items-center gap-1 w-fit mt-0.5">
-                                      <Lock className="w-2.5 h-2.5" />
-                                      Diterima (Terkunci)
-                                    </Badge>
-                                  )}
                                   {task.reassignedFrom && (
-                                    <span className="block text-[10px] text-muted-foreground truncate max-w-[140px] mt-0.5" title={`Dialihkan dari ${task.reassignedFrom} (${task.reassignReason || ""})`}>
+                                    <span className="block text-[10px] font-normal text-muted-foreground truncate max-w-[130px] mt-0.5" title={`Dialihkan dari ${task.reassignedFrom} (${task.reassignReason || ""})`}>
                                       ex: {task.reassignedFrom}
                                     </span>
                                   )}
                                 </div>
                               )}
                             </TableCell>
-                            <TableCell className="font-medium text-foreground text-xs">{task.customer}</TableCell>
-                            <TableCell className="text-xs text-foreground/80">{task.jenisTugas}</TableCell>
-                            <TableCell className="text-xs">
-                              <span className="flex items-center gap-1.5 font-medium">
-                                <PackageOpen className="w-3.5 h-3.5 text-muted-foreground" />
+                            <TableCell className="px-2.5 py-1.5 font-normal text-foreground text-xs">{task.customer}</TableCell>
+                            <TableCell className="px-2.5 py-1.5 text-xs text-foreground/80 font-normal">{task.jenisTugas}</TableCell>
+                            <TableCell className="px-2.5 py-1.5 text-xs">
+                              <span className="flex items-center gap-1.5 font-medium text-foreground">
+                                <PackageOpen className="w-3.5 h-3.5 text-muted-foreground shrink-0" />
                                 {task.keteranganTugas}
                               </span>
                             </TableCell>
-                            <TableCell className="max-w-[180px] truncate text-xs text-muted-foreground" title={task.lokasi}>
+                            <TableCell className="px-2.5 py-1.5 max-w-[180px] truncate text-xs text-muted-foreground font-normal" title={task.lokasi}>
                               {task.lokasi}
                             </TableCell>
-                            <TableCell className="text-xs">
-                              <div className="font-mono text-foreground/80">{task.tanggalTerima}</div>
+                            <TableCell className="px-2.5 py-1.5 text-xs">
+                              <div className="font-mono text-foreground/80 font-normal">{task.tanggalTerima}</div>
                               {task.targetCompletionDate && (
-                                <div className="text-[10px] text-muted-foreground flex items-center gap-1 mt-0.5" title="Estimasi Selesai Order Customer">
+                                <div className="text-[10px] font-normal text-muted-foreground flex items-center gap-1 mt-0.5" title="Estimasi Selesai Order Customer">
                                   <Calendar className="w-2.5 h-2.5 text-primary shrink-0" />
                                   <span>Est: {new Date(task.targetCompletionDate).toLocaleDateString("id-ID", { day: "numeric", month: "short" })}</span>
                                 </div>
                               )}
                             </TableCell>
-                            <TableCell className="text-center text-xs">
-                              <Badge status={task.status}>
+                            <TableCell className="px-2.5 py-1.5 text-center text-xs">
+                              <Badge status={task.status} className="font-medium text-[11px] px-2 py-0.5">
                                 <span className="flex items-center gap-1">
                                   {getStatusIcon(task.status)}
                                   {task.status}
                                 </span>
                               </Badge>
                             </TableCell>
-                            <TableCell className="text-center px-1.5 py-1.5">
+                            <TableCell className="text-center px-2 py-1.5 min-w-[130px] xl:min-w-[190px]">
                               <div className="flex items-center gap-1 justify-center">
                                 <Button
                                   size="sm"
@@ -1210,11 +1214,11 @@ export function MessengerTask() {
                                 >
                                   <Edit className="w-3.5 h-3.5" />
                                 </Button>
-                                {(!task.messenger || task.messenger === "Belum Ditugaskan" || task.messenger === "-") ? (
+                                {!isAssigned ? (
                                   <Button
                                     size="sm"
                                     variant="default"
-                                    className="h-7 px-2 text-[11px] font-semibold gap-1 bg-primary hover:bg-primary/90 text-primary-foreground rounded transition-colors shadow-2xs"
+                                    className="h-7 px-2 text-[11px] font-medium gap-1 bg-primary hover:bg-primary/90 text-primary-foreground rounded transition-colors shadow-2xs"
                                     onClick={() => handleOpenAssignDialog(task)}
                                     title="Tugaskan Kurir untuk Tugas Lapangan Ini"
                                   >
@@ -1223,77 +1227,92 @@ export function MessengerTask() {
                                   </Button>
                                 ) : task.status !== "Selesai" ? (
                                   <>
-                                    {task.acceptanceStatus === "PENDING" ? (
-                                      <Button
-                                        size="sm"
-                                        variant="outline"
-                                        className="h-7 px-1.5 text-[11px] font-semibold gap-1 rounded text-muted-foreground hover:text-foreground"
-                                        onClick={() => handleOpenAssignDialog(task)}
-                                        title="Ganti Kurir (Sebelum Diterima Kurir)"
-                                      >
-                                        <UserCheck className="w-3.5 h-3.5" />
-                                        <span className="hidden xl:inline">Ganti</span>
-                                      </Button>
+                                    {isTaskLocked ? (
+                                      <>
+                                        <Button
+                                          size="sm"
+                                          variant="outline"
+                                          disabled
+                                          className="h-7 px-1.5 text-[11px] font-medium gap-1 rounded border-border/80 bg-muted/40 text-muted-foreground/70 disabled:pointer-events-auto cursor-not-allowed opacity-60 hover:bg-muted/40 shadow-none"
+                                          title="Tugas sudah diambil kurir (Terkunci)"
+                                        >
+                                          <Lock className="w-3.5 h-3.5 text-muted-foreground/70 shrink-0" />
+                                          <span className="hidden xl:inline">Alihkan</span>
+                                        </Button>
+                                        <Button
+                                          size="sm"
+                                          variant="outline"
+                                          disabled
+                                          className="h-7 px-1.5 text-[11px] font-medium gap-1 rounded border-border/80 bg-muted/40 text-muted-foreground/70 disabled:pointer-events-auto cursor-not-allowed opacity-60 hover:bg-muted/40 shadow-none"
+                                          title="Tugas sudah diambil kurir (Terkunci)"
+                                        >
+                                          <Lock className="w-3.5 h-3.5 text-muted-foreground/70 shrink-0" />
+                                          <span className="hidden xl:inline">Ambil Alih</span>
+                                        </Button>
+                                      </>
                                     ) : (
-                                      <Button
-                                        size="sm"
-                                        variant="outline"
-                                        className="h-7 px-1.5 text-[11px] font-semibold gap-1 border-blue-500/40 text-blue-700 dark:text-blue-300 bg-blue-500/10 hover:bg-blue-500/20 rounded transition-colors"
-                                        onClick={() => handleOpenReassignDialog(task)}
-                                        title="Alihkan Tugas Resmi (Memerlukan Alasan Pengalihan)"
-                                      >
-                                        <ArrowRightLeft className="w-3.5 h-3.5 text-blue-600 dark:text-blue-400 shrink-0" />
-                                        <span className="hidden xl:inline">Alihkan</span>
-                                      </Button>
+                                      <>
+                                        <Button
+                                          size="sm"
+                                          variant="outline"
+                                          className="h-7 px-1.5 text-[11px] font-medium gap-1 border-blue-500/40 text-blue-700 dark:text-blue-300 bg-blue-500/10 hover:bg-blue-500/20 rounded transition-colors shadow-2xs"
+                                          onClick={() => handleOpenReassignDialog(task)}
+                                          title="Alihkan Tugas Resmi (Memerlukan Alasan Pengalihan)"
+                                        >
+                                          <ArrowRightLeft className="w-3.5 h-3.5 text-blue-600 dark:text-blue-400 shrink-0" />
+                                          <span className="hidden xl:inline">Alihkan</span>
+                                        </Button>
+                                        <Button
+                                          size="sm"
+                                          variant="outline"
+                                          className="h-7 px-1.5 text-[11px] font-medium gap-1 border-amber-500/40 text-amber-700 dark:text-amber-300 bg-amber-500/10 hover:bg-amber-500/20 rounded transition-colors shadow-2xs"
+                                          onClick={() => handleOpenAmbilAlih(task)}
+                                          title="Ambil Alih Fungsi Messenger (Admin Takeover)"
+                                        >
+                                          <ShieldAlert className="w-3.5 h-3.5 text-amber-600 dark:text-amber-400 shrink-0" />
+                                          <span className="hidden xl:inline">Ambil Alih</span>
+                                        </Button>
+                                      </>
                                     )}
-                                  <Button
-                                    size="sm"
-                                    variant="outline"
-                                    className="h-7 px-1.5 text-[11px] font-semibold gap-1 border-amber-500/40 text-amber-700 dark:text-amber-300 bg-amber-500/10 hover:bg-amber-500/20 rounded transition-colors"
-                                    onClick={() => handleOpenAmbilAlih(task)}
-                                    title="Ambil Alih Fungsi Messenger (Admin Takeover)"
-                                  >
-                                    <ShieldAlert className="w-3.5 h-3.5 text-amber-600 dark:text-amber-400 shrink-0" />
-                                    <span className="hidden xl:inline">Ambil Alih</span>
-                                  </Button>
                                   </>
                                 ) : null}
                               </div>
                             </TableCell>
                           </TableRow>
-                        ))
-                      ) : (
-                        <TableRow className="h-full hover:bg-transparent">
-                          <TableCell colSpan={10} className="text-center py-8 align-middle p-0">
-                            <EmptyState
-                              title="Tidak ada tugas messenger aktif ditemukan"
-                              description="Saat ini tidak ada order yang sedang berada dalam proses kurir aktif (Penjemputan, Samsat, atau Pengantaran)."
-                            />
-                          </TableCell>
-                        </TableRow>
-                      )}
-                    </TableBody>
-                  </Table>
-                </div>
-
-                {/* Standardized Table Pagination */}
-                <div className="border-t border-border/80 p-3 bg-card shrink-0 mt-auto">
-                  <TablePagination
-                    currentPage={currentPage}
-                    totalItems={filteredData.length}
-                    itemsPerPage={itemsPerPage}
-                    onPageChange={setCurrentPage}
-                    onItemsPerPageChange={(newSize) => {
-                      setItemsPerPage(newSize);
-                      setCurrentPage(1);
-                    }}
-                    pageSizeOptions={[10, 25, 50, 100]}
-                  />
-                </div>
+                        );
+                      })
+                    ) : (
+                      <TableRow className="h-full hover:bg-transparent">
+                        <TableCell colSpan={10} className="text-center py-8 align-middle p-0">
+                          <EmptyState
+                            title="Tidak ada tugas messenger aktif ditemukan"
+                            description="Saat ini tidak ada order yang sedang berada dalam proses kurir aktif (Penjemputan, Samsat, atau Pengantaran)."
+                          />
+                        </TableCell>
+                      </TableRow>
+                    )}
+                  </TableBody>
+                </Table>
               </div>
-            </Card>
-          </motion.div>
-        </>
+
+              {/* Standardized Table Pagination */}
+              <div className="border-t border-border/80 px-3 py-2 bg-card shrink-0 mt-auto">
+                <TablePagination
+                  currentPage={currentPage}
+                  totalItems={filteredData.length}
+                  itemsPerPage={itemsPerPage}
+                  onPageChange={setCurrentPage}
+                  onItemsPerPageChange={(newSize) => {
+                    setItemsPerPage(newSize);
+                    setCurrentPage(1);
+                  }}
+                  pageSizeOptions={[10, 25, 50, 100]}
+                />
+              </div>
+            </div>
+          </Card>
+        </motion.div>
+      </>
 
       {/* View Detail Dialog */}
       <Dialog open={isViewDialogOpen} onOpenChange={setIsViewDialogOpen}>
@@ -2246,7 +2265,7 @@ export function MessengerTask() {
             <div className="p-3 bg-muted/40 rounded-lg border border-border/60 space-y-1">
               <div className="flex justify-between items-center text-xs">
                 <span className="text-muted-foreground">No. Order / Berkas:</span>
-                <span className="font-mono font-bold text-primary">{assignTargetTask?.noBerkas}</span>
+                <span className="font-mono font-semibold text-primary">{assignTargetTask?.noBerkas}</span>
               </div>
               <div className="flex justify-between items-center text-xs">
                 <span className="text-muted-foreground">Customer:</span>
@@ -2263,7 +2282,7 @@ export function MessengerTask() {
             </div>
 
             <div className="space-y-1.5">
-              <Label className="text-xs font-semibold">Pilih Messenger / Kurir <span className="text-destructive">*</span></Label>
+              <Label className="text-xs font-medium">Pilih Messenger / Kurir <span className="text-destructive">*</span></Label>
               <Select value={selectedAssignMessenger} onValueChange={setSelectedAssignMessenger}>
                 <SelectTrigger className="bg-input-background border-border h-9 text-xs">
                   <SelectValue placeholder="Pilih messenger operasional..." />
@@ -2279,7 +2298,7 @@ export function MessengerTask() {
             </div>
 
             <div className="space-y-1.5">
-              <Label className="text-xs font-semibold">Tanggal Tugas Operasional</Label>
+              <Label className="text-xs font-medium">Tanggal Tugas Operasional</Label>
               <Input
                 type="date"
                 value={assignTaskDate}
@@ -2289,7 +2308,7 @@ export function MessengerTask() {
             </div>
 
             <div className="space-y-1.5">
-              <Label className="text-xs font-semibold">Catatan Tugas untuk Kurir (Opsional)</Label>
+              <Label className="text-xs font-medium">Catatan Tugas untuk Kurir (Opsional)</Label>
               <Textarea
                 placeholder="Contoh: Titik temu di satpam pos depan, hubungi klien sebelum jalan..."
                 value={assignTaskNotes}
@@ -2300,14 +2319,14 @@ export function MessengerTask() {
             </div>
           </div>
           <DialogFooter className="pt-2 border-t border-border/80 flex flex-row items-center justify-end gap-2">
-            <Button variant="outline" size="sm" onClick={() => setIsAssignDialogOpen(false)} className="h-8 text-xs">
+            <Button variant="outline" size="sm" onClick={() => setIsAssignDialogOpen(false)} className="h-8 text-xs font-medium">
               Batal
             </Button>
             <Button
               size="sm"
               onClick={handleConfirmAssign}
               disabled={!selectedAssignMessenger}
-              className="h-8 text-xs bg-primary hover:bg-primary/90 text-primary-foreground font-semibold gap-1.5 shadow-2xs"
+              className="h-8 text-xs bg-primary hover:bg-primary/90 text-primary-foreground font-medium gap-1.5 shadow-2xs"
             >
               <Check className="w-3.5 h-3.5" />
               Simpan & Tugaskan
@@ -2325,7 +2344,7 @@ export function MessengerTask() {
               Alihkan Tugas Kurir Resmi (Reassign)
             </DialogTitle>
             <DialogDescription className="text-xs text-muted-foreground">
-              Tugas ini telah diterima dan terkunci. Pengalihan tugas membutuhkan alasan operasional wajib dan akan dicatat dalam riwayat audit.
+              Pengalihan tugas kurir membutuhkan alasan operasional wajib dan akan dicatat dalam riwayat audit.
             </DialogDescription>
           </DialogHeader>
 
@@ -2334,7 +2353,7 @@ export function MessengerTask() {
               <div className="p-3 rounded-lg bg-muted/50 border border-border space-y-1.5 text-xs">
                 <div className="flex justify-between">
                   <span className="text-muted-foreground">Nomor Order:</span>
-                  <span className="font-bold text-foreground font-mono">{reassignTargetTask.noBerkas}</span>
+                  <span className="font-semibold text-foreground font-mono">{reassignTargetTask.noBerkas}</span>
                 </div>
                 <div className="flex justify-between">
                   <span className="text-muted-foreground">Customer:</span>
@@ -2342,16 +2361,16 @@ export function MessengerTask() {
                 </div>
                 <div className="flex justify-between">
                   <span className="text-muted-foreground">Keterangan Tugas:</span>
-                  <span className="font-semibold text-primary">{reassignTargetTask.keteranganTugas}</span>
+                  <span className="font-medium text-primary">{reassignTargetTask.keteranganTugas}</span>
                 </div>
                 <div className="flex justify-between">
                   <span className="text-muted-foreground">Kurir Saat Ini:</span>
-                  <span className="font-semibold text-amber-600 dark:text-amber-400">{reassignTargetTask.messenger}</span>
+                  <span className="font-medium text-amber-600 dark:text-amber-400">{reassignTargetTask.messenger}</span>
                 </div>
               </div>
 
               <div className="space-y-1">
-                <Label className="text-xs font-semibold">
+                <Label className="text-xs font-medium">
                   Pilih Kurir Pengganti <span className="text-rose-500">*</span>
                 </Label>
                 <Select value={selectedReassignMessenger} onValueChange={setSelectedReassignMessenger}>
@@ -2371,7 +2390,7 @@ export function MessengerTask() {
               </div>
 
               <div className="space-y-1">
-                <Label className="text-xs font-semibold">
+                <Label className="text-xs font-medium">
                   Alasan Pengalihan Tugas <span className="text-rose-500">*</span>
                 </Label>
                 <Textarea
@@ -2395,7 +2414,7 @@ export function MessengerTask() {
                 setReassignReason("");
               }}
               disabled={isReassignSubmitting}
-              className="h-8 text-xs"
+              className="h-8 text-xs font-medium"
             >
               Batal
             </Button>
@@ -2403,7 +2422,7 @@ export function MessengerTask() {
               size="sm"
               onClick={handleConfirmReassign}
               disabled={isReassignSubmitting || !selectedReassignMessenger || !reassignReason.trim()}
-              className="h-8 text-xs bg-blue-600 hover:bg-blue-700 text-white font-semibold gap-1.5 shadow-2xs"
+              className="h-8 text-xs bg-blue-600 hover:bg-blue-700 text-white font-medium gap-1.5 shadow-2xs"
             >
               {isReassignSubmitting ? (
                 <>

@@ -17,6 +17,7 @@ import { ResolvedTariff } from "../../domain/pricing/types";
  */
 
 import { useState, useEffect } from "react";
+export type { SamsatMasterItem };
 import {
   SamsatMasterItem,
   PricingItem,
@@ -39,6 +40,7 @@ import {
   findWilayahByKode,
   findWilayahByName,
   getWilayahByProvinsi,
+  normalizeSamsatOfficeName,
 } from "../../domain/pricing/wilayahIndonesiaData";
 import { auditLog } from "../utils/auditLog";
 import { pricingRepository } from "../../data/repositories/pricingRepository";
@@ -892,14 +894,20 @@ class PricingStore {
 
     // Lookup official wilayah if code provided
     let officialProvinsi = data.nama_provinsi;
-    if (data.kode_kabupaten_kota && !officialProvinsi) {
-      const w = findWilayahByKode(data.kode_kabupaten_kota);
-      if (w) officialProvinsi = (w as any).provinsi || (w as any).namaProvinsi;
+    const officialWilayah = data.kode_kabupaten_kota ? findWilayahByKode(data.kode_kabupaten_kota) : undefined;
+    if (officialWilayah && !officialProvinsi) {
+      officialProvinsi = (officialWilayah as any).provinsi || (officialWilayah as any).namaProvinsi;
     }
+
+    const normalizedName = normalizeSamsatOfficeName(
+      data.name,
+      officialWilayah?.jenis_wilayah,
+      officialWilayah?.nama_kabupaten_kota || data.wilayah
+    );
 
     const payload: SamsatMasterItem = {
       id,
-      name: data.name,
+      name: normalizedName,
       wilayah: data.wilayah,
       alamat: data.alamat,
       kode_kabupaten_kota: data.kode_kabupaten_kota,
@@ -1020,6 +1028,17 @@ class PricingStore {
     const samsat = this.samsats.find((s) => s.id === id);
     if (!samsat) throw new Error(`Kantor Samsat dengan ID '${id}' tidak ditemukan`);
 
+    const targetKode = updates.kode_kabupaten_kota || samsat.kode_kabupaten_kota;
+    const officialWilayah = targetKode ? findWilayahByKode(targetKode) : undefined;
+    const normalizedUpdates = { ...updates };
+    if (updates.name) {
+      normalizedUpdates.name = normalizeSamsatOfficeName(
+        updates.name,
+        officialWilayah?.jenis_wilayah,
+        officialWilayah?.nama_kabupaten_kota || updates.wilayah || samsat.wilayah
+      );
+    }
+
     // Sync to backend API if available and await confirmation
     if (typeof fetch !== "undefined") {
       const token = typeof window !== "undefined" ? window.localStorage?.getItem("auth_token") : undefined;
@@ -1029,7 +1048,7 @@ class PricingStore {
           "Content-Type": "application/json",
           ...(token ? { Authorization: `Bearer ${token}` } : {}),
         },
-        body: JSON.stringify(updates),
+        body: JSON.stringify(normalizedUpdates),
       });
 
       if (!res.ok) {
@@ -1040,13 +1059,13 @@ class PricingStore {
 
     const oldName = samsat.name;
     const oldWilayah = samsat.wilayah;
-    if (updates.name) samsat.name = updates.name;
-    if (updates.wilayah) samsat.wilayah = updates.wilayah;
-    if (updates.alamat) samsat.alamat = updates.alamat;
-    if (updates.kode_kabupaten_kota !== undefined) samsat.kode_kabupaten_kota = updates.kode_kabupaten_kota;
-    if (updates.nama_provinsi !== undefined) samsat.nama_provinsi = updates.nama_provinsi;
-    if (updates.is_verified !== undefined) samsat.is_verified = updates.is_verified;
-    if (updates.status_aktif !== undefined) samsat.status_aktif = updates.status_aktif;
+    if (normalizedUpdates.name) samsat.name = normalizedUpdates.name;
+    if (normalizedUpdates.wilayah) samsat.wilayah = normalizedUpdates.wilayah;
+    if (normalizedUpdates.alamat) samsat.alamat = normalizedUpdates.alamat;
+    if (normalizedUpdates.kode_kabupaten_kota !== undefined) samsat.kode_kabupaten_kota = normalizedUpdates.kode_kabupaten_kota;
+    if (normalizedUpdates.nama_provinsi !== undefined) samsat.nama_provinsi = normalizedUpdates.nama_provinsi;
+    if (normalizedUpdates.is_verified !== undefined) samsat.is_verified = normalizedUpdates.is_verified;
+    if (normalizedUpdates.status_aktif !== undefined) samsat.status_aktif = normalizedUpdates.status_aktif;
 
     // Update in mutasiASRows
     this.mutasiASRows.forEach((r) => {

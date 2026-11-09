@@ -87,15 +87,16 @@ export class ServiceService {
 
     try {
       dbAuditRepository.save({
-        id: `log-svc-upd-${Date.now()}`,
-        userId: user?.userId || "usr-admin",
-        userName: user?.nama || "Administrator",
+        id: `log-svc-upd-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
+        userId: user?.userId || "usr-system",
+        userName: user?.nama || "Admin API",
         userRole: user?.role || "admin",
         action: "UPDATE",
-        module: "Master Layanan",
+        module: "Master Data - Layanan",
         createdAt: new Date().toISOString(),
         details: `Memperbarui master layanan '${updated.nama_layanan}' (${id}). Dokumen requirements: ${updated.requirements.length} item.`,
         metadata: {
+          recordId: id,
           serviceId: id,
           oldData: {
             nama_layanan: existing.nama_layanan,
@@ -127,15 +128,15 @@ export class ServiceService {
 
     try {
       dbAuditRepository.save({
-        id: `log-svc-del-${Date.now()}`,
-        userId: user?.userId || "usr-admin",
-        userName: user?.nama || "Administrator",
+        id: `log-svc-del-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
+        userId: user?.userId || "usr-system",
+        userName: user?.nama || "Admin API",
         userRole: user?.role || "admin",
         action: result.softDeactivated ? "DEACTIVATE" : "DELETE",
-        module: "Master Layanan",
+        module: "Master Data - Layanan",
         createdAt: new Date().toISOString(),
         details: `${result.softDeactivated ? "Menonaktifkan" : "Menghapus"} master layanan '${id}': ${result.message}`,
-        metadata: { serviceId: id, result },
+        metadata: { recordId: id, serviceId: id, result },
       });
     } catch (auditErr) {
       console.warn("[ServiceService] Audit log error:", auditErr);

@@ -22,33 +22,19 @@ function resolveAndVerifyMessengerEmployee(userEntity: UserEntity): {
   code: string;
   message: string;
 } {
-  const cleanEmail = (userEntity.email || "").trim().toLowerCase();
-  const empId = userEntity.employee_id ? String(userEntity.employee_id).trim() : null;
+  let empId = userEntity.employee_id ? String(userEntity.employee_id).trim() : null;
 
-  // 1. Check employee_accounts and employees table by email
-  let eaRecord: { id: string; employee_id: string; status_aktif: number; status_karyawan: string; nama_lengkap: string } | undefined;
-  try {
-    const eaStmt = db.prepare(`
-      SELECT ea.id, ea.employee_id, ea.status_aktif, e.status_karyawan, e.nama_lengkap
-      FROM employee_accounts ea
-      JOIN employees e ON ea.employee_id = e.id
-      WHERE LOWER(ea.email) = ?
-    `);
-    eaRecord = eaStmt.get(cleanEmail) as any;
-  } catch (err) {
-    // If table doesn't exist in some isolated test mocks
+  // 1. If userEntity has no employee_id, attempt fallback lookup by name in employees
+  if (!empId && userEntity.nama) {
+    try {
+      const empByName = db.prepare("SELECT id FROM employees WHERE LOWER(nama_lengkap) = LOWER(?)").get(userEntity.nama) as { id: string } | undefined;
+      if (empByName && empByName.id) {
+        empId = empByName.id;
+      }
+    } catch {}
   }
 
-  if (eaRecord) {
-    if (eaRecord.status_aktif !== 1) {
-      return { ok: false, status: 403, code: "EMPLOYEE_INACTIVE", message: "Akun karyawan messenger berstatus nonaktif." };
-    }
-    if (eaRecord.status_karyawan === "NONAKTIF") {
-      return { ok: false, status: 403, code: "EMPLOYEE_INACTIVE", message: "Status karyawan messenger nonaktif." };
-    }
-  }
-
-  // 2. Reject if userEntity has no employee_id
+  // 2. Reject if still no employee_id
   if (!empId) {
     return {
       ok: false,
@@ -58,7 +44,7 @@ function resolveAndVerifyMessengerEmployee(userEntity: UserEntity): {
     };
   }
 
-  // 3. Verify empId against employees table if employees table exists
+  // 3. Verify empId against employees table
   let empRecord: { id: string; status_karyawan: string } | undefined;
   try {
     const empStmt = db.prepare("SELECT id, status_karyawan FROM employees WHERE id = ?");
@@ -66,11 +52,10 @@ function resolveAndVerifyMessengerEmployee(userEntity: UserEntity): {
   } catch (err) {}
 
   if (empRecord) {
-    if (empRecord.status_karyawan === "NONAKTIF") {
+    if (empRecord.status_karyawan === "NONAKTIF" || empRecord.status_karyawan === "Nonaktif") {
       return { ok: false, status: 403, code: "EMPLOYEE_INACTIVE", message: "Status karyawan messenger nonaktif." };
     }
-  } else if (!eaRecord) {
-    // empId not in employees table AND email not in employee_accounts
+  } else {
     return {
       ok: false,
       status: 403,
@@ -136,20 +121,12 @@ export class AuthService {
       } else {
         throw new ApiError(empRes.status, empRes.code, empRes.message);
       }
-    } else if (!resolvedEmployeeId) {
-      try {
-        const eaStmt = db.prepare(`
-          SELECT ea.employee_id 
-          FROM employee_accounts ea 
-          JOIN employees e ON ea.employee_id = e.id 
-          WHERE LOWER(ea.email) = ? AND ea.status_aktif = 1
-        `);
-        const eaRecord = eaStmt.get(cleanEmail) as { employee_id: string } | undefined;
-        if (eaRecord && eaRecord.employee_id) {
-          resolvedEmployeeId = eaRecord.employee_id;
-        }
-      } catch (err) {}
     }
+
+    // Update last_login_at
+    try {
+      db.prepare("UPDATE users SET last_login_at = datetime('now') WHERE id = ?").run(userEntity.id);
+    } catch {}
 
     const token = generateToken({
       userId: `usr-${userEntity.id}`,
@@ -272,19 +249,6 @@ export class AuthService {
       } else {
         throw new ApiError(empRes.status, empRes.code, empRes.message);
       }
-    } else if (!resolvedEmployeeId) {
-      try {
-        const eaStmt = db.prepare(`
-          SELECT ea.employee_id 
-          FROM employee_accounts ea 
-          JOIN employees e ON ea.employee_id = e.id 
-          WHERE LOWER(ea.email) = ? AND ea.status_aktif = 1
-        `);
-        const eaRecord = eaStmt.get((user.email || "").trim().toLowerCase()) as { employee_id: string } | undefined;
-        if (eaRecord && eaRecord.employee_id) {
-          resolvedEmployeeId = eaRecord.employee_id;
-        }
-      } catch (err) {}
     }
 
     const freshToken = generateToken({

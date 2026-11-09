@@ -185,45 +185,57 @@ test("Document Management Security Suite: All Requirements 1-13", async (t) => {
 
   // Tokens for different roles
   const messengerBudiToken = generateToken({
-    id: 4,
+    userId: "usr-4",
+    id: "4",
+    employeeId: "4",
     email: "budi@birojasa.com",
     nama: "Budi Santoso",
-    jabatan: "messenger",
+    jabatan: "Kurir",
+    role: "messenger",
   });
 
   const messengerAsepToken = generateToken({
-    id: 5,
+    userId: "usr-5",
+    id: "5",
+    employeeId: "5",
     email: "asep@birojasa.com",
     nama: "Asep Sunandar",
-    jabatan: "messenger",
+    jabatan: "Kurir",
+    role: "messenger",
   });
 
   const adminToken = generateToken({
-    id: 10,
+    userId: "usr-2",
+    id: "2",
     email: "admin.ops@birojasa.com",
     nama: "Admin Ops",
-    jabatan: "admin",
+    jabatan: "ADMIN",
+    role: "admin",
   });
 
   const financeToken = generateToken({
-    id: 2,
+    userId: "usr-3",
+    id: "3",
     email: "finance@birojasa.com",
     nama: "Finance Siti",
-    jabatan: "finance",
+    jabatan: "FINANCE",
+    role: "finance",
   });
 
   const svpToken = generateToken({
-    id: 1,
+    userId: "usr-1",
+    id: "1",
     email: "svp@birojasa.com",
     nama: "SVP Hendra",
-    jabatan: "svp",
+    jabatan: "SVP",
+    role: "administrator",
   });
 
   let sharedDocId = "";
 
   // Upload an initial document linked to ORD-SEC-01 by Admin
-  const adminUser = { userId: "10", nama: "Admin Ops", role: "admin", email: "admin.ops@birojasa.com", exp: 9999999999 };
-  const messengerBudiUser = { userId: "4", nama: "Budi Santoso", role: "messenger", email: "budi@birojasa.com", exp: 9999999999 };
+  const adminUser = { userId: "usr-2", id: "2", nama: "Admin Ops", role: "admin", email: "admin.ops@birojasa.com", exp: 9999999999 };
+  const messengerBudiUser = { userId: "usr-4", id: "4", employeeId: "4", nama: "Budi Santoso", role: "messenger", email: "budi@birojasa.com", exp: 9999999999 };
   const uploadedDoc = await documentService.uploadDocument({
     buffer: SAMPLE_PDF_BUFFER,
     originalName: "berkas_stnk_awal.pdf",

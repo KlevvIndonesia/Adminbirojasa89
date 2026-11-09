@@ -4,7 +4,7 @@
  */
 
 import { Router } from "express";
-import { login, me } from "../controllers/authController";
+import { login, me, changePassword } from "../controllers/authController";
 import { requireAuth } from "../middleware/auth";
 import { loginRateLimiter } from "../middleware/rateLimiter";
 import { validateLoginPayload } from "../middleware/validation";
@@ -16,3 +16,6 @@ authRouter.post("/login", loginRateLimiter, validateLoginPayload, login);
 
 // Protected session check
 authRouter.get("/me", requireAuth, me);
+
+// Self-service password change
+authRouter.post("/change-password", requireAuth, changePassword);

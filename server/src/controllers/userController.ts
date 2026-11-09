@@ -6,6 +6,7 @@
 import { Response, NextFunction } from "express";
 import { AuthenticatedRequest } from "../middleware/auth";
 import { userService } from "../services/userService";
+import { permanentErasureService } from "../services/permanentErasureService";
 
 export async function getUsers(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
   try {
@@ -63,6 +64,54 @@ export async function resetUserPassword(req: AuthenticatedRequest, res: Response
       success: true,
       message: `Kata sandi akun ${result.nama} berhasil direset.`,
       data: result,
+      timestamp: new Date().toISOString(),
+    });
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function preflightPermanentErasure(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
+  try {
+    const { id } = req.params;
+    const preflight = permanentErasureService.preflightCheck(id, req.user);
+    res.json({
+      success: true,
+      message: preflight.allowed
+        ? "Target memenuhi syarat untuk penghapusan permanen."
+        : "Target memiliki blocker yang mencegah penghapusan permanen.",
+      data: preflight,
+      timestamp: new Date().toISOString(),
+    });
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function permanentErasureUser(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
+  try {
+    const { id } = req.params;
+    const { confirmationText, reason } = req.body || {};
+    const result = permanentErasureService.executeErasure(id, confirmationText, req.user || null, reason);
+    res.json({
+      success: true,
+      message: result.message,
+      data: result,
+      timestamp: new Date().toISOString(),
+    });
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function retryFileDeletionJob(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
+  try {
+    const { jobId } = req.params;
+    const updatedJob = permanentErasureService.retryFileDeletionJob(jobId);
+    res.json({
+      success: true,
+      message: updatedJob.status === "COMPLETED" ? "File berhasil dibersihkan." : "Retry pembersihan file gagal.",
+      data: updatedJob,
       timestamp: new Date().toISOString(),
     });
   } catch (err) {

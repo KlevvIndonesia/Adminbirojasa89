@@ -35,18 +35,19 @@ export function resolveCanonicalActorEmployeeId(user?: TokenPayload | null): str
     } catch {}
   }
 
-  // 2. Lookup via employee_accounts using the authenticated user's email
-  if (user.email) {
-    const cleanEmail = user.email.trim().toLowerCase();
+  // 2. Lookup via users table using the authenticated user's email or userId
+  if (user.email || user.userId) {
     try {
-      const ea = db.prepare(`
-        SELECT ea.employee_id 
-        FROM employee_accounts ea 
-        JOIN employees e ON ea.employee_id = e.id 
-        WHERE LOWER(ea.email) = ? AND ea.status_aktif = 1
-      `).get(cleanEmail) as { employee_id: string } | undefined;
-      if (ea && ea.employee_id) {
-        return ea.employee_id;
+      const cleanEmail = user.email ? user.email.trim().toLowerCase() : "";
+      const numericId = user.userId && user.userId.startsWith("usr-") ? Number(user.userId.replace(/^usr-/, "")) : null;
+      const u = db.prepare(`
+        SELECT u.employee_id 
+        FROM users u 
+        JOIN employees e ON u.employee_id = e.id 
+        WHERE (LOWER(u.email) = ? OR u.id = ?) AND u.employee_id IS NOT NULL
+      `).get(cleanEmail, numericId) as { employee_id: string } | undefined;
+      if (u && u.employee_id) {
+        return u.employee_id;
       }
     } catch {}
   }

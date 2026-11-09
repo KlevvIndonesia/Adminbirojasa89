@@ -6,7 +6,7 @@
 import { Response, NextFunction } from "express";
 import { AuthenticatedRequest } from "../middleware/auth";
 import { authService } from "../services/authService";
-import { loginRateLimiter } from "../middleware/rateLimiter";
+import { loginRateLimiter, getClientIp } from "../middleware/rateLimiter";
 
 export async function login(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
   try {
@@ -14,11 +14,7 @@ export async function login(req: AuthenticatedRequest, res: Response, next: Next
     const result = await authService.login(email, password);
 
     // Reset rate limiter for client IP upon successful authentication
-    const forwarded = req.headers["x-forwarded-for"];
-    const ip = (typeof forwarded === "string" ? forwarded.split(",")[0].trim() : Array.isArray(forwarded) ? forwarded[0] : null)
-      || req.ip
-      || req.socket.remoteAddress
-      || "127.0.0.1";
+    const ip = getClientIp(req);
     loginRateLimiter.reset(ip);
 
     res.status(200).json({
@@ -47,6 +43,32 @@ export async function me(req: AuthenticatedRequest, res: Response, next: NextFun
       success: true,
       message: "Sesi valid.",
       data: result,
+      timestamp: new Date().toISOString(),
+    });
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function changePassword(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
+  try {
+    if (!req.user) {
+      res.status(401).json({
+        success: false,
+        error: { code: "UNAUTHENTICATED", message: "Autentikasi diperlukan." },
+        timestamp: new Date().toISOString(),
+      });
+      return;
+    }
+
+    const result = await authService.changePassword(req.body, req.user);
+
+    res.status(200).json({
+      success: true,
+      message: result.message,
+      data: {
+        token: result.token,
+      },
       timestamp: new Date().toISOString(),
     });
   } catch (err) {

@@ -8,7 +8,7 @@
 
 import { SystemUser } from "../../domain/user/types";
 import { IUserDataProvider } from "../mock/mockUserProvider";
-import { AuthUserSession, DEMO_CREDENTIALS } from "../repositories/userRepository";
+import { AuthUserSession, AuthResult, AuthErrorCode, DEMO_CREDENTIALS } from "../repositories/userRepository";
 import { APP_CONFIG } from "../../app/config/appConfig";
 
 export class ApiUserProvider implements IUserDataProvider {
@@ -229,13 +229,20 @@ export class ApiUserProvider implements IUserDataProvider {
     return { success: true, message: payload.message };
   }
 
-  public async authenticate(email: string, password: string): Promise<AuthUserSession | null> {
+  public async authenticateDetailed(email: string, password: string): Promise<AuthResult> {
+    const controller = typeof AbortController !== "undefined" ? new AbortController() : null;
+    const timeoutId = controller ? setTimeout(() => controller.abort(), 15000) : null;
+
     try {
       const res = await fetch(`${this.baseUrl}/auth/login`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ email, password }),
+        signal: controller ? controller.signal : undefined,
       });
+
+      if (timeoutId) clearTimeout(timeoutId);
+
       if (res.ok) {
         const payload = await res.json();
         if (payload.success && payload.data) {
@@ -244,17 +251,103 @@ export class ApiUserProvider implements IUserDataProvider {
             window.localStorage.setItem("auth_user", JSON.stringify(payload.data.user));
           }
           return {
-            role: payload.data.user.role,
-            name: payload.data.user.nama,
-            userId: payload.data.user.userId,
-            employeeId: payload.data.user.employeeId,
+            success: true,
+            session: {
+              role: payload.data.user.role,
+              name: payload.data.user.nama,
+              userId: payload.data.user.userId,
+              employeeId: payload.data.user.employeeId,
+            },
           };
         }
       }
-      return null;
-    } catch {
-      // In API mode, if the backend server is unreachable, do NOT fall back to fake mock sessions.
-      return null;
+
+      // Handle non-OK status codes
+      const payload = await res.json().catch(() => ({}));
+      const backendCode = payload?.error?.code || "";
+
+      if (res.status === 401 || backendCode === "INVALID_CREDENTIALS") {
+        return {
+          success: false,
+          statusCode: 401,
+          errorCode: "INVALID_CREDENTIALS",
+          errorMessage: "Email atau password yang Anda masukkan tidak sesuai. Periksa kembali data login Anda.",
+        };
+      }
+
+      if (
+        res.status === 403 ||
+        backendCode === "ACCOUNT_INACTIVE" ||
+        backendCode === "EMPLOYEE_INACTIVE" ||
+        backendCode === "EMPLOYEE_NOT_FOUND" ||
+        backendCode === "MESSENGER_NO_EMPLOYEE_ID"
+      ) {
+        return {
+          success: false,
+          statusCode: 403,
+          errorCode: "ACCOUNT_INACTIVE",
+          errorMessage: "Akun Anda belum aktif atau aksesnya telah dinonaktifkan. Hubungi administrator.",
+        };
+      }
+
+      if (res.status === 429 || backendCode === "TOO_MANY_REQUESTS") {
+        const retryHeader = res.headers.get("Retry-After");
+        const retrySec = payload?.error?.retryAfterSeconds || (retryHeader ? Number(retryHeader) : 60);
+        return {
+          success: false,
+          statusCode: 429,
+          errorCode: "TOO_MANY_REQUESTS",
+          retryAfterSeconds: retrySec,
+          errorMessage: "Terlalu banyak percobaan login. Silakan tunggu sebelum mencoba kembali.",
+        };
+      }
+
+      if (res.status === 400 || backendCode === "VALIDATION_ERROR") {
+        return {
+          success: false,
+          statusCode: 400,
+          errorCode: "VALIDATION_ERROR",
+          errorMessage: payload?.error?.message || "Email atau password yang Anda masukkan tidak sesuai. Periksa kembali data login Anda.",
+        };
+      }
+
+      if (res.status >= 500) {
+        return {
+          success: false,
+          statusCode: res.status,
+          errorCode: "SERVER_ERROR",
+          errorMessage: "Terjadi gangguan pada layanan login. Silakan coba kembali beberapa saat lagi.",
+        };
+      }
+
+      return {
+        success: false,
+        statusCode: res.status,
+        errorCode: "UNEXPECTED_ERROR",
+        errorMessage: "Terjadi kendala saat memproses permintaan login. Silakan coba kembali.",
+      };
+    } catch (err: any) {
+      if (timeoutId) clearTimeout(timeoutId);
+
+      if (err?.name === "AbortError") {
+        return {
+          success: false,
+          errorCode: "TIMEOUT_ERROR",
+          errorMessage: "Tidak dapat terhubung ke server. Periksa koneksi internet Anda.",
+        };
+      }
+
+      // Fetch failed / offline / network error
+      return {
+        success: false,
+        errorCode: "NETWORK_ERROR",
+        errorMessage: "Tidak dapat terhubung ke server. Periksa koneksi internet Anda.",
+      };
     }
+  }
+
+  public async authenticate(email: string, password: string): Promise<AuthUserSession | null> {
+    const res = await this.authenticateDetailed(email, password);
+    return res.session || null;
   }
 }

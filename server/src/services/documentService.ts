@@ -217,9 +217,27 @@ export class DocumentService {
     const order = dbOrderRepository.getByOrderNo(orderNo);
     if (order && role === "messenger") {
       const ordMessenger = (order.messenger || (order as any).assignedMessengerName || "").toLowerCase().trim();
-      const isUnassigned = !ordMessenger || ordMessenger === "belum ditugaskan" || ordMessenger === "-";
+      const ordPengantar = ((order as any).messengerPengantar || "").toLowerCase().trim();
+      const assignedEmpId = ((order as any).assignedMessengerId || "").toLowerCase().trim();
+      const deliveryEmpId = ((order as any).deliveryMessengerId || "").toLowerCase().trim();
+      const isUnassigned = (!ordMessenger || ordMessenger === "belum ditugaskan" || ordMessenger === "-") && !assignedEmpId && !deliveryEmpId;
+
       const uName = (user.nama || "").toLowerCase().trim();
-      const matches = ordMessenger === uName || ordMessenger.includes(uName) || uName.includes(ordMessenger);
+      const uEmpId = ((user as any).employeeId || user.userId || "").toLowerCase().trim();
+
+      // [DEF-SEC-005 REMEDIATION] Strict Canonical ID & Exact Name Verification
+      const hasCanonicalMatch = Boolean(
+        (assignedEmpId && assignedEmpId === uEmpId) ||
+        (deliveryEmpId && deliveryEmpId === uEmpId)
+      );
+      const hasExactNameMatch = Boolean(
+        (!assignedEmpId && !deliveryEmpId) && (
+          (ordMessenger && ordMessenger === uName) ||
+          (ordPengantar && ordPengantar === uName)
+        )
+      );
+      const matches = hasCanonicalMatch || hasExactNameMatch;
+
       if (!isUnassigned && !matches) {
         throw new ApiError(403, "FORBIDDEN", "Anda tidak berwenang melihat dokumen untuk order ini.");
       }
@@ -341,11 +359,42 @@ export class DocumentService {
       if (doc.orderNo) {
         const order = dbOrderRepository.getByOrderNo(doc.orderNo);
         if (order) {
-          const isAssigned =
-            order.messenger === user.nama ||
-            order.messengerPengantar === user.nama ||
-            (order.assignedMessengerId && order.assignedMessengerId === ((user as any).employeeId || user.userId));
-          if (isAssigned) {
+          const uEmpId = ((user as any).employeeId || user.userId || "").toLowerCase().trim();
+          const uNumericId = uEmpId.replace(/^usr-/, "");
+          const uPrefixedId = "usr-" + uNumericId;
+          const uName = (user.nama || "").toLowerCase().trim();
+
+          const assignedEmpId = ((order as any).assignedMessengerId || "").toLowerCase().trim();
+          const deliveryEmpId = ((order as any).deliveryMessengerId || "").toLowerCase().trim();
+          const samsatEmpId = ((order as any).samsatMessengerId || "").toLowerCase().trim();
+          const samsatPickupEmpId = ((order as any).samsatPickupMessengerId || "").toLowerCase().trim();
+
+          const ordMessenger = (order.messenger || (order as any).assignedMessengerName || "").toLowerCase().trim();
+          const ordPengantar = ((order as any).messengerPengantar || "").toLowerCase().trim();
+
+          const matchesEmp = (empId: string) => Boolean(
+            empId && (
+              empId === uEmpId ||
+              (uNumericId && empId === uNumericId) ||
+              (uNumericId && empId === uPrefixedId)
+            )
+          );
+
+          const hasCanonicalMatch = Boolean(
+            matchesEmp(assignedEmpId) ||
+            matchesEmp(deliveryEmpId) ||
+            matchesEmp(samsatEmpId) ||
+            matchesEmp(samsatPickupEmpId)
+          );
+
+          const hasExactNameMatch = Boolean(
+            (!assignedEmpId && !deliveryEmpId && !samsatEmpId && !samsatPickupEmpId) && (
+              (ordMessenger && ordMessenger === uName) ||
+              (ordPengantar && ordPengantar === uName)
+            )
+          );
+
+          if (hasCanonicalMatch || hasExactNameMatch) {
             return;
           }
         }

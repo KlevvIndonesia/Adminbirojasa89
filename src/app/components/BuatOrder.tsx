@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useMemo, useRef } from "react";
 import { useNavigate } from "react-router";
 import { motion, AnimatePresence } from "motion/react";
 import { Card } from "./ui/card";
@@ -62,11 +62,15 @@ import { pricingStore, usePricingStore, resolveServiceId, resolveSamsatId } from
 import { documentRepository } from "../../data/repositories/documentRepository";
 import { processDocumentUpload, formatFileSize } from "../utils/fileCompressor";
 import { cn } from "./ui/utils";
+import { APP_CONFIG } from "../config/appConfig";
+import { ActionInlineError } from "./ui/ActionInlineError";
+import { ClassifiedActionError, classifyActionError } from "../utils/actionErrorClassifier";
 import { calculateEstimation } from "../../domain/estimation/estimationEngine";
 import { DEFAULT_R4_ANNUAL_TEMPLATE, DEFAULT_R2_ANNUAL_TEMPLATE } from "../../domain/estimation/defaultTemplates";
 import { estimationStore, useEstimationStore } from "../data/estimationStore";
 import { CalculationExplanationModal } from "./estimation/CalculationExplanationModal";
 import { SearchableSamsatSelect } from "./SearchableSamsatSelect";
+import { useServiceStore, parseRequirementItem, ServiceItem } from "../data/serviceStore";
 import { PlateNumberInput } from "./PlateNumberInput";
 import {
   ProgramSamsat,
@@ -77,13 +81,7 @@ import {
 } from "../../domain/estimation/types";
 import { parseDateParts } from "../../domain/estimation/excelDateUtils";
 
-const layananOptions = [
-  "Perpanjangan 1 Tahun",
-  "Perpanjangan 5 Tahun",
-  "Balik Nama",
-  "Mutasi Antar Samsat",
-  "Mutasi Luar Daerah",
-];
+// Dynamic services bound via useServiceStore
 
 const bulanOptions = [
   "Januari", "Februari", "Maret", "April", "Mei", "Juni",
@@ -135,6 +133,7 @@ interface AttachedDocState {
   fileUrl?: string;
   fileSize?: string;
   attached: boolean;
+  documentId?: string;
 }
 
 export function BuatOrder({
@@ -147,6 +146,10 @@ export function BuatOrder({
   usePricingStore(); // Reactive subscription to pricingStore configuration
   useEstimationStore(); // Reactive subscription to estimationStore template parameters & components
   const { activeMethods } = usePaymentMethods();
+  const { activeServices, isLoading: isServicesLoading, error: servicesError } = useServiceStore();
+  const availableServices = useMemo(() => {
+    return [...activeServices].sort((a: ServiceItem, b: ServiceItem) => (a.urutan || 0) - (b.urutan || 0));
+  }, [activeServices]);
 
   // Stepper State: 1 = Data Klien & Kendaraan, 2 = Dokumen, Pembayaran & Ringkasan
   const [currentStep, setCurrentStep] = useState<1 | 2 | 3>(1);
@@ -171,8 +174,20 @@ export function BuatOrder({
     fileUrl?: string;
   } | null>(null);
 
-  // Validation errors for Step 1
+  // Validation & feedback errors
   const [step1Errors, setStep1Errors] = useState<Record<string, string>>({});
+  const [step2Errors, setStep2Errors] = useState<{
+    metodePembayaran?: string;
+    nominalDibayarAwal?: string;
+  }>({});
+  const [docUploadErrors, setDocUploadErrors] = useState<Record<string, string>>({});
+  const [paymentProofUploadError, setPaymentProofUploadError] = useState<string>("");
+  const [submitError, setSubmitError] = useState<ClassifiedActionError | null>(null);
+
+  // Synchronous double-submit lock + persistent idempotency key across timeout retries
+  const isSubmittingRef = useRef(false);
+  const idempotencyKeyRef = useRef<string | null>(null);
+  const idempotencySignatureRef = useRef<string | null>(null);
 
   // Confirmation dialogs
   const [showResetConfirm, setShowResetConfirm] = useState(false);
@@ -241,11 +256,14 @@ export function BuatOrder({
 
     // 2. Kendaraan & Layanan
     layanan: "",
+    serviceId: "",
     metodeLayanan: "Antar Jemput" as "Antar Jemput" | "Datang Langsung",
     jenisKendaraan: "Mobil",
     tahunKendaraan: new Date().getFullYear().toString(),
     wilayahSamsatAsal: "Jakarta Timur",
+    samsatAsalId: "samsat-jakarta-timur",
     wilayahSamsatTujuan: "",
+    samsatTujuanId: "",
 
     // 3. Informasi Pajak Kendaraan
     pkbBerlakuSd: "",
@@ -320,6 +338,24 @@ export function BuatOrder({
 
   const extendedTemplateId = resolveEstimationTemplateId(formData.layanan, formData.jenisKendaraan);
   const isExtendedEstimation = !isR4Annual && !isR2Annual && !!extendedTemplateId;
+
+  const selectedServiceItem = availableServices.find(
+    (s: ServiceItem) => (formData.serviceId && s.id === formData.serviceId) || s.nama_layanan === formData.layanan
+  );
+  const requiresSamsatTujuan = selectedServiceItem?.memerlukan_samsat_tujuan === 1 || formData.layanan.includes("Mutasi");
+
+  const dynamicDocRequirements = useMemo(() => {
+    if (selectedServiceItem && Array.isArray(selectedServiceItem.requirements) && selectedServiceItem.requirements.length > 0) {
+      return selectedServiceItem.requirements.map((req: string, idx: number) => parseRequirementItem(req, idx));
+    }
+    return [
+      { key: "stnk", label: "STNK Asli", isOptional: false, cleanName: "STNK Asli" },
+      { key: "bpkb", label: "BPKB Asli / Surat Keterangan Leasing", isOptional: false, cleanName: "BPKB Asli" },
+      { key: "ktp", label: "KTP Pemilik Asli Sesuai BPKB", isOptional: false, cleanName: "KTP Pemilik" },
+      { key: "skkp", label: "SKKP (Surat Ketetapan Pajak Daerah)", isOptional: true, cleanName: "SKKP" },
+      { key: "lainnya", label: "Dokumen Tambahan (Surat Kuasa / Faktur / Kuitansi)", isOptional: true, cleanName: "Dokumen Tambahan" },
+    ];
+  }, [selectedServiceItem]);
 
   // Cost calculation via pricingStore SSoT or estimationEngine (for R4, R2, and Extended)
   const calculateCost = () => {
@@ -768,6 +804,13 @@ export function BuatOrder({
 
   // Document upload handler with automatic HEIC conversion & adaptive compression
   const handleDocFileSelect = async (docKey: string, file: File) => {
+    setDocUploadErrors((prev) => {
+      if (!prev[docKey]) return prev;
+      const next = { ...prev };
+      delete next[docKey];
+      return next;
+    });
+    setSubmitError(null);
     try {
       const processed = await processDocumentUpload(file);
       setDocs((prev) => ({
@@ -779,6 +822,7 @@ export function BuatOrder({
           fileUrl: processed.fileUrl,
           fileSize: formatFileSize(processed.fileSize),
           attached: true,
+          documentId: undefined,
         },
       }));
 
@@ -790,11 +834,19 @@ export function BuatOrder({
         toast.success(`Dokumen ${processed.fileName} berhasil dilampirkan.`);
       }
     } catch (err: any) {
-      toast.error(err.message || `Gagal memproses berkas ${file.name}`);
+      const classified = classifyActionError(err, { entityLabel: "Dokumen" });
+      setDocUploadErrors((prev) => ({ ...prev, [docKey]: classified.message }));
+      toast.error(classified.message || `Gagal memproses berkas ${file.name}`);
     }
   };
 
   const handleDocRemove = (docKey: string) => {
+    setDocUploadErrors((prev) => {
+      if (!prev[docKey]) return prev;
+      const next = { ...prev };
+      delete next[docKey];
+      return next;
+    });
     setDocs((prev) => ({
       ...prev,
       [docKey]: {
@@ -804,6 +856,7 @@ export function BuatOrder({
         fileUrl: undefined,
         fileSize: undefined,
         attached: false,
+        documentId: undefined,
       },
     }));
     toast.info("Dokumen dihapus dari lampiran.");
@@ -811,6 +864,8 @@ export function BuatOrder({
 
   // Payment proof handler with automatic HEIC conversion & adaptive compression
   const handlePaymentProofSelect = async (file: File) => {
+    setPaymentProofUploadError("");
+    setSubmitError(null);
     try {
       const processed = await processDocumentUpload(file);
       setPaymentProof({
@@ -820,6 +875,7 @@ export function BuatOrder({
         fileUrl: processed.fileUrl,
         fileSize: formatFileSize(processed.fileSize),
         attached: true,
+        documentId: undefined,
       });
 
       if (processed.compressed && processed.compressionRatio) {
@@ -830,11 +886,14 @@ export function BuatOrder({
         toast.success(`Bukti pembayaran ${processed.fileName} berhasil diunggah.`);
       }
     } catch (err: any) {
-      toast.error(err.message || `Gagal memproses bukti pembayaran ${file.name}`);
+      const classified = classifyActionError(err, { entityLabel: "Bukti pembayaran" });
+      setPaymentProofUploadError(classified.message);
+      toast.error(classified.message || `Gagal memproses bukti pembayaran ${file.name}`);
     }
   };
 
   const handlePaymentProofRemove = () => {
+    setPaymentProofUploadError("");
     setPaymentProof({
       file: undefined,
       name: "",
@@ -842,6 +901,7 @@ export function BuatOrder({
       fileUrl: undefined,
       fileSize: undefined,
       attached: false,
+      documentId: undefined,
     });
     toast.info("Bukti pembayaran dihapus.");
   };
@@ -871,11 +931,14 @@ export function BuatOrder({
       nomorHP: "",
       kepemilikanKendaraan: "Pribadi",
       layanan: "",
+      serviceId: "",
       metodeLayanan: "Antar Jemput",
       jenisKendaraan: "Mobil",
       tahunKendaraan: new Date().getFullYear().toString(),
       wilayahSamsatAsal: "Jakarta Timur",
+      samsatAsalId: "samsat-jakarta-timur",
       wilayahSamsatTujuan: "",
+      samsatTujuanId: "",
       pkbBerlakuSd: "",
       tahunPajak: "",
       bulanPajak: "",
@@ -925,6 +988,13 @@ export function BuatOrder({
       "stnk-hilang": 0,
       "pemekaran-wilayah": 0,
     });
+    setStep1Errors({});
+    setStep2Errors({});
+    setDocUploadErrors({});
+    setPaymentProofUploadError("");
+    setSubmitError(null);
+    idempotencyKeyRef.current = null;
+    idempotencySignatureRef.current = null;
   };
 
   // Step 1 Validation Helper
@@ -1018,7 +1088,7 @@ export function BuatOrder({
 
   const handleSubmitOrder = async (e?: React.FormEvent) => {
     if (e) e.preventDefault();
-    if (isSubmitting) return;
+    if (isSubmitting || isSubmittingRef.current) return;
 
     const fullNopol = getCombinedNopol();
 
@@ -1027,7 +1097,8 @@ export function BuatOrder({
     if (!validation.isValid) {
       setStep1Errors(validation.errors);
       setCurrentStep(1);
-      toast.error(validation.errors[validation.firstKey!] || "Lengkapi data wajib diisi terlebih dahulu.");
+      const firstErrMsg = validation.errors[validation.firstKey!] || "Lengkapi data wajib diisi terlebih dahulu.";
+      toast.error(firstErrMsg);
       setTimeout(() => {
         focusAndScrollToError(validation.firstKey!);
       }, 100);
@@ -1035,28 +1106,76 @@ export function BuatOrder({
     }
     setStep1Errors({});
 
+    const nextStep2Errors: { metodePembayaran?: string; nominalDibayarAwal?: string } = {};
     if (formData.tipePembayaran === "Bayar di Awal") {
       if (!formData.metodePembayaran) {
-        toast.error("Untuk pilihan 'Bayar di Awal', metode pembayaran wajib dipilih!");
-        setCurrentStep(2);
-        return;
+        nextStep2Errors.metodePembayaran = "Untuk pilihan 'Bayar di Awal', metode pembayaran wajib dipilih.";
       }
       const rawNominal = formData.nominalDibayarAwal ? formData.nominalDibayarAwal.replace(/[^0-9]/g, "") : "";
       if (!rawNominal) {
-        toast.error("Nominal dibayar di awal wajib diisi!");
-        setCurrentStep(2);
-        return;
+        nextStep2Errors.nominalDibayarAwal = "Nominal dibayar di awal wajib diisi.";
+      } else {
+        const parsed = Number(rawNominal);
+        if (isNaN(parsed) || parsed <= 0) {
+          nextStep2Errors.nominalDibayarAwal = "Nominal dibayar di awal harus lebih besar dari Rp 0.";
+        }
       }
-      const parsed = Number(rawNominal);
-      if (isNaN(parsed) || parsed < 0) {
-        toast.error("Nominal dibayar di awal tidak valid!");
-        setCurrentStep(2);
-        return;
-      }
-
     }
 
+    if (Object.keys(nextStep2Errors).length > 0) {
+      setStep2Errors(nextStep2Errors);
+      setCurrentStep(2);
+      const firstMsg = nextStep2Errors.metodePembayaran || nextStep2Errors.nominalDibayarAwal || "Periksa informasi pembayaran.";
+      setSubmitError(
+        classifyActionError({
+          statusCode: 400,
+          code: "VALIDATION_ERROR",
+          message: firstMsg,
+          field: nextStep2Errors.metodePembayaran ? "metodePembayaran" : "nominalDibayarAwal",
+        })
+      );
+      toast.error(firstMsg);
+      return;
+    }
+    setStep2Errors({});
+    setDocUploadErrors({});
+    setPaymentProofUploadError("");
+    setSubmitError(null);
+
+    // Lock synchronously to prevent double invocation from event bubbling/rapid clicks
+    isSubmittingRef.current = true;
     setIsSubmitting(true);
+
+    // Compute payload signature to reuse clientRequestId / X-Idempotency-Key safely on retries
+    const submissionSignature = JSON.stringify({
+      customer: formData.customer.trim(),
+      namaPemilik: formData.namaPemilik.trim(),
+      nomorHP: formData.nomorHP.trim(),
+      layanan: formData.layanan,
+      serviceId: formData.serviceId,
+      metodeLayanan: formData.metodeLayanan,
+      jenisKendaraan: formData.jenisKendaraan,
+      tahunKendaraan: formData.tahunKendaraan,
+      nopol: fullNopol,
+      samsatAsalId: formData.samsatAsalId,
+      samsatTujuanId: requiresSamsatTujuan ? formData.samsatTujuanId : "",
+      pkbBerlakuSd: formData.pkbBerlakuSd,
+      nominalPkbTerakhir: formData.nominalPkbTerakhir,
+      nominalSwdkllj: formData.nominalSwdkllj,
+      tipePembayaran: formData.tipePembayaran,
+      metodePembayaran: formData.metodePembayaran,
+      nominalDibayarAwal: formData.nominalDibayarAwal,
+      jemputDetail: formData.jemputDetail,
+      antarDetail: isSameAddress ? formData.jemputDetail : formData.antarDetail,
+      docNames: Object.fromEntries(Object.entries(docs).map(([k, v]) => [k, v.attached ? v.name : ""])),
+      proofName: paymentProof.attached ? paymentProof.name : "",
+      total: cost.total,
+    });
+
+    if (!idempotencyKeyRef.current || idempotencySignatureRef.current !== submissionSignature) {
+      idempotencyKeyRef.current = `REQ-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
+      idempotencySignatureRef.current = submissionSignature;
+    }
 
     try {
       const defaultJemputDetail = formData.metodeLayanan === "Datang Langsung" && !formData.jemputDetail.trim()
@@ -1090,19 +1209,31 @@ export function BuatOrder({
             mapsUrl: formData.antarMapsUrl || undefined,
           };
 
-      // Format Client Documents (Semua Optional)
+      // Upload attached documents BEFORE creating order (abort transparently if upload fails in API mode)
       const clientDocuments: Record<string, OrderDocument> = {};
       for (const key of Object.keys(docs)) {
         const item = docs[key];
         let fileUrl = item.fileUrl;
-        let docId: string | undefined = undefined;
-        if (item.attached && item.file) {
+        let docId: string | undefined = item.documentId;
+        if (item.attached && item.file && !docId) {
           try {
             const uploaded = await documentRepository.uploadDocument(item.file, { documentType: key });
             fileUrl = uploaded.fileUrl;
             docId = uploaded.id;
+            setDocs((prev) => ({
+              ...prev,
+              [key]: { ...prev[key], fileUrl, documentId: docId },
+            }));
           } catch (uploadErr) {
-            console.warn(`[BuatOrder] Upload warning for ${key}:`, uploadErr);
+            if (APP_CONFIG.dataProvider === "api") {
+              const classifiedUploadErr = classifyActionError(uploadErr, { entityLabel: `Dokumen ${item.name || key}` });
+              setDocUploadErrors((prev) => ({
+                ...prev,
+                [key]: `Gagal mengunggah ${item.name || key}: ${classifiedUploadErr.message}`,
+              }));
+              throw classifiedUploadErr;
+            }
+            console.warn(`[BuatOrder] Upload warning for ${key} (mock mode):`, uploadErr);
           }
         }
         clientDocuments[key] = {
@@ -1121,14 +1252,20 @@ export function BuatOrder({
       let buktiBayarPayload: PaymentProof | undefined;
       if (formData.tipePembayaran === "Bayar di Awal" && paymentProof.attached) {
         let paymentUrl = paymentProof.fileUrl;
-        let paymentDocId: string | undefined = undefined;
-        if (paymentProof.file) {
+        let paymentDocId: string | undefined = paymentProof.documentId;
+        if (paymentProof.file && !paymentDocId) {
           try {
             const uploaded = await documentRepository.uploadDocument(paymentProof.file, { documentType: "BUKTI_PEMBAYARAN" });
             paymentUrl = uploaded.fileUrl;
             paymentDocId = uploaded.id;
+            setPaymentProof((prev) => ({ ...prev, fileUrl: paymentUrl, documentId: paymentDocId }));
           } catch (uploadErr) {
-            console.warn("[BuatOrder] Payment proof upload warning:", uploadErr);
+            if (APP_CONFIG.dataProvider === "api") {
+              const classifiedProofErr = classifyActionError(uploadErr, { entityLabel: "Bukti pembayaran" });
+              setPaymentProofUploadError(`Gagal mengunggah bukti pembayaran: ${classifiedProofErr.message}`);
+              throw classifiedProofErr;
+            }
+            console.warn("[BuatOrder] Payment proof upload warning (mock mode):", uploadErr);
           }
         }
         buktiBayarPayload = {
@@ -1146,18 +1283,24 @@ export function BuatOrder({
           ? formData.metodePembayaran
           : formData.metodePembayaran || "Cash (Saat Dokumen Diterima)";
 
-      // Tambahkan order ke OrderStore (masuk ke Stage 1: VERIFIKASI)
       const selectedPm = activeMethods.find((m) => m.nama_metode === paymentMethodResolved);
       const isBayarAwal = formData.tipePembayaran === "Bayar di Awal";
       const nominalAwal = isBayarAwal ? (parseFloat(formData.nominalDibayarAwal.replace(/[^0-9]/g, "")) || 0) : 0;
       const nowIso = new Date().toISOString();
 
       const createdOrder = await orderStore.addOrderAsync({
+        clientRequestId: idempotencyKeyRef.current,
         customer: formData.customer.trim(),
         namaPemilik: formData.namaPemilik.trim() || formData.customer.trim(),
         nomorHP: formData.nomorHP.trim(),
         tanggalMasukBerkas: formData.metodeLayanan === "Datang Langsung" ? nowIso : undefined,
         layanan: formData.layanan,
+        service_id: formData.serviceId || selectedServiceItem?.id,
+        serviceId: formData.serviceId || selectedServiceItem?.id,
+        samsat_asal_id: formData.samsatAsalId || "samsat-jakarta-timur",
+        samsatAsalId: formData.samsatAsalId || "samsat-jakarta-timur",
+        samsat_tujuan_id: requiresSamsatTujuan ? (formData.samsatTujuanId || undefined) : undefined,
+        samsatTujuanId: requiresSamsatTujuan ? (formData.samsatTujuanId || undefined) : undefined,
         metodeLayanan: formData.metodeLayanan,
         costBreakdown: cost.breakdown,
         costSnapshot: cost.snapshot,
@@ -1217,18 +1360,35 @@ export function BuatOrder({
             }
           ] : [],
         },
-      });
+      } as any);
 
+      idempotencyKeyRef.current = null;
+      idempotencySignatureRef.current = null;
       setCreatedOrderSuccess(createdOrder);
+      onOrderCreated?.(createdOrder);
       if (formData.metodeLayanan === "Datang Langsung" || createdOrder.metodeLayanan === "Datang Langsung") {
         toast.success(`Order ${createdOrder.orderNo} berhasil dibuat dan langsung masuk ke tahap Verifikasi Dokumen (Datang Langsung)!`);
       } else {
         toast.success(`Order ${createdOrder.orderNo} berhasil dibuat dan otomatis masuk ke tahap Verifikasi!`);
       }
       setStep1Errors({});
-    } catch {
-      toast.error("Gagal membuat order. Silakan periksa kembali formulir.");
+      setStep2Errors({});
+      setSubmitError(null);
+    } catch (err: any) {
+      const classified = classifyActionError(err, { entityLabel: "Order" });
+      if (classified.code === "IDEMPOTENCY_CONFLICT") {
+        idempotencyKeyRef.current = null;
+        idempotencySignatureRef.current = null;
+      }
+      if (classified.field === "metodePembayaran" || classified.field === "nominalDibayarAwal") {
+        setStep2Errors((prev) => ({ ...prev, [classified.field!]: classified.message }));
+      } else if (classified.field) {
+        setStep1Errors((prev) => ({ ...prev, [classified.field!]: classified.message }));
+      }
+      setSubmitError(classified);
+      toast.error(classified.message);
     } finally {
+      isSubmittingRef.current = false;
       setIsSubmitting(false);
     }
   };
@@ -1430,26 +1590,38 @@ export function BuatOrder({
                       <Select
                         value={formData.layanan}
                         onValueChange={(value) => {
-                          const cfg = pricingStore.getServiceFeeConfig(value, formData.wilayahSamsatAsal);
+                          const matchedSvc = availableServices.find((s: ServiceItem) => s.nama_layanan === value || s.id === value);
+                          const serviceName = matchedSvc ? matchedSvc.nama_layanan : value;
+                          const serviceId = matchedSvc ? matchedSvc.id : "";
+                          const isMutasi = serviceName.includes("Mutasi") || matchedSvc?.memerlukan_samsat_tujuan === 1;
+                          const cfg = pricingStore.getServiceFeeConfig(serviceName, formData.wilayahSamsatAsal);
                           const swdNominal = cfg?.swdkllj?.enabled !== false ? String(cfg?.swdkllj?.nominal || 143000) : "0";
                           setFormData((prev) => ({
                             ...prev,
-                            layanan: value,
-                            nominalSwdkllj: swdNominal,
-                            wilayahSamsatTujuan: value.includes("Mutasi") ? prev.wilayahSamsatTujuan : prev.wilayahSamsatAsal,
+                            layanan: serviceName,
+                            serviceId: serviceId,
+                            nominalSwdkllj: (swdNominal !== undefined) ? swdNominal : prev.nominalSwdkllj,
+                            wilayahSamsatTujuan: isMutasi ? prev.wilayahSamsatTujuan : "",
+                            samsatTujuanId: isMutasi ? prev.samsatTujuanId : "",
                           }));
                           clearFieldError("layanan");
                         }}
                       >
                         <SelectTrigger className={cn("bg-input-background border-border h-9 text-xs", step1Errors.layanan && "border-destructive ring-1 ring-destructive/40")}>
-                          <SelectValue placeholder="Pilih jenis pengurusan Samsat" />
+                          <SelectValue placeholder={isServicesLoading ? "Memuat layanan..." : "Pilih jenis pengurusan Samsat"} />
                         </SelectTrigger>
                         <SelectContent>
-                          {layananOptions.map((layanan) => (
-                            <SelectItem key={layanan} value={layanan} className="text-xs">
-                              {layanan}
-                            </SelectItem>
-                          ))}
+                          {isServicesLoading ? (
+                            <div className="py-2 px-3 text-xs text-muted-foreground">Memuat layanan dari database...</div>
+                          ) : availableServices.length === 0 ? (
+                            <div className="py-2 px-3 text-xs text-muted-foreground">Tidak ada layanan aktif</div>
+                          ) : (
+                            availableServices.map((svc: ServiceItem) => (
+                              <SelectItem key={svc.id} value={svc.nama_layanan} className="text-xs">
+                                {svc.nama_layanan}
+                              </SelectItem>
+                            ))
+                          )}
                         </SelectContent>
                       </Select>
                       {step1Errors.layanan && (
@@ -1589,14 +1761,16 @@ export function BuatOrder({
                       <Label className="text-xs">Wilayah Samsat Asal</Label>
                       <SearchableSamsatSelect
                         value={formData.wilayahSamsatAsal}
-                        onValueChange={(value) => {
+                        onValueChange={(value, item) => {
                           const cfg = pricingStore.getServiceFeeConfig(formData.layanan, value);
                           const swdNominal = cfg?.swdkllj?.enabled !== false ? String(cfg?.swdkllj?.nominal || 143000) : "0";
                           setFormData((prev) => ({
                             ...prev,
                             wilayahSamsatAsal: value,
+                            samsatAsalId: item?.id || prev.samsatAsalId,
                             nominalSwdkllj: swdNominal,
-                            wilayahSamsatTujuan: prev.layanan.includes("Mutasi") ? prev.wilayahSamsatTujuan : value,
+                            wilayahSamsatTujuan: (prev.layanan.includes("Mutasi") || requiresSamsatTujuan) ? prev.wilayahSamsatTujuan : value,
+                            samsatTujuanId: (prev.layanan.includes("Mutasi") || requiresSamsatTujuan) ? prev.samsatTujuanId : (item?.id || prev.samsatAsalId),
                           }));
                         }}
                         placeholder="Pilih Samsat Asal"
@@ -1604,16 +1778,20 @@ export function BuatOrder({
                       />
                     </div>
 
-                    {/* Wilayah Samsat Tujuan (HANYA DITAMPILKAN JIKA LAYANAN = MUTASI) */}
-                    {formData.layanan.includes("Mutasi") && (
+                    {/* Wilayah Samsat Tujuan (HANYA DITAMPILKAN JIKA LAYANAN = MUTASI ATAU MEMERLUKAN SAMSAT TUJUAN) */}
+                    {(formData.layanan.includes("Mutasi") || requiresSamsatTujuan) && (
                       <div id="field-wilayahSamsatTujuan" className="space-y-1.5">
                         <Label className="text-xs">
                           Wilayah Samsat Tujuan <span className="text-destructive">*</span>
                         </Label>
                         <SearchableSamsatSelect
                           value={formData.wilayahSamsatTujuan}
-                          onValueChange={(value) => {
-                            setFormData({ ...formData, wilayahSamsatTujuan: value });
+                          onValueChange={(value, item) => {
+                            setFormData((prev) => ({
+                              ...prev,
+                              wilayahSamsatTujuan: value,
+                              samsatTujuanId: item?.id || prev.samsatTujuanId,
+                            }));
                             clearFieldError("wilayahSamsatTujuan");
                           }}
                           placeholder="Pilih Samsat Tujuan"
@@ -2619,14 +2797,8 @@ export function BuatOrder({
 
                 {isVehicleDocsExpanded && (
                   <div className="space-y-2.5">
-                  {[
-                    { key: "stnk", label: "STNK Asli" },
-                    { key: "bpkb", label: "BPKB Asli / Surat Keterangan Leasing" },
-                    { key: "ktp", label: "KTP Pemilik Asli Sesuai BPKB" },
-                    { key: "skkp", label: "SKKP (Surat Ketetapan Pajak Daerah)" },
-                    { key: "lainnya", label: "Dokumen Tambahan (Surat Kuasa / Faktur / Kuitansi)" },
-                  ].map((item) => {
-                    const doc = docs[item.key];
+                  {dynamicDocRequirements.map((item: any) => {
+                    const doc = docs[item.key] || { name: "", fileType: "", attached: false };
                     return (
                       <div
                         key={item.key}
@@ -2666,6 +2838,21 @@ export function BuatOrder({
                             <p className="text-[11px] text-muted-foreground truncate mt-0.5">
                               {doc.attached ? doc.name : "Berkas fisik dapat diserahkan saat penjemputan"}
                             </p>
+                            {docUploadErrors[item.key] && (
+                              <ActionInlineError
+                                compact
+                                actionKey={`doc-upload-${item.key}`}
+                                error={docUploadErrors[item.key]}
+                                className="mt-1.5"
+                                onDismiss={() =>
+                                  setDocUploadErrors((prev) => {
+                                    const next = { ...prev };
+                                    delete next[item.key];
+                                    return next;
+                                  })
+                                }
+                              />
+                            )}
                           </div>
                         </div>
 
@@ -2801,9 +2988,13 @@ export function BuatOrder({
                         </Label>
                         <Select
                           value={formData.metodePembayaran}
-                          onValueChange={(val) => setFormData({ ...formData, metodePembayaran: val })}
+                          onValueChange={(val) => {
+                            setFormData({ ...formData, metodePembayaran: val });
+                            setStep2Errors((prev) => ({ ...prev, metodePembayaran: undefined }));
+                            setSubmitError(null);
+                          }}
                         >
-                          <SelectTrigger className="bg-input-background border-border h-9 text-xs">
+                          <SelectTrigger className={cn("bg-input-background h-9 text-xs", step2Errors.metodePembayaran ? "border-destructive ring-1 ring-destructive/40" : "border-border")}>
                             <SelectValue placeholder="Pilih saluran pembayaran" />
                           </SelectTrigger>
                           <SelectContent>
@@ -2814,15 +3005,13 @@ export function BuatOrder({
                                 </SelectItem>
                               ))
                             ) : (
-                              <>
-                                <SelectItem value="Transfer Bank BCA" className="text-xs">Transfer Bank BCA</SelectItem>
-                                <SelectItem value="Transfer Bank Mandiri" className="text-xs">Transfer Bank Mandiri</SelectItem>
-                                <SelectItem value="Transfer Bank BRI" className="text-xs">Transfer Bank BRI</SelectItem>
-                                <SelectItem value="Cash" className="text-xs">Cash (Tunai di Loket)</SelectItem>
-                              </>
+                              <div className="py-2 px-3 text-xs text-muted-foreground">Tidak ada metode pembayaran aktif</div>
                             )}
                           </SelectContent>
                         </Select>
+                        {step2Errors.metodePembayaran && (
+                          <p className="text-[11px] text-destructive font-medium">{step2Errors.metodePembayaran}</p>
+                        )}
                       </div>
 
                       {/* Transfer / Bank details dynamically from selected Master Data method */}
@@ -2831,9 +3020,9 @@ export function BuatOrder({
                         const isTransfer = formData.metodePembayaran.includes("Transfer") || (matchedPm && matchedPm.bank !== "Tunai" && matchedPm.bank !== "QRIS");
                         if (!isTransfer) return null;
 
-                        const bankName = matchedPm?.bank || "Bank Central Asia (BCA)";
-                        const accNo = matchedPm?.nomor_rekening || "772-019-2831";
-                        const accName = matchedPm?.nama_rekening || "PT Biro Jasa SUN89 Abadi";
+                        const bankName = matchedPm?.bank || "Bank Transfer";
+                        const accNo = matchedPm?.nomor_rekening || "";
+                        const accName = matchedPm?.nama_rekening || "";
 
                         return (
                           <div className="p-3 rounded-lg border border-border bg-card text-xs space-y-2">
@@ -2938,10 +3127,18 @@ export function BuatOrder({
                             onChange={(e) => {
                               const raw = e.target.value.replace(/[^0-9]/g, "");
                               setFormData({ ...formData, nominalDibayarAwal: raw });
+                              setStep2Errors((prev) => ({ ...prev, nominalDibayarAwal: undefined }));
+                              setSubmitError(null);
                             }}
-                            className="pl-9 bg-background border-border h-9 text-xs font-mono font-bold tabular-nums"
+                            className={cn(
+                              "pl-9 bg-background h-9 text-xs font-mono font-bold tabular-nums",
+                              step2Errors.nominalDibayarAwal ? "border-destructive ring-1 ring-destructive/40" : "border-border"
+                            )}
                           />
                         </div>
+                        {step2Errors.nominalDibayarAwal && (
+                          <p className="text-[11px] text-destructive font-medium">{step2Errors.nominalDibayarAwal}</p>
+                        )}
 
                         {/* Dynamic Calculation Helper */}
                         {(() => {
@@ -3029,6 +3226,15 @@ export function BuatOrder({
                                   ? `Format: ${paymentProof.fileType?.toUpperCase()} • ${paymentProof.fileSize}`
                                   : "Unggah struk transfer bank atau bukti pembayaran loket"}
                               </p>
+                              {paymentProofUploadError && (
+                                <ActionInlineError
+                                  compact
+                                  actionKey="payment-proof-upload"
+                                  error={paymentProofUploadError}
+                                  className="mt-1.5"
+                                  onDismiss={() => setPaymentProofUploadError("")}
+                                />
+                              )}
                             </div>
                           </div>
 
@@ -4240,7 +4446,15 @@ export function BuatOrder({
                   </div>
                 </div>
 
-                {/* STEP 2 NAVIGATION & SUBMIT BUTTONS */}
+                {/* STEP 2 INLINE SUBMISSION ERROR + NAVIGATION & SUBMIT BUTTONS */}
+                <ActionInlineError
+                  error={submitError}
+                  actionKey="buat-order-submit"
+                  className="mt-2"
+                  onDismiss={() => setSubmitError(null)}
+                  onRetry={() => handleSubmitOrder()}
+                  isRetrying={isSubmitting}
+                />
                 <div className="flex flex-col sm:flex-row justify-between items-center gap-2.5 pt-4 border-t border-border/60">
                   <Button
                     type="button"
@@ -4254,7 +4468,6 @@ export function BuatOrder({
                   </Button>
                   <Button
                     type="submit"
-                    onClick={handleSubmitOrder}
                     disabled={isSubmitting}
                     className="w-full sm:w-auto h-9 text-xs bg-primary hover:bg-primary/90 text-primary-foreground gap-1.5 shadow-xs font-semibold"
                   >
@@ -4408,7 +4621,7 @@ export function BuatOrder({
               Order Berhasil Dibuat
             </DialogTitle>
             <DialogDescription className="text-xs text-muted-foreground">
-              Order telah didaftarkan ke sistem dan otomatis masuk ke tahap Verifikasi (Stage 1).
+              Order berhasil disimpan dengan nomor {createdOrderSuccess?.orderNo || "-"}. Order otomatis masuk ke tahap Verifikasi (Stage 1).
             </DialogDescription>
           </DialogHeader>
 

@@ -20,6 +20,7 @@ import { orderRouter } from "./routes/orderRoutes";
 import { pricingRouter } from "./routes/pricingRoutes";
 import { financeRouter } from "./routes/financeRoutes";
 import { userRouter } from "./routes/userRoutes";
+import { employeeRouter } from "./routes/employeeRoutes";
 import { auditRouter } from "./routes/auditRoutes";
 import { documentRouter } from "./routes/documentRoutes";
 import { estimationRouter } from "./routes/estimationRoutes";
@@ -30,6 +31,7 @@ import { paymentMethodRouter } from "./routes/paymentMethodRoutes";
 import { messengerRouter } from "./routes/messengerRoutes";
 import { serviceRouter } from "./routes/serviceRoutes";
 import { orderCorrectionRouter } from "./routes/orderCorrectionRoutes";
+import { publicRouter } from "./routes/publicRoutes";
 
 export function createApp(): Express {
   // Ensure schema and migrations are initialized
@@ -138,7 +140,9 @@ export function createApp(): Express {
   app.use("/api/pricing", pricingRouter);
   app.use("/api/finance", financeRouter);
   app.use("/api/users", userRouter);
+  app.use("/api/employees", employeeRouter);
   app.use("/api/audit-logs", auditRouter);
+  app.use("/api/audit", auditRouter);
   app.use("/api/documents", documentRouter);
   app.use("/api/estimation", estimationRouter);
   app.use("/api/wilayah", wilayahRouter);
@@ -149,6 +153,10 @@ export function createApp(): Express {
   app.use("/api/messenger", messengerRouter);
   app.use("/api/services", serviceRouter);
   app.use("/api/order-corrections", orderCorrectionRouter);
+
+  // Mount Public Customer API (Namespace: /api/v1/public and alias /api/public)
+  app.use("/api/v1/public", publicRouter);
+  app.use("/api/public", publicRouter);
 
   // 404 handler for unknown routes
   app.use((req, res) => {

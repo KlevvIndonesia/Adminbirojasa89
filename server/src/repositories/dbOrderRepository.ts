@@ -102,6 +102,8 @@ export class DbOrderRepository {
     const tanggalMasukBerkas = row.tanggal_masuk_berkas !== null && row.tanggal_masuk_berkas !== undefined ? String(row.tanggal_masuk_berkas) : (parsed.tanggalMasukBerkas || parsed.tanggal_masuk_berkas || undefined);
     const samsatAsal = row.samsat_asal !== null && row.samsat_asal !== undefined ? String(row.samsat_asal) : (parsed.wilayahSamsatAsal || parsed.samsatAsal || parsed.samsat || "Jakarta Timur");
     const samsatTujuan = row.samsat_tujuan !== null && row.samsat_tujuan !== undefined ? String(row.samsat_tujuan) : (parsed.wilayahSamsatTujuan || parsed.samsatTujuan || "-");
+    const samsatAsalId = row.samsat_asal_id !== null && row.samsat_asal_id !== undefined ? String(row.samsat_asal_id) : (parsed.samsatAsalId || parsed.samsat_asal_id || undefined);
+    const samsatTujuanId = row.samsat_tujuan_id !== null && row.samsat_tujuan_id !== undefined ? String(row.samsat_tujuan_id) : (parsed.samsatTujuanId || parsed.samsat_tujuan_id || "-");
     const createdAt = row.created_at ? String(row.created_at) : (parsed.createdAt || new Date().toISOString());
     const updatedAt = row.updated_at ? String(row.updated_at) : (parsed.updatedAt || new Date().toISOString());
     const costEval = evaluateOrderCostCompleteness({
@@ -184,6 +186,10 @@ export class DbOrderRepository {
       samsat_asal: samsatAsal,
       wilayahSamsatTujuan: samsatTujuan,
       samsat_tujuan: samsatTujuan,
+      samsatAsalId,
+      samsat_asal_id: samsatAsalId,
+      samsatTujuanId,
+      samsat_tujuan_id: samsatTujuanId,
       payment,
       createdAt,
       updatedAt,
@@ -207,6 +213,63 @@ export class DbOrderRepository {
     const stmt = db.prepare("SELECT * FROM orders WHERE is_archived = ? ORDER BY created_at DESC");
     const rows = stmt.all(archived ? 1 : 0) as any[];
     return rows.map((r) => this.mapRowToOrder(r));
+  }
+
+  /**
+   * [DEF-PERF-006 REMEDIATION]: Paginated order retrieval with server-side limit, offset, and counting.
+   */
+  public getOrdersPaginated(options: {
+    page?: number;
+    pageSize?: number;
+    archived?: boolean;
+    stage?: string;
+    search?: string;
+  }): {
+    data: OperationalOrder[];
+    pagination: {
+      page: number;
+      pageSize: number;
+      total: number;
+      totalPages: number;
+    };
+  } {
+    const page = Math.max(1, Number(options.page) || 1);
+    const pageSize = Math.min(100, Math.max(1, Number(options.pageSize) || 20));
+    const offset = (page - 1) * pageSize;
+    const isArchived = options.archived ? 1 : 0;
+
+    let whereClause = "WHERE is_archived = ?";
+    const params: any[] = [isArchived];
+
+    if (options.stage && options.stage.trim()) {
+      whereClause += " AND current_stage_name = ?";
+      params.push(options.stage.trim());
+    }
+
+    if (options.search && options.search.trim()) {
+      whereClause += " AND (order_no LIKE ? OR customer LIKE ? OR nopol LIKE ?)";
+      const pattern = `%${options.search.trim()}%`;
+      params.push(pattern, pattern, pattern);
+    }
+
+    const countStmt = db.prepare(`SELECT COUNT(*) as count FROM orders ${whereClause}`);
+    const countRow = countStmt.get(...params) as { count: number } | undefined;
+    const total = countRow ? Number(countRow.count) : 0;
+    const totalPages = Math.ceil(total / pageSize) || 1;
+
+    const dataStmt = db.prepare(`SELECT * FROM orders ${whereClause} ORDER BY created_at DESC LIMIT ? OFFSET ?`);
+    const rows = dataStmt.all(...params, pageSize, offset) as any[];
+    const data = rows.map((r) => this.mapRowToOrder(r));
+
+    return {
+      data,
+      pagination: {
+        page,
+        pageSize,
+        total,
+        totalPages,
+      },
+    };
   }
 
   public getActiveOrders(): Record<StageName, OperationalOrder[]> {
@@ -269,6 +332,8 @@ export class DbOrderRepository {
     const tanggalMasukBerkas = (order as any).tanggalMasukBerkas || (order as any).tanggal_masuk_berkas || null;
     const samsatAsal = (order as any).wilayahSamsatAsal || (order as any).samsatAsal || (order as any).samsat_asal || (order as any).samsat || null;
     const samsatTujuan = (order as any).wilayahSamsatTujuan || (order as any).samsatTujuan || (order as any).samsat_tujuan || "-";
+    const samsatAsalId = (order as any).samsatAsalId || (order as any).samsat_asal_id || null;
+    const samsatTujuanId = (order as any).samsatTujuanId || (order as any).samsat_tujuan_id || "-";
     const currentStep = Number(order.currentStep || 1);
     const isArchived = order.isArchived === true ? 1 : (order.isArchived === 2 ? 2 : 0);
     let currentStageName = String(order.currentStageName || "Verifikasi");
@@ -309,6 +374,10 @@ export class DbOrderRepository {
       samsat_asal: samsatAsal || undefined,
       wilayahSamsatTujuan: samsatTujuan,
       samsat_tujuan: samsatTujuan,
+      samsatAsalId: samsatAsalId || undefined,
+      samsat_asal_id: samsatAsalId || undefined,
+      samsatTujuanId: samsatTujuanId || undefined,
+      samsat_tujuan_id: samsatTujuanId || undefined,
       createdAt,
       isCostVerified: costEval.isCostVerified,
       costCompletenessStatus: costEval.costCompletenessStatus,
@@ -330,8 +399,8 @@ export class DbOrderRepository {
         biaya_jasa, biaya_antar_jemput, nama_penerima_keluar, bank_uang_keluar, metode_pembayaran_keluar,
         alasan_pending, data_json, created_at, updated_at,
         service_id, tanggal_masuk_berkas, samsat_asal, samsat_tujuan,
-        samsat_tujuan_id, is_cost_verified, cost_completeness_status, cost_verified_at, cost_verified_by
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), ?, ?, ?, ?, NULL, ?, ?, ?, ?)
+        samsat_asal_id, samsat_tujuan_id, is_cost_verified, cost_completeness_status, cost_verified_at, cost_verified_by
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
 
     stmt.run(
@@ -357,6 +426,8 @@ export class DbOrderRepository {
       tanggalMasukBerkas,
       samsatAsal,
       samsatTujuan,
+      samsatAsalId,
+      samsatTujuanId,
       isCostVerifiedVal,
       costCompletenessVal,
       costVerifiedAtVal,
@@ -443,6 +514,14 @@ export class DbOrderRepository {
       ? (updates as any).wilayahSamsatTujuan
       : ((updates as any).samsat_tujuan !== undefined ? (updates as any).samsat_tujuan : ((updates as any).samsatTujuan || (existing as any).wilayahSamsatTujuan || "-"));
 
+    const resolvedSamsatAsalId = (updates as any).samsatAsalId !== undefined
+      ? (updates as any).samsatAsalId
+      : ((updates as any).samsat_asal_id !== undefined ? (updates as any).samsat_asal_id : ((existing as any).samsatAsalId || (existing as any).samsat_asal_id || null));
+
+    const resolvedSamsatTujuanId = (updates as any).samsatTujuanId !== undefined
+      ? (updates as any).samsatTujuanId
+      : ((updates as any).samsat_tujuan_id !== undefined ? (updates as any).samsat_tujuan_id : ((existing as any).samsatTujuanId || (existing as any).samsat_tujuan_id || "-"));
+
     let resolvedIsCostVerified: number;
     let resolvedCostCompletenessStatus: string;
     let resolvedCostVerifiedAt: string | null;
@@ -499,6 +578,10 @@ export class DbOrderRepository {
       samsat_asal: resolvedSamsatAsal,
       wilayahSamsatTujuan: resolvedSamsatTujuan,
       samsat_tujuan: resolvedSamsatTujuan,
+      samsatAsalId: resolvedSamsatAsalId || undefined,
+      samsat_asal_id: resolvedSamsatAsalId || undefined,
+      samsatTujuanId: resolvedSamsatTujuanId || undefined,
+      samsat_tujuan_id: resolvedSamsatTujuanId || undefined,
       isCostVerified: Boolean(resolvedIsCostVerified),
       costCompletenessStatus: resolvedCostCompletenessStatus,
       costVerifiedAt: resolvedCostVerifiedAt || undefined,
@@ -532,6 +615,8 @@ export class DbOrderRepository {
         tanggal_masuk_berkas = ?,
         samsat_asal = ?,
         samsat_tujuan = ?,
+        samsat_asal_id = ?,
+        samsat_tujuan_id = ?,
         is_cost_verified = ?,
         cost_completeness_status = ?,
         cost_verified_at = ?,
@@ -560,6 +645,8 @@ export class DbOrderRepository {
       resolvedTanggalMasukBerkas,
       resolvedSamsatAsal,
       resolvedSamsatTujuan,
+      resolvedSamsatAsalId,
+      resolvedSamsatTujuanId,
       resolvedIsCostVerified,
       resolvedCostCompletenessStatus,
       resolvedCostVerifiedAt,

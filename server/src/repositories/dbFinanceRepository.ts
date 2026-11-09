@@ -308,7 +308,19 @@ export class DbFinanceRepository {
   }
 
   public saveInvoice(invoice: Partial<InvoiceBillingRecord> & { invoiceNo: string; orderNo: string }): number {
-    const existing = this.getInvoiceByNo(invoice.invoiceNo) || this.getInvoiceByOrderNo(invoice.orderNo);
+    const existingByNo = this.getInvoiceByNo(invoice.invoiceNo);
+    const existingByOrder = this.getInvoiceByOrderNo(invoice.orderNo);
+
+    // [DEF-FIN-001 REMEDIATION]: Anti-hijacking & Collision Prevention
+    // If an invoice with this invoiceNo already exists, it MUST belong to the same order.
+    // An order cannot overwrite, hijack, or re-link an invoice belonging to a different order.
+    if (existingByNo && existingByNo.orderNo !== invoice.orderNo) {
+      throw new Error(
+        `[FINANCE_INVOICE_COLLISION] Nomor invoice '${invoice.invoiceNo}' sudah terdaftar untuk pesanan '${existingByNo.orderNo}'. Tidak dapat digunakan untuk pesanan '${invoice.orderNo}'.`
+      );
+    }
+
+    const existing = existingByOrder || existingByNo;
     const biayaSamsat = Number(invoice.biayaSamsat ?? (existing as any)?.biayaSamsat ?? 0);
     const totalTagihan = Number(invoice.totalTagihan ?? (existing as any)?.totalTagihan ?? 0);
     const dibayar = Number(invoice.dibayar ?? invoice.terbayar ?? (existing as any)?.dibayar ?? 0);
@@ -405,11 +417,11 @@ export class DbFinanceRepository {
         WHERE id = ?
       `);
       stmt.run(
-        merged.invoiceNo,
-        merged.orderNo,
-        merged.customer,
-        merged.layanan,
-        merged.status,
+        merged.invoiceNo || invoice.invoiceNo,
+        merged.orderNo || invoice.orderNo,
+        merged.customer || "",
+        merged.layanan || "",
+        merged.status || "UNPAID",
         totalTagihan,
         dibayar,
         sisa,
@@ -424,13 +436,13 @@ export class DbFinanceRepository {
         profitStatus,
         biayaJasa,
         biayaAntarJemput,
-        namaPenerimaKeluar,
-        alasanPending,
+        namaPenerimaKeluar ?? null,
+        alasanPending ?? null,
         costVerificationStatus,
         isDraftEstimate,
         isExplicitZero,
         JSON.stringify(merged),
-        serviceId,
+        serviceId ?? null,
         existing.id
       );
       return existing.id;
@@ -559,8 +571,8 @@ export class DbFinanceRepository {
     `);
 
     const res = stmt.run(
-      resolvedLayanan,
-      serviceId,
+      resolvedLayanan ?? "",
+      serviceId ?? null,
       merged.status,
       dibayar,
       sisa,
@@ -573,7 +585,7 @@ export class DbFinanceRepository {
       cashbackStatus,
       profitFinal,
       profitStatus,
-      alasanPending,
+      alasanPending ?? null,
       JSON.stringify({ ...merged, serviceId: serviceId || undefined, service_id: serviceId || undefined }),
       id
     );
@@ -599,7 +611,7 @@ export class DbFinanceRepository {
     const inv = this.getInvoiceById(id);
     if (!inv) return false;
 
-    if (this.hasPayments(inv.invoiceNo)) {
+    if (inv.invoiceNo && this.hasPayments(inv.invoiceNo)) {
       throw new Error(`INVOICE_HAS_PAYMENTS: Cannot delete invoice '${inv.invoiceNo}' because it has recorded payments.`);
     }
 

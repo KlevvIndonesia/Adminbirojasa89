@@ -37,6 +37,7 @@ import {
   WilayahAdministratifItem,
   findWilayahByKode,
   getWilayahByProvinsi,
+  normalizeSamsatOfficeName,
 } from "../../domain/pricing/wilayahIndonesiaData";
 import { SamsatMasterItem } from "../../domain/pricing/types";
 import { cn } from "./ui/utils";
@@ -80,6 +81,7 @@ export function WilayahSamsatManager() {
     kode_provinsi: "31",
     kode_kabupaten_kota: "31.75",
   });
+  const [isSubmitting, setIsSubmitting] = useState(false);
 
   const isFormDirty = useMemo(() => {
     if (!initialSnapshot) return false;
@@ -176,7 +178,7 @@ export function WilayahSamsatManager() {
   // Handlers for Add Samsat
   const handleOpenAddSamsat = () => {
     const defaultData = {
-      nama: "",
+      nama: "Samsat Jakarta Timur",
       alamat: "",
       wilayah: "Jakarta Timur",
       kode_provinsi: "31",
@@ -187,28 +189,48 @@ export function WilayahSamsatManager() {
     setIsAddSamsatOpen(true);
   };
 
-  const handleSaveAddSamsat = () => {
+  const handleSaveAddSamsat = async () => {
     if (!samsatForm.nama.trim() || !samsatForm.alamat.trim()) {
       toast.error("Nama Samsat dan Alamat wajib diisi!");
       return;
     }
+    if (!samsatForm.kode_kabupaten_kota) {
+      toast.error("Wilayah kabupaten/kota administratif wajib dipilih!");
+      return;
+    }
     const wilayahItem = findWilayahByKode(samsatForm.kode_kabupaten_kota);
+    if (!wilayahItem) {
+      toast.error("Kode wilayah administratif tidak valid!");
+      return;
+    }
+    const normalizedName = normalizeSamsatOfficeName(
+      samsatForm.nama.trim(),
+      wilayahItem?.jenis_wilayah,
+      wilayahItem?.nama_kabupaten_kota || samsatForm.wilayah
+    );
     const wilayahName =
       samsatForm.wilayah.trim() ||
-      (wilayahItem ? wilayahItem.nama_kabupaten_kota.replace(/^(kabupaten|kota)\s+/i, "") : "Nasional");
+      (wilayahItem ? wilayahItem.nama_kabupaten_kota.replace(/^(kabupaten|kota\s+administrasi|kota)\s+/i, "") : "Nasional");
 
-    pricingStore.addSamsat({
-      name: samsatForm.nama.trim(),
-      alamat: samsatForm.alamat.trim(),
-      wilayah: wilayahName,
-      kode_kabupaten_kota: samsatForm.kode_kabupaten_kota,
-      nama_provinsi: wilayahItem?.nama_provinsi,
-      is_verified: true,
-      status_aktif: true,
-    });
+    try {
+      setIsSubmitting(true);
+      await pricingStore.addSamsat({
+        name: normalizedName,
+        alamat: samsatForm.alamat.trim(),
+        wilayah: wilayahName,
+        kode_kabupaten_kota: samsatForm.kode_kabupaten_kota,
+        nama_provinsi: wilayahItem?.nama_provinsi,
+        is_verified: true,
+        status_aktif: true,
+      });
 
-    setIsAddSamsatOpen(false);
-    toast.success(`Kantor Samsat "${samsatForm.nama}" berhasil didaftarkan dan dihubungkan ke ${wilayahItem?.nama_kabupaten_kota || "wilayah"}`);
+      setIsAddSamsatOpen(false);
+      toast.success(`Kantor Samsat "${normalizedName}" berhasil didaftarkan dan dihubungkan ke ${wilayahItem?.nama_kabupaten_kota || "wilayah"}`);
+    } catch (err: any) {
+      toast.error(err?.message || "Gagal menyimpan data Samsat baru");
+    } finally {
+      setIsSubmitting(false);
+    }
   };
 
   // Handlers for Edit Samsat
@@ -232,22 +254,34 @@ export function WilayahSamsatManager() {
     setIsEditSamsatOpen(true);
   };
 
-  const handleSaveEditSamsat = () => {
+  const handleSaveEditSamsat = async () => {
     if (!selectedSamsat) return;
     if (!samsatForm.nama.trim() || !samsatForm.alamat.trim()) {
       toast.error("Nama Samsat dan Alamat wajib diisi!");
       return;
     }
     const wilayahItem = findWilayahByKode(samsatForm.kode_kabupaten_kota);
-    pricingStore.updateSamsat(selectedSamsat.id, {
-      name: samsatForm.nama.trim(),
-      alamat: samsatForm.alamat.trim(),
-      wilayah: samsatForm.wilayah.trim(),
-      kode_kabupaten_kota: samsatForm.kode_kabupaten_kota,
-      nama_provinsi: wilayahItem?.nama_provinsi,
-    });
-    setIsEditSamsatOpen(false);
-    toast.success(`Data Samsat "${samsatForm.nama}" berhasil diperbarui`);
+    const normalizedName = normalizeSamsatOfficeName(
+      samsatForm.nama.trim(),
+      wilayahItem?.jenis_wilayah,
+      wilayahItem?.nama_kabupaten_kota || samsatForm.wilayah || selectedSamsat.wilayah
+    );
+    try {
+      setIsSubmitting(true);
+      await pricingStore.updateSamsat(selectedSamsat.id, {
+        name: normalizedName,
+        alamat: samsatForm.alamat.trim(),
+        wilayah: samsatForm.wilayah.trim(),
+        kode_kabupaten_kota: samsatForm.kode_kabupaten_kota,
+        nama_provinsi: wilayahItem?.nama_provinsi,
+      });
+      setIsEditSamsatOpen(false);
+      toast.success(`Data Samsat "${normalizedName}" berhasil diperbarui`);
+    } catch (err: any) {
+      toast.error(err?.message || "Gagal memperbarui data Samsat");
+    } finally {
+      setIsSubmitting(false);
+    }
   };
 
   // Handlers for Delete Samsat
@@ -256,11 +290,18 @@ export function WilayahSamsatManager() {
     setIsDeleteSamsatOpen(true);
   };
 
-  const handleConfirmDeleteSamsat = () => {
+  const handleConfirmDeleteSamsat = async () => {
     if (!selectedSamsat) return;
-    pricingStore.deleteSamsat(selectedSamsat.id);
-    setIsDeleteSamsatOpen(false);
-    toast.success(`Kantor Samsat "${selectedSamsat.name}" berhasil dihapus`);
+    try {
+      setIsSubmitting(true);
+      await pricingStore.deleteSamsat(selectedSamsat.id);
+      setIsDeleteSamsatOpen(false);
+      toast.success(`Kantor Samsat "${selectedSamsat.name}" berhasil dihapus`);
+    } catch (err: any) {
+      toast.error(err?.message || "Gagal menghapus kantor Samsat");
+    } finally {
+      setIsSubmitting(false);
+    }
   };
 
   // Handlers for Linking / Adding Samsat to Specific Wilayah
@@ -268,9 +309,10 @@ export function WilayahSamsatManager() {
     setTargetWilayah(wilayah);
     setLinkMode("create");
     setLinkExistingSamsatId(samsats[0]?.id || "");
-    const cleanWilayahName = wilayah.nama.replace(/^(kabupaten|kota)\s+/i, "");
+    const cleanWilayahName = wilayah.nama.replace(/^(kabupaten|kota\s+administrasi|kota)\s+/i, "");
+    const normalizedName = normalizeSamsatOfficeName(wilayah.nama, wilayah.jenis, wilayah.nama);
     setSamsatForm({
-      nama: `Samsat ${cleanWilayahName}`,
+      nama: normalizedName,
       alamat: `Jl. Pelayanan ${cleanWilayahName}`,
       wilayah: cleanWilayahName,
       kode_provinsi: wilayah.kode_provinsi,
@@ -279,35 +321,47 @@ export function WilayahSamsatManager() {
     setIsLinkWilayahOpen(true);
   };
 
-  const handleSaveLinkWilayah = () => {
+  const handleSaveLinkWilayah = async () => {
     if (!targetWilayah) return;
 
-    if (linkMode === "create") {
-      if (!samsatForm.nama.trim() || !samsatForm.alamat.trim()) {
-        toast.error("Nama Samsat dan Alamat wajib diisi!");
-        return;
+    try {
+      setIsSubmitting(true);
+      if (linkMode === "create") {
+        if (!samsatForm.nama.trim() || !samsatForm.alamat.trim()) {
+          toast.error("Nama Samsat dan Alamat wajib diisi!");
+          return;
+        }
+        const normalizedName = normalizeSamsatOfficeName(
+          samsatForm.nama.trim(),
+          targetWilayah.jenis,
+          targetWilayah.nama
+        );
+        await pricingStore.addSamsat({
+          name: normalizedName,
+          alamat: samsatForm.alamat.trim(),
+          wilayah: samsatForm.wilayah.trim() || targetWilayah.nama.replace(/^(kabupaten|kota\s+administrasi|kota)\s+/i, ""),
+          kode_kabupaten_kota: targetWilayah.kode,
+          nama_provinsi: targetWilayah.provinsi,
+          is_verified: true,
+          status_aktif: true,
+        });
+        toast.success(`Kantor Samsat baru "${normalizedName}" berhasil didaftarkan untuk ${targetWilayah.nama}`);
+      } else {
+        if (!linkExistingSamsatId) {
+          toast.error("Pilih kantor Samsat yang ingin dihubungkan!");
+          return;
+        }
+        await pricingStore.linkSamsatToWilayah(linkExistingSamsatId, targetWilayah.kode);
+        const linked = samsats.find((s) => s.id === linkExistingSamsatId);
+        toast.success(`Samsat "${linked?.name || linkExistingSamsatId}" berhasil dihubungkan ke ${targetWilayah.nama}`);
       }
-      pricingStore.addSamsat({
-        name: samsatForm.nama.trim(),
-        alamat: samsatForm.alamat.trim(),
-        wilayah: samsatForm.wilayah.trim() || targetWilayah.nama.replace(/^(kabupaten|kota)\s+/i, ""),
-        kode_kabupaten_kota: targetWilayah.kode,
-        nama_provinsi: targetWilayah.provinsi,
-        is_verified: true,
-        status_aktif: true,
-      });
-      toast.success(`Kantor Samsat baru "${samsatForm.nama}" berhasil didaftarkan untuk ${targetWilayah.nama}`);
-    } else {
-      if (!linkExistingSamsatId) {
-        toast.error("Pilih kantor Samsat yang ingin dihubungkan!");
-        return;
-      }
-      pricingStore.linkSamsatToWilayah(linkExistingSamsatId, targetWilayah.kode);
-      const linked = samsats.find((s) => s.id === linkExistingSamsatId);
-      toast.success(`Samsat "${linked?.name || linkExistingSamsatId}" berhasil dihubungkan ke ${targetWilayah.nama}`);
-    }
 
-    setIsLinkWilayahOpen(false);
+      setIsLinkWilayahOpen(false);
+    } catch (err: any) {
+      toast.error(err?.message || "Gagal memproses penautan Samsat ke wilayah");
+    } finally {
+      setIsSubmitting(false);
+    }
   };
 
   return (
@@ -845,10 +899,13 @@ export function WilayahSamsatManager() {
                     value={samsatForm.kode_kabupaten_kota}
                     onValueChange={(val) => {
                       const item = findWilayahByKode(val);
+                      const cleanW = item ? item.nama_kabupaten_kota.replace(/^(kabupaten|kota\s+administrasi|kota)\s+/i, "") : samsatForm.wilayah;
+                      const autoName = item ? normalizeSamsatOfficeName(cleanW, item.jenis_wilayah, item.nama_kabupaten_kota) : samsatForm.nama;
                       setSamsatForm({
                         ...samsatForm,
                         kode_kabupaten_kota: val,
-                        wilayah: item ? item.nama_kabupaten_kota.replace(/^(kabupaten|kota)\s+/i, "") : samsatForm.wilayah,
+                        wilayah: cleanW,
+                        nama: autoName,
                       });
                     }}
                   >
@@ -872,9 +929,9 @@ export function WilayahSamsatManager() {
             <Button variant="outline" size="sm" onClick={handleCancelAdd} className="h-9 text-xs px-4">
               Batal
             </Button>
-            <Button size="sm" onClick={handleSaveAddSamsat} className="h-9 text-xs px-4 bg-primary hover:bg-primary/90 text-primary-foreground font-semibold shadow-xs flex items-center gap-1.5">
+            <Button size="sm" onClick={handleSaveAddSamsat} disabled={isSubmitting} className="h-9 text-xs px-4 bg-primary hover:bg-primary/90 text-primary-foreground font-semibold shadow-xs flex items-center gap-1.5">
               <Plus className="w-3.5 h-3.5" />
-              <span>Simpan & Daftarkan</span>
+              <span>{isSubmitting ? "Menyimpan..." : "Simpan & Daftarkan"}</span>
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -965,7 +1022,15 @@ export function WilayahSamsatManager() {
                   <Label className="text-xs font-semibold text-foreground/90">Kabupaten / Kota</Label>
                   <Select
                     value={samsatForm.kode_kabupaten_kota}
-                    onValueChange={(val) => setSamsatForm({ ...samsatForm, kode_kabupaten_kota: val })}
+                    onValueChange={(val) => {
+                      const item = findWilayahByKode(val);
+                      const cleanW = item ? item.nama_kabupaten_kota.replace(/^(kabupaten|kota\s+administrasi|kota)\s+/i, "") : samsatForm.wilayah;
+                      setSamsatForm({
+                        ...samsatForm,
+                        kode_kabupaten_kota: val,
+                        wilayah: cleanW,
+                      });
+                    }}
                   >
                     <SelectTrigger className="h-9 text-xs bg-input-background border-border">
                       <SelectValue placeholder="Pilih Wilayah" />
@@ -987,9 +1052,9 @@ export function WilayahSamsatManager() {
             <Button variant="outline" size="sm" onClick={handleCancelEdit} className="h-9 text-xs px-4">
               Batal
             </Button>
-            <Button size="sm" onClick={handleSaveEditSamsat} className="h-9 text-xs px-4 bg-primary hover:bg-primary/90 text-primary-foreground font-semibold shadow-xs flex items-center gap-1.5">
+            <Button size="sm" onClick={handleSaveEditSamsat} disabled={isSubmitting} className="h-9 text-xs px-4 bg-primary hover:bg-primary/90 text-primary-foreground font-semibold shadow-xs flex items-center gap-1.5">
               <CheckCircle2 className="w-3.5 h-3.5" />
-              <span>Simpan Perubahan</span>
+              <span>{isSubmitting ? "Menyimpan..." : "Simpan Perubahan"}</span>
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -1138,8 +1203,8 @@ export function WilayahSamsatManager() {
             <Button variant="outline" size="sm" onClick={() => setIsLinkWilayahOpen(false)}>
               Batal
             </Button>
-            <Button size="sm" onClick={handleSaveLinkWilayah}>
-              {linkMode === "create" ? "Simpan Kantor Baru" : "Hubungkan"}
+            <Button size="sm" onClick={handleSaveLinkWilayah} disabled={isSubmitting}>
+              {isSubmitting ? "Memproses..." : (linkMode === "create" ? "Simpan Kantor Baru" : "Hubungkan")}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -1160,9 +1225,10 @@ export function WilayahSamsatManager() {
             <AlertDialogCancel>Batal</AlertDialogCancel>
             <AlertDialogAction
               onClick={handleConfirmDeleteSamsat}
+              disabled={isSubmitting}
               className="bg-rose-600 hover:bg-rose-700 text-white"
             >
-              Hapus Samsat
+              {isSubmitting ? "Menghapus..." : "Hapus Samsat"}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

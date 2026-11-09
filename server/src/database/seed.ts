@@ -384,10 +384,8 @@ export function seedDatabase(): void {
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
       `);
 
-      const insertAcc = db.prepare(`
-        INSERT OR IGNORE INTO employee_accounts (
-          id, employee_id, email, password_hash, password_salt, role, status_aktif, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
+      const updateUserStmt = db.prepare(`
+        UPDATE users SET employee_id = ?, role = ? WHERE id = ?
       `);
 
       for (const u of userRows) {
@@ -410,15 +408,7 @@ export function seedDatabase(): void {
           u.status === "Aktif" ? "TETAP" : "NONAKTIF"
         );
 
-        insertAcc.run(
-          `ACCT-${empId}`,
-          empId,
-          u.email,
-          u.password_hash,
-          u.password_salt,
-          role,
-          u.status === "Aktif" ? 1 : 0
-        );
+        updateUserStmt.run(empId, role, u.id);
       }
     }
   } catch (err) {

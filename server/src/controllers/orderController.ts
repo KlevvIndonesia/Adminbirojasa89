@@ -12,6 +12,33 @@ import { resolveCanonicalActorEmployeeId } from "../utils/actorResolver";
 
 export async function getOrders(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
   try {
+    const hasPagination = req.query.page !== undefined || req.query.pageSize !== undefined || req.query.limit !== undefined;
+
+    // [DEF-PERF-006 REMEDIATION]: Server-side pagination support
+    if (hasPagination) {
+      const page = Math.max(1, parseInt(String(req.query.page || "1"), 10) || 1);
+      const pageSize = Math.min(100, Math.max(1, parseInt(String(req.query.pageSize || req.query.limit || "20"), 10) || 20));
+      const stage = typeof req.query.stage === "string" ? req.query.stage : undefined;
+      const search = typeof req.query.search === "string" ? req.query.search : undefined;
+
+      const result = orderService.getOrdersPaginated({
+        page,
+        pageSize,
+        archived: false,
+        stage,
+        search,
+      });
+
+      res.json({
+        success: true,
+        message: "OK",
+        data: result.data,
+        pagination: result.pagination,
+        timestamp: new Date().toISOString(),
+      });
+      return;
+    }
+
     const flat = req.query.flat === "true";
     if (flat) {
       const orders = orderService.getAllFlat(false);
@@ -27,6 +54,31 @@ export async function getOrders(req: AuthenticatedRequest, res: Response, next: 
 
 export async function getArchivedOrders(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
   try {
+    const hasPagination = req.query.page !== undefined || req.query.pageSize !== undefined || req.query.limit !== undefined;
+
+    // [DEF-PERF-006 REMEDIATION]: Server-side pagination support for archived orders
+    if (hasPagination) {
+      const page = Math.max(1, parseInt(String(req.query.page || "1"), 10) || 1);
+      const pageSize = Math.min(100, Math.max(1, parseInt(String(req.query.pageSize || req.query.limit || "20"), 10) || 20));
+      const search = typeof req.query.search === "string" ? req.query.search : undefined;
+
+      const result = orderService.getOrdersPaginated({
+        page,
+        pageSize,
+        archived: true,
+        search,
+      });
+
+      res.json({
+        success: true,
+        message: "OK",
+        data: result.data,
+        pagination: result.pagination,
+        timestamp: new Date().toISOString(),
+      });
+      return;
+    }
+
     const archived = orderService.getAllFlat(true);
     res.json({ success: true, message: "OK", data: archived, timestamp: new Date().toISOString() });
   } catch (err) {
@@ -157,7 +209,12 @@ export async function deleteArchivedOrder(req: AuthenticatedRequest, res: Respon
     const { orderNo } = req.params;
     const success = orderService.deleteArchivedOrder(orderNo, req.user);
     if (!success) {
-      res.status(404).json({ success: false, message: "Rekap order arsip tidak ditemukan" });
+      res.status(404).json({
+        success: false,
+        message: "Rekap order arsip tidak ditemukan",
+        error: { code: "NOT_FOUND", message: "Rekap order arsip tidak ditemukan" },
+        timestamp: new Date().toISOString(),
+      });
       return;
     }
     res.json({ success: true, message: "Rekap order berhasil dihapus", timestamp: new Date().toISOString() });
@@ -171,7 +228,13 @@ export async function hardDeleteOrder(req: AuthenticatedRequest, res: Response, 
     const { orderNo } = req.params;
     const success = orderService.hardDeleteOrder(orderNo, req.user);
     if (!success) {
-      res.status(404).json({ success: false, message: `Data order ${orderNo} tidak ditemukan atau sudah dihapus` });
+      const msg = `Data order ${orderNo} tidak ditemukan atau sudah dihapus`;
+      res.status(404).json({
+        success: false,
+        message: msg,
+        error: { code: "NOT_FOUND", message: msg },
+        timestamp: new Date().toISOString(),
+      });
       return;
     }
     res.json({ success: true, message: `Data order ${orderNo} berhasil dihapus permanen`, timestamp: new Date().toISOString() });

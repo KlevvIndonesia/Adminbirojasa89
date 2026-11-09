@@ -35,14 +35,31 @@ export function sanitizeUrlForLogging(rawUrl: string): string {
 
 export function requestLogger(req: Request, res: Response, next: NextFunction): void {
   const start = Date.now();
-  const requestId = `req-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
+  const incomingRequestId = (req.headers["x-request-id"] || req.headers["x-correlation-id"]) as string | undefined;
+  const requestId = incomingRequestId && incomingRequestId.trim()
+    ? incomingRequestId.trim()
+    : `req-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
   res.setHeader("X-Request-Id", requestId);
 
   res.on("finish", () => {
     const duration = Date.now() - start;
     if (process.env.NODE_ENV !== "test") {
       const sanitizedUrl = sanitizeUrlForLogging(req.originalUrl || req.url);
-      console.log(`[${new Date().toISOString()}] ${req.method} ${sanitizedUrl} ${res.statusCode} - ${duration}ms [${requestId}]`);
+      const isJson = process.env.LOG_FORMAT === "json";
+      if (isJson) {
+        console.log(
+          JSON.stringify({
+            timestamp: new Date().toISOString(),
+            requestId,
+            method: req.method,
+            url: sanitizedUrl,
+            statusCode: res.statusCode,
+            durationMs: duration,
+          })
+        );
+      } else {
+        console.log(`[${new Date().toISOString()}] ${req.method} ${sanitizedUrl} ${res.statusCode} - ${duration}ms [${requestId}]`);
+      }
     }
   });
 
