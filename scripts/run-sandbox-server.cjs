@@ -2,7 +2,6 @@ const { spawn } = require("child_process");
 const path = require("path");
 const os = require("os");
 const fs = require("fs");
-const crypto = require("crypto");
 
 const projectRoot = path.resolve(__dirname, "..");
 const operationalDbPath = path.resolve(projectRoot, "server/data/database.sqlite");

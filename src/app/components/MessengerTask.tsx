@@ -114,6 +114,27 @@ function formatDateTime(isoString?: string): string {
   }
 }
 
+function getCurrentAdminUser(): { userName: string; role: string; employeeId?: string } {
+  try {
+    if (typeof window !== "undefined" && window.localStorage) {
+      const raw = window.localStorage.getItem("auth_user");
+      if (raw) {
+        const u = JSON.parse(raw);
+        return {
+          userName: u.name || u.nama || u.username || "Admin Kantor",
+          role: u.role || "admin",
+          employeeId: u.employeeId || u.id || undefined,
+        };
+      }
+    }
+  } catch {}
+  return {
+    userName: "Admin Kantor",
+    role: "admin",
+    employeeId: undefined,
+  };
+}
+
 export function MessengerTask() {
   const navigate = useNavigate();
   // Authoritative Single Source of Truth: OrderStore
@@ -338,6 +359,10 @@ export function MessengerTask() {
 
     const courierName = selectedAssignMessenger.trim();
     const courierId = resolveMessengerEmployeeId(courierName);
+    if (!courierId || courierId.toUpperCase() === "EMP-MSG" || courierId === "Belum Ditugaskan" || courierId === "-") {
+      toast.error(`Identitas kurir '${courierName}' tidak valid atau belum terdaftar di sistem. Pilih kurir yang valid.`);
+      return;
+    }
     const targetDate = assignTaskDate || new Date().toISOString().split("T")[0];
 
     // Initialize acceptance status to PENDING so task enters courier's Tugas Baru
@@ -415,13 +440,13 @@ export function MessengerTask() {
 
     const orderNo = reassignTargetTask.noBerkas;
     const newCourierName = selectedReassignMessenger.trim();
-    const newCourierId = resolveMessengerEmployeeId(newCourierName) || "emp-msg";
+    const newCourierId = resolveMessengerEmployeeId(newCourierName);
+    if (!newCourierId || newCourierId.trim() === "" || newCourierId.toUpperCase() === "EMP-MSG" || newCourierId === "Belum Ditugaskan" || newCourierId === "-") {
+      toast.error(`Identitas kurir '${newCourierName}' tidak valid atau belum terdaftar di sistem. Pilih kurir yang valid.`);
+      return;
+    }
 
-    const adminUser = {
-      userName: "Admin Kantor",
-      role: "admin",
-      employeeId: "admin",
-    };
+    const adminUser = getCurrentAdminUser();
 
     setIsReassignSubmitting(true);
     try {
@@ -477,32 +502,15 @@ export function MessengerTask() {
       orderSource: "Admin Loket / Messenger Task",
     });
 
-    // Advance to matching operational stage
-    if (taskType === "Proses Samsat") {
-      orderStore.advanceOrder(newOrder.orderNo, "Proses Samsat", {
-        messenger: assignedMessenger,
-        assignedMessengerName: assignedMessenger,
-        assignedMessengerId: assignedMessengerId,
-      });
-    } else if (taskType === "Pengantaran Dokumen") {
-      orderStore.advanceOrder(newOrder.orderNo, "Pengantaran", {
-        messenger: assignedMessenger,
-        assignedMessengerName: assignedMessenger,
-        assignedMessengerId: assignedMessengerId,
-        messengerPengantar: assignedMessenger,
-        tanggalPengantaran: tanggalTugas,
-        isDeliveryScheduled: Boolean(assignedMessenger),
-      });
-    } else {
-      // "Jemput Dokumen" -> advance to Penjadwalan
-      orderStore.advanceOrder(newOrder.orderNo, "Penjadwalan", {
-        messenger: assignedMessenger,
-        assignedMessengerName: assignedMessenger,
-        assignedMessengerId: assignedMessengerId,
-        tanggalJemput: tanggalTugas,
-        isScheduled: Boolean(assignedMessenger),
-      });
-    }
+    // Advance sequentially to Penjadwalan (Stage 2) preserving courier metadata (WF-05)
+    orderStore.advanceOrder(newOrder.orderNo, "Penjadwalan", {
+      messenger: assignedMessenger,
+      assignedMessengerName: assignedMessenger,
+      assignedMessengerId: assignedMessengerId,
+      tanggalJemput: tanggalTugas,
+      isScheduled: Boolean(assignedMessenger),
+      catatanPenjadwalan: `Tugas: ${taskType}`,
+    });
 
     setNewTaskData({
       messenger: "",
@@ -719,11 +727,7 @@ export function MessengerTask() {
     name: string
   ) => {
     if (!ambilAlihTask) return;
-    const adminUser = {
-      userName: "Admin Kantor (Takeover)",
-      role: "admin",
-      employeeId: "admin-takeover",
-    };
+    const adminUser = getCurrentAdminUser();
     const res = updateMessengerComponent(
       ambilAlihTask.noBerkas,
       compId,
@@ -743,11 +747,7 @@ export function MessengerTask() {
       return;
     }
     const cleanPrice = parseInt(newCompPrice.replace(/[^0-9]/g, ""), 10) || 0;
-    const adminUser = {
-      userName: "Admin Kantor (Takeover)",
-      role: "admin",
-      employeeId: "admin-takeover",
-    };
+    const adminUser = getCurrentAdminUser();
     const res = addSamsatComponentToOrder(
       ambilAlihTask.noBerkas,
       {
@@ -778,17 +778,13 @@ export function MessengerTask() {
       return;
     }
 
-    const adminUser = {
-      userName: "Admin Kantor (Takeover)",
-      role: "admin",
-      employeeId: "admin-takeover",
-    };
+    const adminUser = getCurrentAdminUser();
 
     setIsSubmittingTakeover(true);
 
     try {
       if (ambilAlihTask.keteranganTugas === "Jemput Dokumen") {
-        const res = completeMessengerPickup(
+        const res = await completeMessengerPickup(
           orderNo,
           {
             photoProofUrl: pickupPhotoUrl || undefined,
@@ -817,7 +813,7 @@ export function MessengerTask() {
           toast.error(res.error || "Gagal menyelesaikan penjemputan");
         }
       } else if (ambilAlihTask.keteranganTugas === "Proses Samsat") {
-        const res = completeSamsatProcess(orderNo, adminUser, samsatGeneralNotes.trim() || undefined);
+        const res = await completeSamsatProcess(orderNo, adminUser, samsatGeneralNotes.trim() || undefined);
         if (res.success) {
           toast.success(`Pengurusan Samsat ${orderNo} berhasil diambil alih dan diselesaikan oleh Admin!`);
           setIsAmbilAlihOpen(false);
@@ -826,7 +822,7 @@ export function MessengerTask() {
           toast.error(res.error || "Gagal menyelesaikan pengurusan Samsat");
         }
       } else if (ambilAlihTask.keteranganTugas === "Jemput Hasil Samsat") {
-        const res = completeSamsatResultPickup(
+        const res = await completeSamsatResultPickup(
           orderNo,
           {
             photoProofUrl: samsatResultPhotoUrl || undefined,
@@ -847,7 +843,7 @@ export function MessengerTask() {
           setIsSubmittingTakeover(false);
           return;
         }
-        const res = completeMessengerDelivery(
+        const res = await completeMessengerDelivery(
           orderNo,
           {
             recipientName: recipientName.trim(),

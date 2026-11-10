@@ -156,16 +156,12 @@ export function MessengerPoolTasksView({
 
   const handleConfirmDecline = async () => {
     if (!declineTargetTask) return;
-    if (!declineReason.trim()) {
-      toast.error("Alasan penolakan tugas wajib diisi!");
-      return;
-    }
     setIsDeclineSubmitting(true);
     try {
       const res = await declineMessengerTaskAction(
         declineTargetTask.orderNo,
         declineTargetTask.keteranganTugas,
-        declineReason.trim(),
+        declineReason.trim() || undefined,
         currentUser
       );
       if (res.success) {
@@ -580,11 +576,11 @@ export function MessengerPoolTasksView({
 
           <div className="space-y-3 py-2 text-left">
             <label className="text-xs font-bold uppercase tracking-wider text-muted-foreground">
-              Alasan Penolakan <span className="text-rose-500">*</span>
+              Alasan Penolakan <span className="text-muted-foreground text-[10px] font-normal lowercase">(opsional)</span>
             </label>
             <textarea
               rows={3}
-              placeholder="Contoh: Sedang mengurus berkas mutasi di Samsat lain, jarak terlalu jauh, dsb..."
+              placeholder="Contoh: Sedang mengurus berkas mutasi di Samsat lain, jarak terlalu jauh, dsb (opsional)..."
               value={declineReason}
               onChange={(e) => setDeclineReason(e.target.value)}
               className="w-full text-sm rounded-xl p-3 border border-border bg-background focus:outline-hidden focus:ring-2 focus:ring-rose-500"
@@ -603,7 +599,7 @@ export function MessengerPoolTasksView({
             <Button
               variant="destructive"
               onClick={handleConfirmDecline}
-              disabled={isDeclineSubmitting || !declineReason.trim()}
+              disabled={isDeclineSubmitting}
               className="rounded-xl font-bold"
             >
               {isDeclineSubmitting ? "Menolak..." : "Konfirmasi Tolak"}

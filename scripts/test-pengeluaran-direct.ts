@@ -72,7 +72,7 @@ async function verifyPengeluaranPersistence() {
     // STEP 3: Verify Validation Middleware
     // -------------------------------------------------------------------------
     console.log("--- STEP 3: Test Validation Middleware (validatePengeluaranPayload) ---");
-    let validationPassed = false;
+    const validationPassed = false;
     let nextCalled = false;
     const mockValidReq: any = {
       body: {

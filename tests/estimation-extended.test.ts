@@ -228,6 +228,20 @@ test("9. Mutasi Luar Daerah Motor (Sheet 6) — Evaluates to exactly Rp 4.125.00
   assert.strictEqual(res.totalEstimasi, 4125000, "Mutasi LD Motor Grand Total must be Rp 4.125.000");
 });
 
+test("9b. Mutasi Luar Daerah Mobil (R4) — Default Jasa evaluates to exactly Rp 1.500.000", () => {
+  const input: EstimationInput = {
+    pkbDasar: 0,
+    tanggalJatuhTempo: "2026-07-24",
+    tanggalEstimasi: "2026-09-21",
+    programSamsat: "NORMAL",
+    freeBbn: true,
+  };
+
+  const res = calculateEstimation(input, DEFAULT_R4_MUTASI_LD_TEMPLATE);
+  assert.strictEqual(res.items.find((i) => i.id === "proses-dan-jasa")?.amount, 1500000, "Mutasi LD Mobil service fee must be Rp 1.500.000");
+  assert.strictEqual(DEFAULT_R4_MUTASI_LD_TEMPLATE.biayaJasa, 1500000, "Template baseline must be Rp 1.500.000");
+});
+
 // ============================================================================
 // 5. TEMPLATE RESOLUTION & STORE INTEGRATION
 // ============================================================================

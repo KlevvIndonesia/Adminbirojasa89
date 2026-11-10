@@ -13,7 +13,7 @@ CONFIG.validate();
 // Official Server Startup: explicitly initialize database and schema
 initDatabase({ runSchema: true, allowOperationalWrite: true });
 
-const app = createApp();
+const app = createApp({ skipSchemaInit: true });
 
 const server = app.listen(CONFIG.PORT, () => {
   console.log(`[SUN89 Backend] Server started successfully.`);

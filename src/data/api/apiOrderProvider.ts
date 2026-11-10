@@ -7,8 +7,7 @@
  * optimistic updates and background persistence.
  */
 
-import { OperationalOrder, StageName, STAGES } from "../../domain/order/types";
-import { IOrderDataProvider } from "../mock/mockOrderProvider";
+import { OperationalOrder, StageName, STAGES, IOrderDataProvider } from "../../domain/order/types";
 // createInitialOrders removed from api provider to prevent mock data leakage in production/API mode
 import { APP_CONFIG } from "../../app/config/appConfig";
 import { toast } from "sonner";
@@ -17,6 +16,28 @@ import {
   fetchWithTimeout,
   parseApiErrorResponse,
 } from "../../app/utils/actionErrorClassifier";
+
+
+function getCurrentUserRole(): string {
+  try {
+    if (typeof window !== "undefined" && window.localStorage) {
+      const userStr = window.localStorage.getItem("auth_user");
+      if (userStr) {
+        const u = JSON.parse(userStr);
+        if (u.role) return u.role.toLowerCase().trim();
+      }
+      const token = window.localStorage.getItem("auth_token") || window.localStorage.getItem("sun89_auth_token");
+      if (token) {
+        const parts = token.split(".");
+        if (parts.length >= 2) {
+          const payload = JSON.parse(atob(parts[1]));
+          if (payload.role) return payload.role.toLowerCase().trim();
+        }
+      }
+    }
+  } catch {}
+  return "";
+}
 
 function createEmptyActiveOrders(): Record<StageName, OperationalOrder[]> {
   const result = {} as Record<StageName, OperationalOrder[]>;
@@ -88,7 +109,9 @@ export class ApiOrderProvider implements IOrderDataProvider {
       const requestId = ++this.nextGetRequestId;
 
       try {
-        const res = await fetch(`${this.baseUrl}/orders`, {
+        const isCourier = getCurrentUserRole() === "messenger";
+        const orderUrl = isCourier ? `${this.baseUrl}/messenger/my-tasks` : `${this.baseUrl}/orders`;
+        const res = await fetch(orderUrl, {
           headers: { "Content-Type": "application/json", ...authHeaders },
         });
 
@@ -105,15 +128,18 @@ export class ApiOrderProvider implements IOrderDataProvider {
           }
         }
 
-        const archRes = await fetch(`${this.baseUrl}/orders/archived`, {
-          headers: { "Content-Type": "application/json", ...authHeaders },
-        });
+        let archRes: Response | null = null;
+        if (!isCourier) {
+          archRes = await fetch(`${this.baseUrl}/orders/archived`, {
+            headers: { "Content-Type": "application/json", ...authHeaders },
+          });
+        }
 
         if (capturedVersion < this.currentDataVersion || requestId < this.latestAppliedGetId) {
           return;
         }
 
-        if (archRes.ok) {
+        if (archRes && archRes.ok) {
           const archPayload = await archRes.json();
           if (archPayload.success && Array.isArray(archPayload.data)) {
             this.archivedOrders = archPayload.data;
@@ -172,7 +198,9 @@ export class ApiOrderProvider implements IOrderDataProvider {
     const requestId = ++this.nextGetRequestId;
 
     try {
-      const res = await fetch(`${this.baseUrl}/orders`, {
+      const isCourier = getCurrentUserRole() === "messenger";
+      const orderUrl = isCourier ? `${this.baseUrl}/messenger/my-tasks` : `${this.baseUrl}/orders`;
+      const res = await fetch(orderUrl, {
         headers: { "Content-Type": "application/json", ...authHeaders },
       });
       if (res.status === 401 && typeof window !== "undefined") {
@@ -198,15 +226,18 @@ export class ApiOrderProvider implements IOrderDataProvider {
         fetchedActive = payload.data;
       }
 
-      const archRes = await fetch(`${this.baseUrl}/orders/archived`, {
-        headers: { "Content-Type": "application/json", ...authHeaders },
-      });
-      if (archRes.status === 401 && typeof window !== "undefined") {
-        window.dispatchEvent(new CustomEvent("sun89_auth_unauthorized"));
-        this.isLoading = false;
-        this.error = "Sesi telah berakhir. Silakan login kembali.";
-        this.notify();
-        return;
+      let archRes: Response | null = null;
+      if (!isCourier) {
+        archRes = await fetch(`${this.baseUrl}/orders/archived`, {
+          headers: { "Content-Type": "application/json", ...authHeaders },
+        });
+        if (archRes.status === 401 && typeof window !== "undefined") {
+          window.dispatchEvent(new CustomEvent("sun89_auth_unauthorized"));
+          this.isLoading = false;
+          this.error = "Sesi telah berakhir. Silakan login kembali.";
+          this.notify();
+          return;
+        }
       }
 
       if (capturedVersion < this.currentDataVersion || requestId < this.latestAppliedGetId) {
@@ -215,7 +246,7 @@ export class ApiOrderProvider implements IOrderDataProvider {
         return;
       }
 
-      if (archRes.ok) {
+      if (archRes && archRes.ok) {
         const archPayload = await archRes.json();
         if (archPayload.success && Array.isArray(archPayload.data)) {
           this.archivedOrders = archPayload.data;
@@ -957,6 +988,16 @@ export class ApiOrderProvider implements IOrderDataProvider {
           ...this.archivedOrders[archIdx],
           ...updates,
         };
+        applied = true;
+      }
+    }
+    if (!applied && (updates as any).currentStageName) {
+      const destStage = (updates as any).currentStageName as StageName;
+      if (STAGES.includes(destStage)) {
+        if (!this.activeOrders[destStage]) {
+          this.activeOrders[destStage] = [];
+        }
+        this.activeOrders[destStage].unshift(updates as OperationalOrder);
         applied = true;
       }
     }

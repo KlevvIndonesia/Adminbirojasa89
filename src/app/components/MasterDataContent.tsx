@@ -395,7 +395,7 @@ function KaryawanForm({ form, onChange }: {
           <Input
             className="bg-input-background border-border h-9 text-xs"
             type="email"
-            placeholder="email@example.com"
+            placeholder="email@perusahaan.co.id"
             value={form.email}
             onChange={(e) => set("email")(e.target.value)}
           />

@@ -291,7 +291,7 @@ test("4. Blocker Reimbursement: seluruh status reimbursement non-terminal wajib 
     body: JSON.stringify({ confirmationText: "HAPUS PERMANEN" }),
   });
   assert.strictEqual(res.status, 422);
-  let body = await res.json();
+  const body = await res.json();
   assert.ok(body.error?.details?.blockers.some((b: any) => b.code === "UNFINISHED_REIMBURSEMENTS"));
 
   // Test status 2: 'Sedang Ditinjau'

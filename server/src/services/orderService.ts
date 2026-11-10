@@ -21,6 +21,8 @@ import { db, runInTransaction } from "../database/db";
 import { assertNoProtectedFieldViolations, normalizeOrderPayload } from "../utils/aliasNormalizer";
 import { validateOrderPricingSanity } from "../utils/pricingSanityCheck";
 import { resolveCanonicalActorEmployeeId } from "../utils/actorResolver";
+import { generateCanonicalPaymentId, formatScopedIdempotencyKey } from "../utils/canonicalHasher";
+import { financeService } from "./financeService";
 
 export const CANONICAL_SERVICES_MAP: Record<string, { id: string; nama: string }> = {
   // 1. Perpanjangan 1 Tahun
@@ -368,6 +370,36 @@ export function assertMessengerOwnership(
   return { messengerId, messengerName };
 }
 
+/**
+ * Deep clones order payload non-destructively so caller's original object is never mutated.
+ */
+function cloneOrderPayload<T>(input: T): T {
+  if (input === null || typeof input !== "object") return input;
+  if (input instanceof Date) return new Date(input.getTime()) as any;
+  if (input instanceof RegExp) return new RegExp(input.source, input.flags) as any;
+  if (Array.isArray(input)) return input.map(cloneOrderPayload) as any;
+  const copy: any = {};
+  for (const key of Object.keys(input as any)) {
+    copy[key] = cloneOrderPayload((input as any)[key]);
+  }
+  return copy;
+}
+
+/**
+ * Constructs a deterministic canonical representation of the business order payload
+ * for stable idempotency hashing.
+ */
+function buildCanonicalOrderPayload(data: any): Record<string, any> {
+  return {
+    customer: String(data.customer || "").trim().replace(/\s+/g, " "),
+    nomorHP: String(data.nomorHP || "").trim().replace(/[\s\-\.]/g, ""),
+    layanan: String(data.layanan || "").trim().toLowerCase().replace(/\s+/g, " "),
+    nopol: String(data.nopol || "").trim().toUpperCase().replace(/[\s\-\.]/g, ""),
+    wilayahSamsatAsal: String(data.wilayahSamsatAsal || data.samsatAsalId || data.samsat_asal_id || "").trim().toLowerCase(),
+    totalEstimasi: Number(data.totalBiaya || data.totalEstimasi || data.payment?.totalBiaya || 0),
+  };
+}
+
 export class OrderService {
   private orderCounter = 0;
   private idempotencyCache = new Map<string, { order: OperationalOrder; timestamp: number }>();
@@ -430,29 +462,54 @@ export class OrderService {
   }
 
   public createOrderWithIdempotency(
-    data: any,
+    rawInput: any,
     user?: TokenPayload | null,
     idempotencyKey?: string
   ): { order: OperationalOrder; isExisting: boolean } {
+    if (!rawInput || typeof rawInput !== "object") {
+      throw new ApiError(400, "VALIDATION_ERROR", "Data order wajib berupa objek yang valid.");
+    }
+
+    // 1. Non-destructively clone the input data to preserve caller's reference
+    const data = cloneOrderPayload(rawInput);
+
+    // 2. Canonicalize incoming fields and resolve alias conflicts FIRST
+    normalizeOrderPayload(data);
+
     const resolvedKey = (idempotencyKey || data.clientRequestId || data.idempotencyKey)?.trim();
     let requestHash = "";
 
     if (resolvedKey) {
-      const canonicalPayload = {
-        customer: String(data.customer || "").trim(),
-        nomorHP: String(data.nomorHP || "").trim(),
-        layanan: String(data.layanan || "").trim(),
-        nopol: String(data.nopol || "").trim().toUpperCase().replace(/[\s\-\.]/g, ""),
-        wilayahSamsatAsal: String(data.wilayahSamsatAsal || data.samsatAsalId || "").trim(),
-        totalEstimasi: Number(data.totalEstimasi || data.payment?.totalBiaya || 0),
-      };
+      const canonicalPayload = buildCanonicalOrderPayload(data);
       requestHash = crypto.createHash("sha256").update(JSON.stringify(canonicalPayload)).digest("hex");
 
       try {
-        const getStmt = db.prepare("SELECT key, scope, user_id, request_hash, resource_id, response_json FROM idempotency_keys WHERE key = ? AND scope = 'CREATE_ORDER'");
-        let record = getStmt.get(resolvedKey) as { key: string; scope: string; user_id: string | null; request_hash: string; resource_id: string | null; response_json: string } | undefined;
+        const scopedKey = formatScopedIdempotencyKey("CREATE_ORDER", resolvedKey);
+        // 1. Primary Lookup: Look for new scoped key (CREATE_ORDER::${resolvedKey})
+        let getStmt = db.prepare("SELECT key, scope, user_id, request_hash, resource_id, response_json FROM idempotency_keys WHERE key = ?");
+        let record = getStmt.get(scopedKey) as { key: string; scope: string; user_id: string | null; request_hash: string; resource_id: string | null; response_json: string } | undefined;
+
+        // 2. Dual-Read Fallback: Look for legacy unprefixed key matching CREATE_ORDER scope
+        if (!record) {
+          getStmt = db.prepare("SELECT key, scope, user_id, request_hash, resource_id, response_json FROM idempotency_keys WHERE key = ? AND scope = 'CREATE_ORDER'");
+          record = getStmt.get(resolvedKey) as any;
+        }
 
         if (record) {
+          // Ownership verification
+          if (record.user_id !== null && record.user_id !== undefined) {
+            if (user?.userId && record.user_id !== user.userId) {
+              throw new ApiError(403, "IDEMPOTENCY_USER_MISMATCH", "Idempotency key milik pengguna lain.");
+            }
+          } else {
+            // Historical record with NULL user_id: non-admin callers rejected fail-closed
+            const userRole = (user?.role || "").toLowerCase();
+            const isAdmin = userRole === "admin" || userRole === "administrator";
+            if (!isAdmin) {
+              throw new ApiError(403, "IDEMPOTENCY_OWNERSHIP_UNVERIFIABLE", "Kepemilikan record historis tidak dapat diverifikasi; hubungi administrator.");
+            }
+          }
+
           if (record.request_hash !== requestHash) {
             throw new ApiError(422, "IDEMPOTENCY_CONFLICT", "Idempotency key sudah digunakan untuk permintaan order dengan data yang berbeda.");
           }
@@ -528,9 +585,6 @@ export class OrderService {
     }
 
     try {
-      // Canonicalize incoming fields and resolve alias conflicts
-    normalizeOrderPayload(data);
-
     if (!data.customer || !data.nomorHP || !data.layanan || !data.nopol) {
       throw new ApiError(400, "VALIDATION_ERROR", "Data wajib belum lengkap (customer, nomorHP, layanan, nopol).");
     }
@@ -896,6 +950,36 @@ export class OrderService {
       estimationResult: data.estimationResult,
     };
 
+    // Phase 4B Batch 2B Step B: Canonical Payment Identity for initial downpayment (Path 1)
+    if (Array.isArray(newOrder.payment?.paymentRecords) && newOrder.payment.paymentRecords.length > 0) {
+      const canonicalPaymentId = generateCanonicalPaymentId();
+      newOrder.payment.paymentRecords[0] = {
+        ...newOrder.payment.paymentRecords[0],
+        id: canonicalPaymentId,
+        payment_id: canonicalPaymentId,
+        paymentId: canonicalPaymentId,
+      };
+    } else if (
+      (Number(newOrder.payment?.nominalDibayarAwal) > 0 || Number(newOrder.payment?.dibayar) > 0) &&
+      (newOrder.payment?.tipePembayaran === "Bayar di Awal")
+    ) {
+      const canonicalPaymentId = generateCanonicalPaymentId();
+      const initialNominal = Number(newOrder.payment?.nominalDibayarAwal || newOrder.payment?.dibayar);
+      newOrder.payment.paymentRecords = [
+        {
+          id: canonicalPaymentId,
+          payment_id: canonicalPaymentId,
+          paymentId: canonicalPaymentId,
+          nominal: initialNominal,
+          tanggal: nowStr,
+          metodePembayaran: newOrder.payment?.metodePembayaran || "Transfer Bank",
+          namaBank: (newOrder.payment as any)?.namaBank || (newOrder.payment as any)?.bank || "",
+          statusVerifikasi: newOrder.payment?.isPaymentVerified ? "TERVERIFIKASI" : "MENUNGGU_VERIFIKASI",
+          uploadedBy: user?.nama || "Admin Super (SVP)",
+        },
+      ];
+    }
+
     const result = runInTransaction(() => {
       dbOrderRepository.saveOrder(newOrder);
 
@@ -940,6 +1024,7 @@ export class OrderService {
 
       if (resolvedKey) {
         try {
+          const scopedKey = formatScopedIdempotencyKey("CREATE_ORDER", resolvedKey);
           const updateStmt = db.prepare(`
             UPDATE idempotency_keys
             SET resource_id = ?, response_json = ?
@@ -950,6 +1035,18 @@ export class OrderService {
             JSON.stringify({ orderNo: newOrder.orderNo, noInvoice: newOrder.noInvoice, customer: newOrder.customer }),
             resolvedKey
           );
+          if (scopedKey !== resolvedKey) {
+            db.prepare(`
+              INSERT OR IGNORE INTO idempotency_keys (key, scope, user_id, request_hash, resource_id, response_json, created_at)
+              VALUES (?, 'CREATE_ORDER', ?, ?, ?, ?, datetime('now'))
+            `).run(
+              scopedKey,
+              user?.userId || "usr-system",
+              requestHash,
+              newOrder.orderNo,
+              JSON.stringify({ orderNo: newOrder.orderNo, noInvoice: newOrder.noInvoice, customer: newOrder.customer })
+            );
+          }
         } catch {}
         this.idempotencyCache.set(resolvedKey, { order: newOrder, timestamp: Date.now() });
       }
@@ -2094,110 +2191,71 @@ export class OrderService {
     return count;
   }
 
+  /**
+   * Phase 4B Batch 2B Step C: Single Write Path Delegation
+   * Delegates all verification lifecycle operations to the unified financeService.verifyPayment engine.
+   * Handles polymorphic legacy parameters for backward compatibility.
+   */
   public verifyPayment(
     orderNo: string,
-    verifierName: string = "Admin",
-    user?: TokenPayload | null,
-    confirmedAmount?: number,
-    notes?: string,
-    proofPayload?: any
+    verifierNameOrUser?: string | TokenPayload | null,
+    userOrAmount?: TokenPayload | number | null,
+    confirmedAmountOrNotes?: number | string,
+    notesOrProof?: string | any,
+    proofPayload?: any,
+    paymentId?: string,
+    idempotencyKey?: string
   ): OperationalOrder {
-    return runInTransaction(() => {
-      const targetOrder = this.getByOrderNo(orderNo);
-      if ((targetOrder as any).isCancelled || targetOrder.currentStageName === "Dibatalkan" || (targetOrder as any).status === "Dibatalkan") {
-        throw new ApiError(400, "ORDER_CANCELLED", `Order '${orderNo}' sudah dibatalkan dan pembayarannya tidak dapat diverifikasi.`);
+    let effectiveVerifier: string = "Admin";
+    let effectiveUser: TokenPayload | null | undefined = undefined;
+    let effectiveAmount: number | undefined = undefined;
+    let effectiveNotes: string | undefined = undefined;
+    let effectiveProof: any = undefined;
+
+    if (verifierNameOrUser && typeof verifierNameOrUser === "object") {
+      effectiveUser = verifierNameOrUser as TokenPayload;
+      effectiveVerifier = effectiveUser.nama || "Admin";
+      if (typeof userOrAmount === "number") {
+        effectiveAmount = userOrAmount;
+        effectiveNotes = typeof confirmedAmountOrNotes === "string" ? confirmedAmountOrNotes : undefined;
+        effectiveProof = notesOrProof;
+      } else {
+        effectiveAmount = typeof confirmedAmountOrNotes === "number" ? confirmedAmountOrNotes : undefined;
+        effectiveNotes = typeof notesOrProof === "string" ? notesOrProof : undefined;
+        effectiveProof = proofPayload;
       }
-      const nowStr = new Date().toISOString();
-
-      const totalBiaya = targetOrder.payment?.totalBiaya || targetOrder.totalEstimasi || 0;
-      const paid = confirmedAmount !== undefined
-        ? Math.max(0, confirmedAmount)
-        : (targetOrder.payment?.nominalDibayarAwal !== undefined
-            ? targetOrder.payment.nominalDibayarAwal
-            : (targetOrder.payment?.dibayar && targetOrder.payment.dibayar > 0 ? targetOrder.payment.dibayar : totalBiaya));
-      const sisa = Math.max(0, totalBiaya - paid);
-      const overpayment = Math.max(0, paid - totalBiaya);
-      const statusPembayaran = paid >= totalBiaya ? "Lunas" : paid > 0 ? "Kurang Bayar" : "Belum Bayar";
-
-      const effectiveProof = proofPayload || targetOrder.payment?.buktiPembayaran;
-      if (paid > 0 && !effectiveProof?.fileUrl) {
-        throw new ApiError(400, "PAYMENT_PROOF_REQUIRED", "Bukti pembayaran (file bukti transfer/kas loket) wajib dilampirkan sebelum pembayaran dapat diverifikasi.");
+    } else {
+      if (typeof verifierNameOrUser === "string") {
+        effectiveVerifier = verifierNameOrUser;
       }
-
-      const effectiveVerifier = user?.nama || verifierName;
-      const prev = targetOrder.payment?.nominalPembayaranAwalTerkonfirmasi ?? targetOrder.payment?.nominalDibayarAwal ?? targetOrder.payment?.dibayar ?? 0;
-      const riwayat = [...(targetOrder.payment?.riwayatKoreksiPembayaran || [])];
-      if (prev !== paid || notes) {
-        riwayat.push({
-          nominalLama: prev,
-          nominalBaru: paid,
-          tanggal: nowStr,
-          admin: effectiveVerifier,
-          catatan: notes,
-        });
+      if (userOrAmount && typeof userOrAmount === "object") {
+        effectiveUser = userOrAmount as TokenPayload;
+        effectiveAmount = typeof confirmedAmountOrNotes === "number" ? confirmedAmountOrNotes : undefined;
+        effectiveNotes = typeof notesOrProof === "string" ? notesOrProof : undefined;
+        effectiveProof = proofPayload;
+      } else if (typeof userOrAmount === "number") {
+        effectiveAmount = userOrAmount;
+        effectiveNotes = typeof confirmedAmountOrNotes === "string" ? confirmedAmountOrNotes : undefined;
+        effectiveProof = notesOrProof;
+      } else {
+        effectiveAmount = typeof confirmedAmountOrNotes === "number" ? confirmedAmountOrNotes : undefined;
+        effectiveNotes = typeof notesOrProof === "string" ? notesOrProof : undefined;
+        effectiveProof = proofPayload;
       }
+    }
 
-      const existingRecords = targetOrder.payment?.paymentRecords || [];
-      const newRecord = {
-        id: `pay-verif-${Date.now()}`,
-        nominal: paid,
-        tanggal: nowStr,
-        metodePembayaran: targetOrder.payment?.metodePembayaran || "Transfer Bank",
-        namaBank: targetOrder.payment?.namaBank,
-        namaRekening: targetOrder.payment?.namaRekening,
-        noRekening: targetOrder.payment?.noRekening,
-        buktiPembayaran: effectiveProof,
-        statusVerifikasi: "TERVERIFIKASI" as const,
-        verifiedAt: nowStr,
-        verifiedBy: effectiveVerifier,
-        catatan: notes || "Verifikasi Pembayaran Awal",
-      };
-
-      const updatedPayment = {
-        ...targetOrder.payment,
-        isPaymentVerified: true,
-        paymentVerifiedAt: nowStr,
-        paymentVerifiedBy: effectiveVerifier,
-        nominalPembayaranAwalTerkonfirmasi: paid,
-        statusPembayaran: statusPembayaran as any,
-        dibayar: paid,
-        kurang: sisa,
-        overpayment,
-        tanggalBayar: targetOrder.payment?.tanggalBayar || nowStr.split("T")[0],
-        buktiPembayaran: effectiveProof,
-        riwayatKoreksiPembayaran: riwayat,
-        paymentRecords: [...existingRecords, newRecord],
-      };
-
-      // Directly update repository with verified payment
-      dbOrderRepository.updateOrder(orderNo, { payment: updatedPayment });
-      const updated = this.getByOrderNo(orderNo);
-
-      // Sync to finance invoice
-      const inv = dbFinanceRepository.getInvoiceByOrderNo(orderNo);
-      if (inv) {
-        dbFinanceRepository.updateInvoice(inv.id, {
-          status: statusPembayaran === "Lunas" ? "PAID" : "UNPAID",
-          dibayar: paid,
-          sisa: sisa,
-        });
-      }
-
-      // Record verified audit
-      dbAuditRepository.save({
-        id: `log-ord-verif-pay-${Date.now()}`,
-        userId: user?.userId || "usr-finance",
-        userName: user?.nama || verifierName,
-        userRole: user?.role || "finance",
-        action: "VERIFY_PAYMENT",
-        module: "Order Tracking",
-        details: `Verifikasi pembayaran order ${orderNo} oleh ${verifierName} - Terkonfirmasi: Rp ${paid.toLocaleString('id-ID')} (${statusPembayaran})`,
-        metadata: { orderNo, totalBiaya, confirmedAmount: paid, statusPembayaran, notes },
-        createdAt: nowStr,
-      });
-
-      return updated;
+    const result = financeService.verifyPayment({
+      orderNo,
+      verifierName: effectiveVerifier,
+      user: effectiveUser,
+      confirmedAmount: effectiveAmount,
+      notes: effectiveNotes,
+      proofPayload: effectiveProof,
+      paymentId,
+      idempotencyKey,
     });
+
+    return result.order;
   }
 
   /**

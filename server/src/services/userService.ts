@@ -49,8 +49,10 @@ export class UserService {
     }
 
     const isCallerSvp = user?.role === "administrator" || user?.jabatan === "SVP";
-    if (payload.jabatan.toUpperCase() === "SVP" && !isCallerSvp) {
-      throw new ApiError(403, "FORBIDDEN", "Hanya Administrator / SVP yang berwenang membuat akun dengan jabatan SVP.");
+    const targetJabatan = (payload.jabatan || "").toUpperCase().trim();
+    const targetRole = ((payload as any).role || "").toLowerCase().trim();
+    if ((targetJabatan === "SVP" || targetRole === "administrator" || targetRole === "svp") && !isCallerSvp) {
+      throw new ApiError(403, "FORBIDDEN", "Hanya Administrator / SVP yang berwenang membuat akun dengan jabatan/role SVP.");
     }
 
     const existing = dbUserRepository.getByEmailWithCredentials(payload.email);
@@ -98,13 +100,15 @@ export class UserService {
     const isCallerSvp = user?.role === "administrator" || user?.jabatan === "SVP";
 
     // Protect existing SVP accounts from being tampered with by non-SVP
-    if (existing.jabatan === "SVP" && !isCallerSvp) {
+    if ((existing.jabatan === "SVP" || (existing as any).role === "administrator" || (existing as any).role === "svp") && !isCallerSvp) {
       throw new ApiError(403, "FORBIDDEN", "Akun SVP dilindungi oleh sistem dan tidak dapat dimodifikasi oleh role lain.");
     }
 
     // Prevent non-SVP from promoting anyone or themselves to SVP
-    if (updates.jabatan && updates.jabatan.toUpperCase() === "SVP" && !isCallerSvp) {
-      throw new ApiError(403, "FORBIDDEN", "Hanya Administrator / SVP yang berwenang menetapkan jabatan SVP.");
+    const targetJabatan = (updates.jabatan || "").toUpperCase().trim();
+    const targetRole = ((updates as any).role || "").toLowerCase().trim();
+    if ((targetJabatan === "SVP" || targetRole === "administrator" || targetRole === "svp") && !isCallerSvp) {
+      throw new ApiError(403, "FORBIDDEN", "Hanya Administrator / SVP yang berwenang menetapkan jabatan/role SVP.");
     }
 
     const normalizedUpdates = {
@@ -139,7 +143,7 @@ export class UserService {
     const isCallerSvp = user?.role === "administrator" || user?.jabatan === "SVP";
 
     // Strictly protect SVP accounts from deletion
-    if (existing.jabatan === "SVP") {
+    if (existing.jabatan === "SVP" || (existing as any).role === "administrator" || (existing as any).role === "svp") {
       throw new ApiError(403, "FORBIDDEN", "Akun SVP dilindungi oleh sistem dan tidak dapat dihapus.");
     }
 
@@ -188,7 +192,7 @@ export class UserService {
     }
 
     const isCallerSvp = callerUser?.role === "administrator" || callerUser?.jabatan === "SVP";
-    if (targetUser.jabatan === "SVP" && !isCallerSvp) {
+    if ((targetUser.jabatan === "SVP" || targetUser.role === "administrator" || targetUser.role === "svp") && !isCallerSvp) {
       throw new ApiError(403, "FORBIDDEN", "Akun SVP dilindungi oleh sistem dan tidak dapat direset oleh role lain.");
     }
 

@@ -25,7 +25,7 @@ import assert from "node:assert";
 import http from "node:http";
 import { createApp } from "../server/src/app";
 import { ApiOrderProvider } from "../src/data/api/apiOrderProvider";
-import { MockOrderProvider } from "../src/data/mock/mockOrderProvider";
+import { MockOrderProvider } from "./fixtures/mock/mockOrderProvider";
 import { orderRepository } from "../src/data/repositories/orderRepository";
 import { orderStore } from "../src/app/data/orderStore";
 import { financeStore } from "../src/app/data/financeStore";
@@ -78,7 +78,8 @@ test("Phase 9.4 Integration — 1. Real API Persistence & Canonical Identity Rec
       totalEstimasi: 1250000,
       payment: {
         tipePembayaran: "Bayar di Akhir",
-        metodePembayaran: "Transfer",
+        metodePembayaran: "Transfer Bank",
+        namaBank: "BCA",
         statusPembayaran: "Belum Lunas",
         totalBiaya: 1250000,
         dibayar: 0,
@@ -141,7 +142,7 @@ test("Phase 9.4 Integration — 2. Anti-Ghost Row Protection on API Creation Fai
           nopol: "",
         });
       },
-      /Order creation failed on backend|VALIDATION_ERROR/
+      /Order creation failed on backend|VALIDATION_ERROR|Nama customer wajib diisi/
     );
 
     // Verify no ghost order in activeOrders

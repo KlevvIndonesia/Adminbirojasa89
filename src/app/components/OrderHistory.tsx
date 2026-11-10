@@ -82,7 +82,7 @@ export function OrderHistory() {
     }
   }, []);
   const userRole = (currentUser?.role || currentUser?.jabatan || "admin").toLowerCase();
-  const canClearRekap = userRole === "admin" || userRole === "administrator" || userRole === "svp";
+  const canClearRekap = userRole === "administrator" || userRole === "svp";
 
   // Derived view for Rekap Order from single source of truth store
   // Shows all operational completed / archived orders with their true financial reconciliation status
@@ -469,15 +469,17 @@ export function OrderHistory() {
                           >
                             <Printer className="w-3.5 h-3.5" />
                           </Button>
-                          <Button
-                            size="sm"
-                            variant="ghost"
-                            className="h-7 w-7 p-0 text-muted-foreground hover:text-rose-600 dark:hover:text-rose-400 hover:bg-rose-500/10 rounded transition-colors"
-                            onClick={() => setOrderToDelete(order)}
-                            title="Hapus Rekap Order Sementara"
-                          >
-                            <Trash2 className="w-3.5 h-3.5" />
-                          </Button>
+                          {canClearRekap && (
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              className="h-7 w-7 p-0 text-muted-foreground hover:text-rose-600 dark:hover:text-rose-400 hover:bg-rose-500/10 rounded transition-colors"
+                              onClick={() => setOrderToDelete(order)}
+                              title="Hapus Rekap Order Sementara"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </Button>
+                          )}
                         </div>
                       </TableCell>
                     </TableRow>

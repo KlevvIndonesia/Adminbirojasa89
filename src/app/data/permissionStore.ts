@@ -15,7 +15,7 @@ import { useState, useEffect } from "react";
 import { MenuItem } from "../config/navigationConfig";
 import { APP_CONFIG } from "../config/appConfig";
 
-export type Role = "svp" | "administrator" | "admin" | "finance" | "messenger";
+export type Role = "svp" | "administrator" | "admin" | "finance" | "messenger" | "unknown";
 
 export interface ModulePermission {
   view: boolean;
@@ -44,12 +44,13 @@ const STORAGE_KEY = "admin_sun89_permissions_v1";
 
 // Helper to normalize role
 export function normalizeRole(role: string | null | undefined): Role {
-  if (!role) return "admin";
+  if (!role) return "unknown";
   const r = role.toLowerCase().trim();
   if (r === "administrator" || r === "svp") return "svp";
+  if (r === "admin") return "admin";
   if (r === "finance") return "finance";
-  if (r === "messenger") return "messenger";
-  return "admin";
+  if (r === "messenger" || r === "kurir" || r === "courier") return "messenger";
+  return "unknown";
 }
 
 // Canonical Default Permissions Matrix
@@ -211,7 +212,7 @@ const DEFAULT_PERMISSIONS: PermissionMatrix = {
       stage1_verifikasi: true,
       stage2_penjadwalan: true,
       stage3_verifikasiFisik: true,
-      stage4_prosesSamsat: false, // ADMIN CANNOT MUTATE STAGE 4
+      stage4_prosesSamsat: true, // BD-WF-02: Admin can advance Stage 4 when documents arrive at office
       stage5_verifikasiUlang: true,
       stage6_supervisi: false,    // ADMIN CANNOT MUTATE STAGE 6
       stage7_pengantaran: true,
@@ -334,6 +335,20 @@ const DEFAULT_PERMISSIONS: PermissionMatrix = {
       stage8_diterima: false,
     },
   },
+  // 5. UNKNOWN / UNASSIGNED (Zero privileges - fail closed)
+  unknown: {
+    modules: {},
+    stages: {
+      stage1_verifikasi: false,
+      stage2_penjadwalan: false,
+      stage3_verifikasiFisik: false,
+      stage4_prosesSamsat: false,
+      stage5_verifikasiUlang: false,
+      stage6_supervisi: false,
+      stage7_pengantaran: false,
+      stage8_diterima: false,
+    },
+  },
 };
 
 class PermissionStore {
@@ -361,6 +376,8 @@ class PermissionStore {
           adminPerms.modules["finance-kas-messenger"] = { view: true, manage: true };
           adminPerms.modules["finance"] = { view: true, manage: true };
           adminPerms.modules["master-layanan"] = { view: true, manage: true };
+          if (!adminPerms.stages) adminPerms.stages = { ...DEFAULT_PERMISSIONS.admin.stages };
+          adminPerms.stages.stage4_prosesSamsat = true;
         }
         // Ensure all roles exist
         return {
@@ -369,6 +386,7 @@ class PermissionStore {
           admin: adminPerms,
           finance: parsed.finance || DEFAULT_PERMISSIONS.finance,
           messenger: parsed.messenger || DEFAULT_PERMISSIONS.messenger,
+          unknown: DEFAULT_PERMISSIONS.unknown,
         };
       }
     } catch {
@@ -416,6 +434,7 @@ class PermissionStore {
    */
   public canViewPage(role: string | null | undefined, pageId: string): boolean {
     const norm = normalizeRole(role);
+    if (norm === "unknown") return false;
     if (norm === "svp") return true;
 
     const perms = this.getRolePermissions(norm);
@@ -456,6 +475,7 @@ class PermissionStore {
    */
   public canManageModule(role: string | null | undefined, moduleId: string): boolean {
     const norm = normalizeRole(role);
+    if (norm === "unknown") return false;
     if (norm === "svp") return true;
 
     const perms = this.getRolePermissions(norm);
@@ -470,10 +490,11 @@ class PermissionStore {
    */
   public canManageStage(role: string | null | undefined, stageNumber: number): boolean {
     const norm = normalizeRole(role);
+    if (norm === "unknown") return false;
     if (norm === "svp") return true;
 
-    // Built-in system policy: Non-SVP roles are strictly view-only for Stage 4 and Stage 6
-    if (stageNumber === 4 || stageNumber === 6) {
+    // Built-in system policy: Non-SVP roles are strictly view-only for Stage 6 (Supervisi)
+    if (stageNumber === 6) {
       return false;
     }
 
@@ -486,11 +507,11 @@ class PermissionStore {
       case 3:
         return stages.stage3_verifikasiFisik ?? true;
       case 4:
-        return false; // Strictly non-SVP view only
+        return stages.stage4_prosesSamsat ?? true;
       case 5:
         return stages.stage5_verifikasiUlang ?? true;
       case 6:
-        return false; // Strictly non-SVP view only
+        return false;
       case 7:
         return stages.stage7_pengantaran ?? true;
       case 8:
@@ -643,70 +664,12 @@ class PermissionStore {
    * Save entire role permissions structure (used by AccessManagement)
    * Strictly prohibits modifying SVP / Administrator.
    */
-  public async saveRolePermissions(role: Role, permissions: RolePermissions): Promise<void> {
-    const cleanRole = role.toLowerCase().trim() as Role;
-    if (cleanRole === "svp" || cleanRole === "administrator") {
-      throw new Error("Hak akses role SVP bersifat absolut dan tidak dapat diubah.");
-    }
-
-    if (!["admin", "finance", "messenger"].includes(cleanRole)) {
-      throw new Error(`Role '${role}' tidak dapat dikonfigurasi.`);
-    }
-
-    this.matrix[cleanRole] = JSON.parse(JSON.stringify(permissions));
-    this.saveToStorage();
-    this.notify();
-
-    // Persist to backend database
-    try {
-      const token = typeof window !== "undefined" ? localStorage.getItem("auth_token") : null;
-      if (token) {
-        const res = await fetch(`${APP_CONFIG.apiBaseUrl}/permissions/${cleanRole}`, {
-          method: "PUT",
-          headers: {
-            "Content-Type": "application/json",
-            Authorization: `Bearer ${token}`,
-          },
-          body: JSON.stringify({ permissions }),
-        });
-        if (!res.ok) {
-          const errData = await res.json().catch(() => ({}));
-          throw new Error(errData.error?.message || errData.message || "Gagal menyimpan ke server backend.");
-        }
-      }
-    } catch (err: any) {
-      console.warn("Backend permissions sync error:", err);
-      throw err;
-    }
+  public async saveRolePermissions(_role: Role, _permissions: RolePermissions): Promise<void> {
+    throw new Error("Kebijakan hak akses bersifat statis dan perubahan dinamis telah dinonaktifkan (BD-RBAC-06).");
   }
 
-  /**
-   * Reset all permissions to canonical defaults
-   */
   public async resetToDefaults(): Promise<void> {
-    this.matrix = JSON.parse(JSON.stringify(DEFAULT_PERMISSIONS));
-    this.saveToStorage();
-    this.notify();
-
-    try {
-      const token = typeof window !== "undefined" ? localStorage.getItem("auth_token") : null;
-      if (token) {
-        const res = await fetch(`${APP_CONFIG.apiBaseUrl}/permissions/reset`, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            Authorization: `Bearer ${token}`,
-          },
-        });
-        if (!res.ok) {
-          const errData = await res.json().catch(() => ({}));
-          throw new Error(errData.error?.message || errData.message || "Gagal mereset di server backend.");
-        }
-      }
-    } catch (err: any) {
-      console.warn("Backend permissions reset error:", err);
-      throw err;
-    }
+    throw new Error("Kebijakan hak akses bersifat statis dan reset dinamis telah dinonaktifkan (BD-RBAC-06).");
   }
 }
 

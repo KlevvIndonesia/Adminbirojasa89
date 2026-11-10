@@ -4,6 +4,7 @@
  */
 
 import { db, runInTransaction } from "../database/db";
+import { serializeUtcTimestamp } from "../utils/timestampSerializer";
 
 export interface AuditLogRecord {
   id: string;
@@ -54,7 +55,7 @@ export class DbAuditRepository {
       module: r.module,
       details: r.details,
       metadata: r.metadata_json ? JSON.parse(r.metadata_json) : undefined,
-      createdAt: r.created_at,
+      createdAt: serializeUtcTimestamp(r.created_at) || r.created_at,
     }));
   }
 
@@ -116,7 +117,12 @@ export class DbAuditRepository {
 
   public getSecurityLogs(limit: number = 100): any[] {
     const stmt = (db as any).prepare("SELECT * FROM security_audit_logs ORDER BY created_at DESC LIMIT ?");
-    return stmt.all(limit) as any[];
+    const rows = stmt.all(limit) as any[];
+    return rows.map((r) => ({
+      ...r,
+      created_at: serializeUtcTimestamp(r.created_at) || r.created_at,
+      createdAt: serializeUtcTimestamp(r.created_at) || r.created_at,
+    }));
   }
 }
 

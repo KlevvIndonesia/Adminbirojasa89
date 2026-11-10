@@ -33,9 +33,15 @@ import { serviceRouter } from "./routes/serviceRoutes";
 import { orderCorrectionRouter } from "./routes/orderCorrectionRoutes";
 import { publicRouter } from "./routes/publicRoutes";
 
-export function createApp(): Express {
+export interface CreateAppOptions {
+  skipSchemaInit?: boolean;
+}
+
+export function createApp(options?: CreateAppOptions): Express {
   // Ensure schema and migrations are initialized
-  initializeSchema(db);
+  if (!options?.skipSchemaInit) {
+    initializeSchema(db);
+  }
   // Initialize Database Seeds if needed
   seedDatabase();
 

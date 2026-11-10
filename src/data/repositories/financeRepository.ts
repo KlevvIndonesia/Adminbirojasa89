@@ -12,8 +12,8 @@ import {
   KasKantorItem,
   KasMessengerItem,
   PengeluaranItem,
+  IFinanceDataProvider,
 } from "../../domain/finance/types";
-import { mockFinanceProvider, IFinanceDataProvider } from "../mock/mockFinanceProvider";
 import { ApiFinanceProvider } from "../api/apiFinanceProvider";
 
 export interface IFinanceRepository {
@@ -52,13 +52,7 @@ export class FinanceRepository implements IFinanceRepository {
   private provider: IFinanceDataProvider;
 
   constructor(provider?: IFinanceDataProvider) {
-    if (provider) {
-      this.provider = provider;
-    } else {
-      const isApi = (typeof process !== "undefined" && process.env?.APP_DATA_PROVIDER === "api") ||
-                    (typeof import.meta !== "undefined" && (import.meta as any).env?.VITE_APP_DATA_PROVIDER === "api");
-      this.provider = isApi ? new ApiFinanceProvider() : mockFinanceProvider;
-    }
+    this.provider = provider || new ApiFinanceProvider();
   }
 
   public setProvider(provider: IFinanceDataProvider): void {

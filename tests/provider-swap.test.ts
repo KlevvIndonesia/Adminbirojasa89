@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert";
 import { OrderRepository } from "../src/data/repositories/orderRepository";
-import { IOrderDataProvider } from "../src/data/mock/mockOrderProvider";
+import { IOrderDataProvider } from "./fixtures/mock/mockOrderProvider";
 import { OperationalOrder, StageName } from "../src/domain/order/types";
 
 // Fake Custom Test Provider implementing IOrderDataProvider (Simulating Phase 7 API Provider)

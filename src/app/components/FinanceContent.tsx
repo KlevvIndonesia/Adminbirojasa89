@@ -128,6 +128,34 @@ export const STANDARD_EXPENSE_CATEGORIES = [
   "Lain-lain / Biaya Tak Terduga",
 ];
 
+/**
+ * REM-02A: Validates whether a candidate string strictly matches the verified backend invoice contract.
+ * Rejects order identifiers (ORD-*) and invalid non-invoice patterns.
+ */
+export function isValidInvoiceFormat(id: unknown): boolean {
+  if (typeof id !== "string") return false;
+  const trimmed = id.trim();
+  if (!trimmed) return false;
+  if (/^ORD-/i.test(trimmed)) return false;
+  return /^INV-[A-Z0-9-]+$/i.test(trimmed);
+}
+
+/**
+ * REM-02A: Independently extracts a valid invoice identifier without allowing an invalid nonempty invoiceNo
+ * to mask a valid invoice property. Rejects order numbers and non-matching formats.
+ */
+export function extractValidInvoiceNo(item: any): string | null {
+  if (!item || typeof item !== "object") return null;
+
+  const rawInvoiceNo = typeof item.invoiceNo === "string" ? item.invoiceNo.trim() : null;
+  const rawInvoice = typeof item.invoice === "string" ? item.invoice.trim() : null;
+
+  const validInvoiceNo = rawInvoiceNo && isValidInvoiceFormat(rawInvoiceNo) ? rawInvoiceNo : null;
+  const validInvoice = rawInvoice && isValidInvoiceFormat(rawInvoice) ? rawInvoice : null;
+
+  return validInvoiceNo || validInvoice || null;
+}
+
 const makeLunasIdempotencyKey = (invoiceId: number | string) =>
   `pay-${invoiceId}-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
 
@@ -792,14 +820,19 @@ export function FinanceContent({ tab }: FinanceContentProps) {
     setLunasNotes("");
     setLunasIdempotencyKey(makeLunasIdempotencyKey(item.id));
 
-    // Fetch previous payment history for this invoice / order
+    // Fetch previous payment history for this invoice / order (REM-02A Guarded)
     setTargetPayments([]);
-    setIsLoadingPayments(true);
-    const invoiceNum = item.invoice || item.invoiceNo || item.orderNo;
-    if (invoiceNum) {
+    actionFeedback.clearError("finance-lunas-history");
+    const validInvoiceNo = extractValidInvoiceNo(item);
+    const fallbackPayments = Array.isArray(item.riwayatPembayaran)
+      ? item.riwayatPembayaran
+      : (Array.isArray(item.paymentRecords) ? item.paymentRecords : []);
+
+    if (validInvoiceNo) {
+      setIsLoadingPayments(true);
       const token = localStorage.getItem("auth_token") || localStorage.getItem("sun89_auth_token") || "";
       fetchWithTimeout(
-        `${APP_CONFIG.apiBaseUrl}/finance/invoices/${encodeURIComponent(invoiceNum)}/payments`,
+        `${APP_CONFIG.apiBaseUrl}/finance/invoices/${encodeURIComponent(validInvoiceNo)}/payments`,
         {
           headers: token ? { Authorization: `Bearer ${token}` } : {},
         },
@@ -816,11 +849,11 @@ export function FinanceContent({ tab }: FinanceContentProps) {
           if (payload?.success && Array.isArray(payload.data) && payload.data.length > 0) {
             setTargetPayments(payload.data);
           } else {
-            setTargetPayments(item.riwayatPembayaran || item.paymentRecords || []);
+            setTargetPayments(fallbackPayments);
           }
         })
         .catch((err) => {
-          setTargetPayments(item.riwayatPembayaran || item.paymentRecords || []);
+          setTargetPayments(fallbackPayments);
           if (APP_CONFIG.dataProvider === "api") {
             actionFeedback.setError("finance-lunas-history", err, {
               actionLabel: "memuat riwayat pembayaran",
@@ -831,7 +864,7 @@ export function FinanceContent({ tab }: FinanceContentProps) {
           setIsLoadingPayments(false);
         });
     } else {
-      setTargetPayments(item.riwayatPembayaran || item.paymentRecords || []);
+      setTargetPayments(fallbackPayments);
       setIsLoadingPayments(false);
     }
   };
@@ -1215,11 +1248,11 @@ Terima kasih.`;
       setVoidReasonText("");
 
       if (lunasTargetItem) {
-        const invoiceNum = lunasTargetItem.invoice || lunasTargetItem.invoiceNo || lunasTargetItem.orderNo;
-        if (invoiceNum) {
+        const validInvoiceNo = extractValidInvoiceNo(lunasTargetItem);
+        if (validInvoiceNo) {
           const token = localStorage.getItem("auth_token") || localStorage.getItem("sun89_auth_token") || "";
           const res = await fetchWithTimeout(
-            `${APP_CONFIG.apiBaseUrl}/finance/invoices/${encodeURIComponent(invoiceNum)}/payments`,
+            `${APP_CONFIG.apiBaseUrl}/finance/invoices/${encodeURIComponent(validInvoiceNo)}/payments`,
             { headers: token ? { Authorization: `Bearer ${token}` } : {} },
             10000
           );
@@ -4551,7 +4584,11 @@ Terima kasih.`;
                           </div>
                         ) : (
                           <p className="text-[11px] text-muted-foreground italic bg-muted/20 p-2 rounded border border-border/30">
-                            {isLoadingPayments ? "Memuat riwayat pembayaran..." : "Belum ada riwayat pembayaran tambahan sebelumnya."}
+                            {isLoadingPayments
+                              ? "Memuat riwayat pembayaran..."
+                              : (!extractValidInvoiceNo(lunasTargetItem)
+                                  ? "Riwayat pembayaran server belum tersedia karena order ini belum memiliki invoice resmi."
+                                  : "Belum ada riwayat pembayaran tambahan sebelumnya.")}
                           </p>
                         )}
                       </div>

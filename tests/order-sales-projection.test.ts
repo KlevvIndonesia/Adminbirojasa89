@@ -30,7 +30,7 @@ import {
 import { financeStore } from "../src/app/data/financeStore";
 import { orderStore } from "../src/app/data/orderStore";
 import { orderRepository } from "../src/data/repositories/orderRepository";
-import { MockOrderProvider } from "../src/data/mock/mockOrderProvider";
+import { MockOrderProvider } from "./fixtures/mock/mockOrderProvider";
 import { ApiOrderProvider } from "../src/data/api/apiOrderProvider";
 import type { OperationalOrder } from "../src/domain/order/types";
 

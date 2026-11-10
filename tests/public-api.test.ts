@@ -733,6 +733,33 @@ test("PUB-01: Support Datang Langsung, cancellation, and historical order repres
   assert.strictEqual(cancelTrack.statusPengerjaan, "Dibatalkan");
   assert.strictEqual(cancelTrack.isCancelled, true);
   assert.strictEqual(cancelTrack.isCompleted, false);
+
+  // 3. Historical order without order_status_history rows (no synthetic timestamps)
+  const histOrderNo = "ORD-HIST-999";
+  const histNopol = "B 9876 HST";
+  db.prepare(`
+    INSERT INTO orders (
+      order_no, customer, nomor_hp, layanan, nopol,
+      samsat_asal, total_biaya, current_step, current_stage_name,
+      payment_status, created_at, updated_at, data_json, is_archived
+    ) VALUES (
+      ?, 'Bapak Sutrisno', '081234567890', 'Perpanjangan 1 Tahun', ?,
+      'Jakarta Timur', 250000, 8, 'Dokumen Telah Diterima',
+      'Lunas', '2024-05-01T08:00:00.000Z', '2024-05-03T16:00:00.000Z',
+      '{"tipeKendaraan":"Mobil","metodeLayanan":"Antar Jemput"}', 1
+    )
+  `).run(histOrderNo, histNopol);
+
+  const histRes = await fetch(`${baseUrl}/api/v1/public/orders/${histOrderNo}/tracking?nopol=${encodeURIComponent(histNopol)}`);
+  assert.strictEqual(histRes.status, 200);
+  const histBody = (await histRes.json() as any).data;
+  assert.strictEqual(histBody.publicStageName, "Selesai");
+  assert.strictEqual(histBody.statusPengerjaan, "Selesai");
+  assert.strictEqual(histBody.isCompleted, true);
+  // Milestones should NOT invent synthetic intermediate timestamps
+  assert.strictEqual(histBody.timeline[1].waktuSelesai, null);
+  assert.strictEqual(histBody.timeline[2].waktuSelesai, null);
+  assert.strictEqual(histBody.timeline[3].waktuSelesai, null);
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -872,6 +899,59 @@ test("PUB-03 & PUB-04: Staged upload integrity, storage failure safety, and docu
   assert.strictEqual(attackerOrder.documentsAttached, 0, "Public API must not link arbitrary documentIds");
 });
 
+test("PUB-03: Partial upload failure (file 1 valid, file 2 corrupt) rejects request and prevents order/orphan creation", async () => {
+  const boundary = "----WebKitFormBoundaryPartialFail" + Date.now();
+  const targetNopol = "B 4455 PFL";
+  const multipartPartialBody = Buffer.concat([
+    Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="customer"\r\n\r\nPartial Fail Tester\r\n`),
+    Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="nomorHP"\r\n\r\n081255556666\r\n`),
+    Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="serviceId"\r\n\r\nsvc-perp-1th\r\n`),
+    Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="nopol"\r\n\r\n${targetNopol}\r\n`),
+    Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="wilayahSamsatAsal"\r\n\r\nJakarta Timur\r\n`),
+    Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="files"; filename="stnk_good.jpg"\r\nContent-Type: image/jpeg\r\n\r\n`),
+    VALID_JPEG_BUFFER,
+    Buffer.from(`\r\n--${boundary}\r\nContent-Disposition: form-data; name="files"; filename="corrupt.jpg"\r\nContent-Type: image/jpeg\r\n\r\nINVALID_FAKE_BYTES_NOT_JPEG\r\n`),
+    Buffer.from(`--${boundary}--\r\n`),
+  ]);
+
+  const res = await fetch(`${baseUrl}/api/v1/public/orders`, {
+    method: "POST",
+    headers: { "Content-Type": `multipart/form-data; boundary=${boundary}` },
+    body: multipartPartialBody,
+  });
+  assert.strictEqual(res.status, 400);
+
+  // Assert NO order was created in DB
+  const checkOrder = db.prepare("SELECT * FROM orders WHERE nopol = ?").all(targetNopol);
+  assert.strictEqual(checkOrder.length, 0, "No order should be committed on partial file failure");
+
+  // Assert NO orphan document was registered
+  const checkDoc = db.prepare("SELECT * FROM documents WHERE original_name = 'stnk_good.jpg'").all();
+  assert.strictEqual(checkDoc.length, 0, "No orphan document should be left in database");
+});
+
+test("PUB-04: Arbitrary documentIds in JSON payload are strictly ignored and not linked", async () => {
+  const fakeDocId = "DOC-FAKE-99999999";
+  const res = await fetch(`${baseUrl}/api/v1/public/orders`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      customer: "DocId Ignored User",
+      nomorHP: "081277778888",
+      serviceId: "svc-perp-1th",
+      nopol: "B 6677 IGN",
+      wilayahSamsatAsal: "Jakarta Timur",
+      documentIds: [fakeDocId, "DOC-RANDOM-1234"],
+    }),
+  });
+  assert.strictEqual(res.status, 201);
+  const body = await res.json() as any;
+  assert.strictEqual(body.data.documentsAttached, 0, "Arbitrary documentIds must be completely ignored");
+
+  const attached = db.prepare("SELECT * FROM documents WHERE order_no = ?").all(body.data.orderNo);
+  assert.strictEqual(attached.length, 0);
+});
+
 // ─────────────────────────────────────────────────────────────────────────────
 // 9. PUB-05: ATOMIC CONCURRENCY & PERSISTENT IDEMPOTENCY
 // ─────────────────────────────────────────────────────────────────────────────
@@ -939,6 +1019,45 @@ test("PUB-05: Concurrent requests with identical key produce exactly 1 order; di
   assert.strictEqual(conflictBody.error.code, "IDEMPOTENCY_CONFLICT");
 });
 
+test("PUB-05: Server restart consistency: persistent idempotency table recovers cached order after memory flush", async () => {
+  const idempotencyKey = `RESTART-IDEMP-${Date.now()}`;
+  const payload = {
+    customer: "Restart Memory Tester",
+    nomorHP: "081288889999",
+    serviceId: "svc-perp-1th",
+    nopol: "B 7788 RST",
+    wilayahSamsatAsal: "Jakarta Timur",
+  };
+
+  // 1. Initial request
+  const res1 = await fetch(`${baseUrl}/api/v1/public/orders`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "X-Idempotency-Key": idempotencyKey },
+    body: JSON.stringify(payload),
+  });
+  assert.strictEqual(res1.status, 201);
+  const body1 = await res1.json() as any;
+  const initialOrderNo = body1.data.orderNo;
+
+  // 2. Simulate server restart by clearing in-memory cache
+  const { orderService } = await import("../server/src/services/orderService");
+  (orderService as any).idempotencyCache.clear();
+
+  // 3. Repeat request with same idempotency key
+  const res2 = await fetch(`${baseUrl}/api/v1/public/orders`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "X-Idempotency-Key": idempotencyKey },
+    body: JSON.stringify(payload),
+  });
+  assert.strictEqual(res2.status, 201);
+  const body2 = await res2.json() as any;
+  assert.strictEqual(body2.data.orderNo, initialOrderNo, "Order must be recovered from persistent idempotency_keys table");
+
+  // Verify only 1 order exists in database
+  const count = db.prepare("SELECT COUNT(*) as count FROM orders WHERE order_no = ?").get(initialOrderNo) as any;
+  assert.strictEqual(count.count, 1);
+});
+
 // ─────────────────────────────────────────────────────────────────────────────
 // 10. PUB-06 & PUB-07: PRICING VALIDATION & QUERY PLAN EVALUATION
 // ─────────────────────────────────────────────────────────────────────────────
@@ -950,15 +1069,32 @@ test("PUB-07: Master data pricing endpoint returns HTTP 400 for invalid Samsat I
   assert.strictEqual(body.error.code, "VALIDATION_ERROR");
 });
 
-test("PUB-06: Query plan evaluation on clean nopol expression", async () => {
-  // Check SQLite EXPLAIN QUERY PLAN for normalized nopol search
-  const plan = db.prepare(`
+test("PUB-06: Query plan benchmark confirms O(log N) SEARCH with functional index vs O(N) SCAN without index", async () => {
+  // 1. Measure query plan BEFORE functional index
+  const planBefore = db.prepare(`
     EXPLAIN QUERY PLAN
     SELECT order_no FROM orders
     WHERE REPLACE(REPLACE(REPLACE(UPPER(nopol), ' ', ''), '-', ''), '.', '') = 'B1234ABC'
   `).all() as any[];
 
-  assert.ok(Array.isArray(plan));
-  assert.ok(plan.length > 0);
-  // Verify execution completes safely and deterministically
+  assert.ok(planBefore.some((p: any) => p.detail.includes("SCAN orders")), "Before index, query plan performs SCAN orders");
+
+  // 2. Apply proposed functional index on this isolated test sandbox database
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_orders_nopol_clean ON orders(
+      REPLACE(REPLACE(REPLACE(UPPER(nopol), ' ', ''), '-', ''), '.', '')
+    );
+  `);
+
+  // 3. Measure query plan AFTER functional index
+  const planAfter = db.prepare(`
+    EXPLAIN QUERY PLAN
+    SELECT order_no FROM orders
+    WHERE REPLACE(REPLACE(REPLACE(UPPER(nopol), ' ', ''), '-', ''), '.', '') = 'B1234ABC'
+  `).all() as any[];
+
+  assert.ok(
+    planAfter.some((p: any) => p.detail.includes("SEARCH orders USING INDEX idx_orders_nopol_clean")),
+    "After index, query plan performs index SEARCH"
+  );
 });

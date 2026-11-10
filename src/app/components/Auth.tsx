@@ -9,10 +9,7 @@ import {
   Mail,
   Eye,
   EyeOff,
-  Sparkles,
-  User,
-  Truck,
-  AlertCircle,
+  Sparkles,  AlertCircle,
   Clock,
   WifiOff,
   ServerCrash,
@@ -20,7 +17,6 @@ import {
   AlertTriangle,
   RefreshCw,
 } from "lucide-react";
-import { Badge } from "./ui/badge";
 import { toast } from "sonner";
 import { Alert, AlertTitle, AlertDescription } from "./ui/alert";
 import {
@@ -53,20 +49,10 @@ export function Auth({ onLogin }: AuthProps) {
   const [password, setPassword] = useState("");
   const [inlineError, setInlineError] = useState<AuthFeedbackState | null>(null);
   const [dialogError, setDialogError] = useState<AuthFeedbackState | null>(null);
-
-  const credentials = userRepository.getDemoCredentials();
-
   const clearErrors = () => {
     if (inlineError) setInlineError(null);
     if (dialogError) setDialogError(null);
   };
-
-  const handleSelectDemo = (demoEmail: string, demoPass: string) => {
-    setEmail(demoEmail);
-    setPassword(demoPass);
-    clearErrors();
-  };
-
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
     if (isLoading) return; // Prevent duplicate submission
@@ -392,132 +378,6 @@ export function Auth({ onLogin }: AuthProps) {
                 </Button>
               </motion.div>
             </form>
-
-            {/* Demo Credentials Info */}
-            <motion.div
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              transition={{ delay: 0.8 }}
-              className="mt-5 pt-5 border-t border-border"
-            >
-              <p className="text-xs text-muted-foreground text-center mb-3">Demo Credentials</p>
-              <div className="grid grid-cols-2 gap-2">
-                <div
-                  role="button"
-                  tabIndex={0}
-                  onClick={() => handleSelectDemo(credentials.administrator.email, credentials.administrator.password)}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter" || e.key === " ") {
-                      e.preventDefault();
-                      handleSelectDemo(credentials.administrator.email, credentials.administrator.password);
-                    }
-                  }}
-                  aria-label="Pilih akun demo Admin SVP"
-                  className="p-2.5 border border-border rounded-lg bg-secondary/30 cursor-pointer hover:bg-secondary/60 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-primary transition-colors text-left"
-                >
-                  <div className="flex items-center gap-1.5 mb-1.5">
-                    <div className="w-6 h-6 rounded-md bg-secondary flex items-center justify-center">
-                      <User className="w-3.5 h-3.5 text-muted-foreground" />
-                    </div>
-                    <Badge status="role">Admin (SVP)</Badge>
-                  </div>
-                  <p className="text-[11px] text-muted-foreground truncate">{credentials.administrator.email}</p>
-                  <p className="text-[11px] text-muted-foreground">{credentials.administrator.password}</p>
-                </div>
-
-                <div
-                  role="button"
-                  tabIndex={0}
-                  onClick={() => handleSelectDemo(credentials.finance.email, credentials.finance.password)}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter" || e.key === " ") {
-                      e.preventDefault();
-                      handleSelectDemo(credentials.finance.email, credentials.finance.password);
-                    }
-                  }}
-                  aria-label="Pilih akun demo Finance"
-                  className="p-2.5 border border-border rounded-lg bg-secondary/30 cursor-pointer hover:bg-secondary/60 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-primary transition-colors text-left"
-                >
-                  <div className="flex items-center gap-1.5 mb-1.5">
-                    <div className="w-6 h-6 rounded-md bg-secondary flex items-center justify-center">
-                      <User className="w-3.5 h-3.5 text-muted-foreground" />
-                    </div>
-                    <Badge status="role">Finance</Badge>
-                  </div>
-                  <p className="text-[11px] text-muted-foreground truncate">{credentials.finance.email}</p>
-                  <p className="text-[11px] text-muted-foreground">{credentials.finance.password}</p>
-                </div>
-
-                <div
-                  role="button"
-                  tabIndex={0}
-                  onClick={() => handleSelectDemo(credentials.admin.email, credentials.admin.password)}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter" || e.key === " ") {
-                      e.preventDefault();
-                      handleSelectDemo(credentials.admin.email, credentials.admin.password);
-                    }
-                  }}
-                  aria-label="Pilih akun demo Admin Loket"
-                  className="p-2.5 border border-border rounded-lg bg-secondary/30 cursor-pointer hover:bg-secondary/60 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-primary transition-colors text-left"
-                >
-                  <div className="flex items-center gap-1.5 mb-1.5">
-                    <div className="w-6 h-6 rounded-md bg-secondary flex items-center justify-center">
-                      <User className="w-3.5 h-3.5 text-muted-foreground" />
-                    </div>
-                    <Badge status="role">Admin</Badge>
-                  </div>
-                  <p className="text-[11px] text-muted-foreground truncate">{credentials.admin.email}</p>
-                  <p className="text-[11px] text-muted-foreground">{credentials.admin.password}</p>
-                </div>
-
-                <div
-                  role="button"
-                  tabIndex={0}
-                  onClick={() => handleSelectDemo(credentials.messenger1.email, credentials.messenger1.password)}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter" || e.key === " ") {
-                      e.preventDefault();
-                      handleSelectDemo(credentials.messenger1.email, credentials.messenger1.password);
-                    }
-                  }}
-                  aria-label="Pilih akun demo Messenger Budi"
-                  className="p-2.5 border border-border rounded-lg bg-secondary/30 cursor-pointer hover:bg-secondary/60 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-primary transition-colors text-left"
-                >
-                  <div className="flex items-center gap-1.5 mb-1.5">
-                    <div className="w-6 h-6 rounded-md bg-secondary flex items-center justify-center">
-                      <Truck className="w-3.5 h-3.5 text-muted-foreground" />
-                    </div>
-                    <Badge status="role">Msg: Budi</Badge>
-                  </div>
-                  <p className="text-[11px] text-muted-foreground truncate">{credentials.messenger1.email}</p>
-                  <p className="text-[11px] text-muted-foreground">{credentials.messenger1.password}</p>
-                </div>
-
-                <div
-                  role="button"
-                  tabIndex={0}
-                  onClick={() => handleSelectDemo(credentials.messenger2.email, credentials.messenger2.password)}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter" || e.key === " ") {
-                      e.preventDefault();
-                      handleSelectDemo(credentials.messenger2.email, credentials.messenger2.password);
-                    }
-                  }}
-                  aria-label="Pilih akun demo Messenger Andi"
-                  className="p-2.5 border border-border rounded-lg bg-secondary/30 cursor-pointer hover:bg-secondary/60 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-primary transition-colors col-span-2 text-left"
-                >
-                  <div className="flex items-center gap-1.5 mb-1.5">
-                    <div className="w-6 h-6 rounded-md bg-secondary flex items-center justify-center">
-                      <Truck className="w-3.5 h-3.5 text-muted-foreground" />
-                    </div>
-                    <Badge status="role">Msg: Andi Pratama</Badge>
-                  </div>
-                  <p className="text-[11px] text-muted-foreground truncate">{credentials.messenger2.email}</p>
-                  <p className="text-[11px] text-muted-foreground">{credentials.messenger2.password}</p>
-                </div>
-              </div>
-            </motion.div>
           </div>
         </Card>
       </motion.div>

@@ -9,7 +9,6 @@
 import { DocumentItem, UploadDocumentOptions } from "../../domain/document/types";
 import { IDocumentProvider } from "../providers/documentProvider";
 import { ApiDocumentProvider } from "../api/apiDocumentProvider";
-import { mockDocumentProvider } from "../mock/mockDocumentProvider";
 
 export interface IDocumentRepository {
   uploadDocument(file: File, options: UploadDocumentOptions): Promise<DocumentItem>;
@@ -31,14 +30,7 @@ export class DocumentRepository implements IDocumentRepository {
   private provider: IDocumentProvider;
 
   constructor(provider?: IDocumentProvider) {
-    if (provider) {
-      this.provider = provider;
-    } else {
-      const isApi =
-        (typeof process !== "undefined" && process.env?.APP_DATA_PROVIDER === "api") ||
-        (typeof import.meta !== "undefined" && (import.meta as any).env?.VITE_APP_DATA_PROVIDER === "api");
-      this.provider = isApi ? new ApiDocumentProvider() : mockDocumentProvider;
-    }
+    this.provider = provider || new ApiDocumentProvider();
   }
 
   public setProvider(provider: IDocumentProvider): void {

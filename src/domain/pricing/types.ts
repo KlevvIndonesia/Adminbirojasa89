@@ -113,6 +113,14 @@ export interface ServiceFeeConfig {
   samsatId: string; // e.g. "samsat-jakarta-timur"
   wilayah: string; // e.g. "Jakarta Timur"
   biayaJasa: number;
+  biayaJasaR4?: number;
+  biayaJasaR2?: number;
+  jasaR4Enabled?: boolean;
+  jasaR2Enabled?: boolean;
+  biayaKhususR4?: number;
+  biayaKhususR2?: number;
+  khususR4Enabled?: boolean;
+  khususR2Enabled?: boolean;
   totalBiayaJasa?: number; // e.g. 800000 (backward-compatible alias)
   jasaLengkap?: {
     nominal: number;
@@ -189,4 +197,68 @@ export interface OrderCostSnapshot {
   costVerifiedAt?: string;
   costVerifiedBy?: string;
   createdAt: string;
+}
+
+export interface ServiceFeeResolutionInput {
+  serviceName: string;
+  vehicleType: "Mobil" | "Motor";
+  samsatName?: string;
+  feeConfig?: {
+    biayaJasa?: number | null;
+    biayaJasaR4?: number | null;
+    biayaJasaR2?: number | null;
+    jasaR4Enabled?: boolean | null;
+    jasaR2Enabled?: boolean | null;
+    biayaKhususR4?: number | null;
+    biayaKhususR2?: number | null;
+    khususR4Enabled?: boolean | null;
+    khususR2Enabled?: boolean | null;
+    jasaLengkap?: {
+      nominal?: number | null;
+      enabled?: boolean | null;
+    } | null;
+    biayaPengurusanKhusus?: {
+      nominal?: number | null;
+      enabled?: boolean | null;
+    } | null;
+    biayaJasaNembak?: number | null;
+    jasaNembakEnabled?: boolean | null;
+    isCustom?: boolean;
+    [key: string]: any;
+  } | null;
+  kondisiBerkas?: string;
+  templateBiayaJasa: number;
+  standardBaselineJasa?: number;
+  pricingStore?: any;
+  isKhusus?: boolean;
+}
+
+export interface ResolvedServiceFee {
+  effectiveJasa: number;
+  source: "OVERRIDE" | "TEMPLATE_DEFAULT" | "SPECIAL_SERVICE" | "INACTIVE";
+  isActive: boolean;
+}
+
+export interface IPricingDataProvider {
+  getSamsatItems(): SamsatCostItem[];
+  getSamsatItemById(id: string): SamsatCostItem | undefined;
+  updateSamsatItem(id: string, updates: Partial<SamsatCostItem>): Promise<boolean> | boolean;
+  addSamsatItem(item: Omit<SamsatCostItem, "id">): SamsatCostItem;
+  getServiceConfigs?(): any[];
+  getSamsatOffices?(): any[];
+  updateServicePricing?(id: string, config: any): Promise<boolean> | boolean;
+  createServicePricing?(config: any): Promise<any> | any;
+  deleteServicePricing?(id: string): Promise<boolean> | boolean;
+  createSamsatOffice?(office: any): Promise<any> | any;
+  updateSamsatOffice?(id: string, updates: any): Promise<boolean> | boolean;
+  deleteSamsatOffice?(id: string): Promise<boolean> | boolean;
+  getSamsatOperationalTariffs?(samsatId?: string): Promise<any[]>;
+  updateSamsatOperationalTariff?(samsatId: string, pricingItemId: string, nominal: number): Promise<any>;
+  updateSamsatOperationalTariffsBatch?(samsatId: string, tariffs: Array<{ pricingItemId: string; nominal: number }>): Promise<any[]>;
+  deleteSamsatOperationalTariff?(idOrParams: string | { samsatId: string; pricingItemId: string }): Promise<boolean>;
+  batchReplicateServicePricing?(params: any): Promise<any>;
+  subscribe(listener: () => void): () => void;
+  isLoading?(): boolean;
+  getError?(): Error | null;
+  initFromApi?(): Promise<void>;
 }

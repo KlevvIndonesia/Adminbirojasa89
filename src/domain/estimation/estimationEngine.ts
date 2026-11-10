@@ -295,8 +295,14 @@ export const BUILTIN_RULE_HANDLERS: Record<string, RuleHandler> = {
   // Biaya Proses BBN (Cek Fisik, Daftar, BPKB): Rp 1.000.000
   BIAYA_PROSES_BBN: () => 1000000,
 
-  // Proses dan Jasa Mutasi: Rp 750.000 (Mobil), Rp 500.000 (Motor)
+  // Proses dan Jasa Mutasi: Rp 1.500.000 (Mutasi LD Mobil), Rp 750.000 (Mutasi AS Mobil), Rp 500.000 (Motor)
   PROSES_DAN_JASA_MUTASI: (ctx) => {
+    if (typeof ctx.template.biayaJasa === "number" && Number.isFinite(ctx.template.biayaJasa) && ctx.template.biayaJasa >= 0) {
+      return ctx.template.biayaJasa;
+    }
+    if (ctx.template.serviceType === "Mutasi Luar Daerah") {
+      return ctx.template.vehicleType === "Mobil" ? 1500000 : 500000;
+    }
     return ctx.template.vehicleType === "Mobil" ? 750000 : 500000;
   },
 };

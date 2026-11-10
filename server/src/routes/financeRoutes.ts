@@ -11,6 +11,7 @@ import {
   getInvoiceById,
   getInvoicePayments,
   payInvoice,
+  verifyInvoicePayment,
   payoutCashback,
   completeInvoice,
   getKasKantor,
@@ -48,21 +49,21 @@ financeRouter.get(
 financeRouter.get(
   "/laba-rugi",
   requireAuth,
-  requireRoles("administrator", "finance", "svp", "admin"),
+  requireRoles("administrator", "finance", "svp"),
   getLabaRugiSummary
 );
 
 financeRouter.get(
   "/pnl",
   requireAuth,
-  requireRoles("administrator", "finance", "svp", "admin"),
+  requireRoles("administrator", "finance", "svp"),
   getLabaRugiSummary
 );
 
 financeRouter.get(
   "/profit",
   requireAuth,
-  requireRoles("administrator", "finance", "svp", "admin"),
+  requireRoles("administrator", "finance", "svp"),
   getProfitList
 );
 
@@ -87,6 +88,21 @@ financeRouter.post(
   requireRoles("administrator", "finance"),
   validateInvoicePaymentPayload,
   payInvoice
+);
+
+// Payment verification (Administrator, Finance, Admin & Supervisor / SPV)
+financeRouter.post(
+  "/invoices/:id/payments/:paymentId/verify",
+  requireAuth,
+  requireRoles("administrator", "finance", "admin", "svp"),
+  verifyInvoicePayment
+);
+
+financeRouter.post(
+  "/invoices/:id/verify-payment",
+  requireAuth,
+  requireRoles("administrator", "finance", "admin", "svp"),
+  verifyInvoicePayment
 );
 
 financeRouter.post(
@@ -213,3 +229,5 @@ financeRouter.post(
   requireRoles("administrator", "finance", "supervisor", "svp", "admin"),
   transferOfficeToMessenger
 );
+
+

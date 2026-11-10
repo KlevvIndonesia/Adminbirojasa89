@@ -1,6 +1,10 @@
 import test from "node:test";
 import assert from "node:assert";
 import { userRepository } from "../src/data/repositories/userRepository";
+import { MockUserProvider } from "./fixtures/mock/mockUserProvider";
+
+const mockProvider = new MockUserProvider();
+userRepository.setProvider(mockProvider);
 
 test("Authentication - Valid credentials authenticate successfully with correct roles", async () => {
   // 1. Superadmin (SVP) login
@@ -40,13 +44,13 @@ test("Authentication - Invalid credentials are appropriately rejected returning 
 });
 
 test("Authentication - getDemoCredentials provides valid session stubs", () => {
-  const demos = userRepository.getDemoCredentials();
+  const demos = mockProvider.getDemoCredentials();
   assert.ok(demos !== null && typeof demos === "object");
 
   const entries = Object.values(demos);
   assert.ok(entries.length >= 4, "Should have at least 4 demo accounts");
 
-  const roles = entries.map((d) => d.role);
+  const roles = entries.map((d: any) => d.role);
   assert.ok(roles.includes("administrator"));
   assert.ok(roles.includes("finance"));
   assert.ok(roles.includes("admin"));

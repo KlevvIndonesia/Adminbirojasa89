@@ -10,11 +10,51 @@ import { dbDocumentRepository } from "../repositories/dbDocumentRepository";
 import { dbMessengerRepository } from "../repositories/dbMessengerRepository";
 import { db, runInTransaction } from "../database/db";
 import { InvoiceBillingRecord, KasKantorItem, PengeluaranItem, KasMessengerItem, PayoutTransactionRecord, RefundStatus } from "../../../src/domain/finance/types";
+import { OperationalOrder } from "../../../src/domain/order/types";
 import { CanonicalLabaRugiSummary } from "../../../src/domain/finance/labaRugiCanonical";
 import { ApiError } from "../middleware/errorHandler";
 import { TokenPayload } from "../utils/crypto";
+import { calculateCanonicalInvoiceTotals } from "./canonicalInvoiceCalculator";
+import { generateCanonicalPaymentId, hashPaymentSubmissionPayload, hashPaymentVerificationPayload, formatScopedIdempotencyKey } from "../utils/canonicalHasher";
+
+export interface VerifyPaymentInput {
+  paymentId?: string;
+  orderNo?: string;
+  invoiceId?: number | string;
+  invoiceNo?: string;
+  confirmedAmount?: number;
+  notes?: string;
+  proofPayload?: any;
+  verifierName?: string;
+  user?: TokenPayload | null;
+  idempotencyKey?: string;
+}
+
+export interface FinanceServiceDependencies {
+  financeRepo?: typeof dbFinanceRepository;
+  orderRepo?: typeof dbOrderRepository;
+  auditRepo?: typeof dbAuditRepository;
+  documentRepo?: typeof dbDocumentRepository;
+  messengerRepo?: typeof dbMessengerRepository;
+}
 
 export class FinanceService {
+  private readonly financeRepo: typeof dbFinanceRepository;
+  private readonly orderRepo: typeof dbOrderRepository;
+  private readonly auditRepo: typeof dbAuditRepository;
+  private readonly documentRepo: typeof dbDocumentRepository;
+  private readonly messengerRepo: typeof dbMessengerRepository;
+
+  constructor(deps?: FinanceServiceDependencies) {
+    if (deps && process.env.NODE_ENV === "production") {
+      throw new Error("SECURITY_VIOLATION: Custom repository dependencies cannot be initialized in production.");
+    }
+    this.financeRepo = deps?.financeRepo ?? dbFinanceRepository;
+    this.orderRepo = deps?.orderRepo ?? dbOrderRepository;
+    this.auditRepo = deps?.auditRepo ?? dbAuditRepository;
+    this.documentRepo = deps?.documentRepo ?? dbDocumentRepository;
+    this.messengerRepo = deps?.messengerRepo ?? dbMessengerRepository;
+  }
   public getAllInvoices(): InvoiceBillingRecord[] {
     return dbFinanceRepository.getAllInvoices();
   }
@@ -186,13 +226,29 @@ export class FinanceService {
       }
 
       // P0 Persistent Idempotency: Protect against concurrent retry and prevent parameter reuse
-      const idempotencyKey = paymentDetails?.idempotencyKey || paymentDetails?.clientRequestId || paymentDetails?.transactionRef;
-      const requestHash = `${id}:${amount}`;
+      const rawKey = paymentDetails?.idempotencyKey || paymentDetails?.clientRequestId || paymentDetails?.transactionRef;
+      const idempotencyKey = typeof rawKey === "string" ? rawKey.trim() : undefined;
+      const requestHash = hashPaymentSubmissionPayload(id, amount, paymentDetails || {});
+
       if (idempotencyKey) {
-        const existingRecord = dbFinanceRepository.getIdempotencyRecord(idempotencyKey, "payment");
+        const existingRecord = dbFinanceRepository.getIdempotencyRecord(idempotencyKey, "PAYMENT_SUBMISSION");
         if (existingRecord) {
+          // Ownership verification
+          if (existingRecord.user_id !== null && existingRecord.user_id !== undefined) {
+            if (user?.userId && existingRecord.user_id !== user.userId) {
+              throw new ApiError(403, "IDEMPOTENCY_USER_MISMATCH", "Idempotency key milik pengguna lain.");
+            }
+          } else {
+            // Historical record with NULL user_id: non-admin callers rejected fail-closed
+            const userRole = (user?.role || "").toLowerCase();
+            const isAdmin = userRole === "admin" || userRole === "administrator";
+            if (!isAdmin) {
+              throw new ApiError(403, "IDEMPOTENCY_OWNERSHIP_UNVERIFIABLE", "Kepemilikan record historis tidak dapat diverifikasi; hubungi administrator.");
+            }
+          }
+
           if (existingRecord.request_hash === requestHash) {
-            // Identical retry: return current invoice directly without double-charging
+            // Identical retry: return current invoice directly without double-charging (ZERO DML)
             return this.getInvoiceById(id);
           } else {
             // Reused key with different transaction parameters: reject with 409 Conflict
@@ -204,6 +260,9 @@ export class FinanceService {
           }
         }
       }
+
+      // Generate backend canonical payment UUID (Path 2)
+      const canonicalPaymentId = generateCanonicalPaymentId();
 
       // Phase C Rule 1.B: Initial status must be pending verification.
       // Do NOT post Kas Kantor and do NOT reduce outstanding invoice directly until explicitly verified.
@@ -225,6 +284,7 @@ export class FinanceService {
 
       // Record into canonical invoice_payments relational table with kasKantorId: undefined (pending verification)
       dbFinanceRepository.recordInvoicePayment({
+        paymentId: canonicalPaymentId,
         invoiceNo: invoiceNum,
         orderNo: lockedInv.orderNo || "",
         nominal: amount,
@@ -245,9 +305,10 @@ export class FinanceService {
       if (lockedInv.orderNo) {
         const linkedOrder = dbOrderRepository.getByOrderNo(lockedInv.orderNo);
         if (linkedOrder) {
-          const uniquePayId = idempotencyKey ? `pay-${idempotencyKey}` : `pay-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
           const newPaymentRecord = {
-            id: uniquePayId,
+            id: canonicalPaymentId,
+            payment_id: canonicalPaymentId,
+            paymentId: canonicalPaymentId,
             idempotencyKey: idempotencyKey || undefined,
             nominal: amount,
             tanggal: nowStr,
@@ -275,15 +336,15 @@ export class FinanceService {
         }
       }
 
-      // Persist idempotency key on success
+      // Persist idempotency key on success (Plain INSERT, scoped key)
       if (idempotencyKey) {
         dbFinanceRepository.saveIdempotencyRecord({
-          key: idempotencyKey,
-          scope: "payment",
+          key: formatScopedIdempotencyKey("PAYMENT_SUBMISSION", idempotencyKey),
+          scope: "PAYMENT_SUBMISSION",
           user_id: user?.userId || null,
           request_hash: requestHash,
           resource_id: String(id),
-          response_json: JSON.stringify({ invoiceId: id, amount, status: lockedInv.status, statusVerifikasi: initialStatus }),
+          response_json: JSON.stringify({ invoiceId: id, paymentId: canonicalPaymentId, amount, status: lockedInv.status, statusVerifikasi: initialStatus }),
         });
       }
 
@@ -300,6 +361,437 @@ export class FinanceService {
       });
 
       return this.getInvoiceById(id);
+    });
+  }
+
+  /**
+   * Phase 4B Batch 2B Step C: Unified Payment Verification Lifecycle Engine
+   * Single Source of Truth for verifying payments across Order Tracking & Finance.
+   * Atomically mutates invoice_payments in-place, posts exactly one Debit to kas_kantor,
+   * updates finance_invoices via canonical calculator, and updates orders.data_json.
+   */
+  public verifyPayment(input: VerifyPaymentInput): {
+    order: OperationalOrder;
+    invoice: InvoiceBillingRecord;
+    payment: any;
+    kasItem: KasKantorItem;
+    isReplay?: boolean;
+  } {
+    return runInTransaction(() => {
+      // 1. Resolve Target Order & Invoice
+      let orderNo = (input.orderNo || "").trim();
+      let targetInvoice: InvoiceBillingRecord | undefined;
+
+      if (orderNo) {
+        targetInvoice = this.financeRepo.getInvoiceByOrderNo(orderNo);
+      } else if (input.invoiceId !== undefined && input.invoiceId !== null) {
+        targetInvoice = typeof input.invoiceId === "number" || /^\d+$/.test(String(input.invoiceId))
+          ? this.financeRepo.getInvoiceById(Number(input.invoiceId))
+          : this.financeRepo.getInvoiceByNo(String(input.invoiceId).trim());
+        if (targetInvoice && targetInvoice.orderNo) {
+          orderNo = targetInvoice.orderNo.trim();
+        }
+      } else if (input.invoiceNo) {
+        targetInvoice = this.financeRepo.getInvoiceByNo(String(input.invoiceNo).trim());
+        if (targetInvoice && targetInvoice.orderNo) {
+          orderNo = targetInvoice.orderNo.trim();
+        }
+      }
+
+      if (!orderNo) {
+        throw new ApiError(400, "VALIDATION_ERROR", "Order No atau Invoice ID wajib disediakan untuk verifikasi pembayaran.");
+      }
+
+      const targetOrder = this.orderRepo.getByOrderNo(orderNo);
+      if (!targetOrder) {
+        throw new ApiError(404, "ORDER_NOT_FOUND", `Order '${orderNo}' tidak ditemukan.`);
+      }
+
+      if ((targetOrder as any).isCancelled || targetOrder.currentStageName === "Dibatalkan" || (targetOrder as any).status === "Dibatalkan") {
+        throw new ApiError(400, "ORDER_CANCELLED", `Order '${orderNo}' sudah dibatalkan dan pembayarannya tidak dapat diverifikasi.`);
+      }
+
+      if (!targetInvoice) {
+        // Fallback: auto-create/ensure invoice exists for this order
+        const totalEstimasi = targetOrder.payment?.totalBiaya || targetOrder.totalEstimasi || 0;
+        const invId = this.financeRepo.saveInvoice({
+          invoiceNo: targetOrder.payment?.invoiceNo || `INV-${orderNo.replace(/^ORD-/, "")}`,
+          orderNo: orderNo,
+          customer: targetOrder.customer,
+          layanan: targetOrder.layanan,
+          nopol: targetOrder.nopol,
+          totalTagihan: totalEstimasi,
+          dibayar: 0,
+          sisa: totalEstimasi,
+          status: "UNPAID",
+        });
+        targetInvoice = this.financeRepo.getInvoiceById(invId)!;
+      }
+
+      const resolvedInvoiceNo = (targetInvoice.invoiceNo || (targetInvoice as any).invoice || targetOrder.payment?.invoiceNo || `INV-${orderNo.replace(/^ORD-/, "")}`).trim();
+      const nowStr = new Date().toISOString();
+      const effectiveVerifier = input.user?.nama || input.verifierName || "Admin";
+      const verifierUserId = input.user?.userId || (input.user as any)?.id || input.verifierName || "usr-admin";
+
+      // 1b. Idempotency Check & Replay Protection (Section 7, AC-C-05)
+      const rawKey = input.idempotencyKey || (input.user ? undefined : (targetOrder as any).clientRequestId);
+      if (rawKey) {
+        const existingRecord = this.financeRepo.getIdempotencyRecord(rawKey, "PAYMENT_VERIFICATION");
+        if (existingRecord) {
+          if (existingRecord.user_id !== null && existingRecord.user_id !== undefined) {
+            if (input.user?.userId && existingRecord.user_id !== input.user.userId) {
+              throw new ApiError(403, "IDEMPOTENCY_USER_MISMATCH", "Idempotency key milik pengguna lain.");
+            }
+          }
+
+          const existingPayment = existingRecord.resource_id ? this.financeRepo.getInvoicePaymentById(existingRecord.resource_id) : undefined;
+          const targetPaymentId = (input.paymentId ? String(input.paymentId).trim() : undefined) || existingRecord.resource_id || "";
+          const targetAmount = input.confirmedAmount !== undefined
+            ? Math.max(0, input.confirmedAmount)
+            : Number(
+                existingPayment?.nominal ??
+                targetOrder.payment?.nominalPembayaranAwalTerkonfirmasi ??
+                targetOrder.payment?.nominalDibayarAwal ??
+                targetOrder.payment?.dibayar ??
+                targetInvoice.totalTagihan
+              );
+          const effectiveProofDocId = input.proofPayload?.documentId || existingPayment?.document_id || targetOrder.payment?.buktiPembayaran?.documentId;
+          const checkHash = hashPaymentVerificationPayload(orderNo, targetPaymentId, targetAmount, verifierUserId, input.notes, effectiveProofDocId);
+
+          if (existingRecord.request_hash === checkHash) {
+            const currentOrder = this.orderRepo.getByOrderNo(orderNo)!;
+            const currentInvoice = this.financeRepo.getInvoiceById(targetInvoice.id)!;
+            const currentKas = existingPayment?.kas_kantor_id ? this.financeRepo.getKasKantorById(existingPayment.kas_kantor_id) : undefined;
+            return {
+              order: currentOrder,
+              invoice: currentInvoice,
+              payment: existingPayment,
+              kasItem: currentKas as any,
+              isReplay: true,
+            };
+          } else {
+            throw new ApiError(409, "IDEMPOTENCY_CONFLICT", `Idempotency key '${rawKey}' sudah digunakan untuk transaksi verifikasi dengan parameter berbeda.`);
+          }
+        }
+      }
+
+      // 2. Fetch all payments for this order/invoice
+      const allDbPayments = this.financeRepo.getPaymentsByOrderNo(orderNo);
+      const existingOrderRecords = targetOrder.payment?.paymentRecords || [];
+
+      // 3. Target Payment Resolution
+      let targetPaymentRow: any = undefined;
+      let targetOrderRecord: any = undefined;
+      let canonicalPaymentId: string | undefined = undefined;
+
+      const rawPaymentId = input.paymentId ? String(input.paymentId).trim() : undefined;
+
+      if (rawPaymentId) {
+        // Branch 1: Specific paymentId provided (UUID or numeric id)
+        targetPaymentRow = this.financeRepo.getInvoicePaymentById(rawPaymentId);
+        if (targetPaymentRow) {
+          if (targetPaymentRow.order_no && targetPaymentRow.order_no.toUpperCase() !== orderNo.toUpperCase()) {
+            throw new ApiError(404, "PAYMENT_NOT_FOUND", `Pembayaran '${rawPaymentId}' tidak terdaftar pada order '${orderNo}'.`);
+          }
+          if (targetPaymentRow.is_void === 1 || targetPaymentRow.status_verifikasi === "VOID") {
+            throw new ApiError(400, "PAYMENT_VOIDED", `Pembayaran '${rawPaymentId}' telah dibatalkan (VOID) dan tidak dapat diverifikasi.`);
+          }
+          canonicalPaymentId = targetPaymentRow.payment_id || `pay-${targetPaymentRow.id}`;
+        }
+
+        // Also find matching record in order JSON if available
+        targetOrderRecord = existingOrderRecords.find(
+          (pr: any) => pr.payment_id === rawPaymentId || pr.paymentId === rawPaymentId || pr.id === rawPaymentId || (targetPaymentRow && (pr.payment_id === targetPaymentRow.payment_id || pr.id === targetPaymentRow.payment_id))
+        );
+
+        if (!targetPaymentRow && targetOrderRecord) {
+          canonicalPaymentId = targetOrderRecord.payment_id || targetOrderRecord.paymentId || targetOrderRecord.id || generateCanonicalPaymentId();
+        }
+
+        if (!targetPaymentRow && !targetOrderRecord) {
+          throw new ApiError(404, "PAYMENT_NOT_FOUND", `Pembayaran '${rawPaymentId}' tidak ditemukan untuk order '${orderNo}'.`);
+        }
+      } else {
+        // Branch 2: Legacy Fallback (No paymentId provided - AC-C-06)
+        const pendingDbPayments = allDbPayments.filter(
+          (p: any) => !p.is_void && (p.status_verifikasi === "MENUNGGU_VERIFIKASI" || p.status_verifikasi === "MENUNGGU_BUKTI" || p.status_verifikasi === "PENDING")
+        );
+
+        const verifiedPaymentIds = new Set(
+          allDbPayments.filter((p: any) => p.status_verifikasi === "TERVERIFIKASI").map((p: any) => p.payment_id || String(p.id))
+        );
+        const pendingOrderRecords = existingOrderRecords.filter(
+          (pr: any) =>
+            !verifiedPaymentIds.has(pr.payment_id) &&
+            !verifiedPaymentIds.has(pr.paymentId) &&
+            !verifiedPaymentIds.has(pr.id) &&
+            (pr.statusVerifikasi === "MENUNGGU_VERIFIKASI" || pr.statusVerifikasi === "MENUNGGU_BUKTI" || pr.statusVerifikasi === "PENDING" || pr.statusVerifikasi === undefined)
+        );
+
+        // Combine unique candidates by payment UUID / id
+        const candidateMap = new Map<string, { dbRow?: any; orderRecord?: any }>();
+        for (const p of pendingDbPayments) {
+          const key = p.payment_id || String(p.id);
+          candidateMap.set(key, { dbRow: p });
+        }
+        for (const pr of pendingOrderRecords) {
+          const key = pr.payment_id || pr.paymentId || pr.id || "pending-initial";
+          if (candidateMap.has(key)) {
+            candidateMap.get(key)!.orderRecord = pr;
+          } else {
+            candidateMap.set(key, { orderRecord: pr });
+          }
+        }
+
+        const candidateCount = candidateMap.size;
+        if (candidateCount === 0) {
+          throw new ApiError(400, "NO_PENDING_PAYMENT", "Tidak ada pembayaran berstatus pending yang dapat diverifikasi.");
+        }
+        if (candidateCount > 1) {
+          throw new ApiError(422, "AMBIGUOUS_PAYMENT_TARGET", "Ditemukan lebih dari satu pembayaran pending. Harap tentukan paymentId yang ingin diverifikasi.");
+        }
+
+        const [candKey, candidate] = Array.from(candidateMap.entries())[0];
+        targetPaymentRow = candidate.dbRow;
+        targetOrderRecord = candidate.orderRecord;
+        canonicalPaymentId = targetPaymentRow?.payment_id || targetOrderRecord?.payment_id || targetOrderRecord?.paymentId || (candKey.startsWith("pay-") ? candKey : generateCanonicalPaymentId());
+      }
+
+      if (!canonicalPaymentId) {
+        canonicalPaymentId = generateCanonicalPaymentId();
+      }
+
+      // 4. Resolve Amount and Proof
+      const resolvedNominal = input.confirmedAmount !== undefined
+        ? Math.max(0, input.confirmedAmount)
+        : Number(
+            targetPaymentRow?.nominal ??
+            targetOrderRecord?.nominal ??
+            targetOrder.payment?.nominalPembayaranAwalTerkonfirmasi ??
+            targetOrder.payment?.nominalDibayarAwal ??
+            targetOrder.payment?.dibayar ??
+            targetInvoice.totalTagihan
+          );
+
+      const effectiveProof =
+        input.proofPayload ||
+        targetOrderRecord?.buktiPembayaran ||
+        targetOrderRecord?.buktiBayar ||
+        targetPaymentRow?.bukti_pembayaran ||
+        targetOrder.payment?.buktiPembayaran;
+
+      if (resolvedNominal > 0 && !effectiveProof?.fileUrl && !effectiveProof?.fileName && !targetPaymentRow?.document_id && !targetOrderRecord?.documentId) {
+        throw new ApiError(400, "PAYMENT_PROOF_REQUIRED", "Bukti pembayaran (file bukti transfer/kas loket) wajib dilampirkan sebelum pembayaran dapat diverifikasi.");
+      }
+
+      // 5. Idempotency Request Hash for Persistence (Section 7, AC-C-05)
+      const requestHash = rawKey ? hashPaymentVerificationPayload(orderNo, canonicalPaymentId, resolvedNominal, verifierUserId, input.notes, effectiveProof?.documentId) : "";
+
+      // If target payment is ALREADY verified, reject without valid idempotency replay (AC-C-06)
+      if (targetPaymentRow && targetPaymentRow.status_verifikasi === "TERVERIFIKASI") {
+        throw new ApiError(400, "PAYMENT_ALREADY_VERIFIED", `Pembayaran '${canonicalPaymentId || rawPaymentId}' sudah diverifikasi sebelumnya.`);
+      }
+
+      // 6. Mutate / Insert into invoice_payments in-place (AC-C-01, AC-C-03)
+      let paymentRowId: number;
+      if (targetPaymentRow) {
+        paymentRowId = targetPaymentRow.id;
+        this.financeRepo.updateInvoicePayment(paymentRowId, {
+          payment_id: canonicalPaymentId,
+          nominal: resolvedNominal,
+          status_verifikasi: "TERVERIFIKASI",
+          verified_by: effectiveVerifier,
+          verified_at: nowStr,
+          catatan: input.notes || targetPaymentRow.catatan || "Verifikasi Pembayaran",
+        });
+      } else {
+        const insertedRow = this.financeRepo.recordInvoicePayment({
+          paymentId: canonicalPaymentId,
+          invoiceNo: resolvedInvoiceNo,
+          orderNo: orderNo,
+          nominal: resolvedNominal,
+          metodePembayaran: targetOrderRecord?.metodePembayaran || targetOrder.payment?.metodePembayaran || "Transfer Bank",
+          namaBank: targetOrderRecord?.namaBank || targetOrder.payment?.namaBank || "",
+          nomorRekening: targetOrderRecord?.noRekening || targetOrderRecord?.nomorRekening || targetOrder.payment?.noRekening || "",
+          tanggalBayar: targetOrderRecord?.tanggal || nowStr.split("T")[0],
+          documentId: targetOrderRecord?.documentId || effectiveProof?.documentId,
+          statusVerifikasi: "TERVERIFIKASI",
+          verifiedBy: effectiveVerifier,
+          verifiedAt: nowStr,
+          catatan: input.notes || "Verifikasi Pembayaran",
+        });
+        paymentRowId = insertedRow.id;
+      }
+
+      // 7. Atomic Cash Posting to kas_kantor (AC-C-02, AC-C-04)
+      const kasItem = this.financeRepo.addKasKantor({
+        tanggal: nowStr.split("T")[0],
+        keterangan: `Penerimaan Pembayaran Invoice ${resolvedInvoiceNo} (Order ${orderNo}) - ${targetOrderRecord?.metodePembayaran || targetPaymentRow?.metode_pembayaran || targetOrder.payment?.metodePembayaran || "Transfer Bank"}`,
+        status: "Debit",
+        debit: resolvedNominal,
+        kredit: 0,
+        penanggungJawab: effectiveVerifier,
+        orderNo: orderNo,
+        invoiceNo: resolvedInvoiceNo,
+        kategori: "PEMBAYARAN_INVOICE",
+      });
+
+      // Link kas_kantor_id back to invoice_payments
+      this.financeRepo.updateInvoicePayment(paymentRowId, {
+        kas_kantor_id: kasItem.id,
+      });
+
+      // 8. Canonical Invoice Recalculation (AC-C-03)
+      const allPaymentsAfter = this.financeRepo.getPaymentsByOrderNo(orderNo);
+      const calc = calculateCanonicalInvoiceTotals({
+        invoiceNo: resolvedInvoiceNo,
+        orderNo: orderNo,
+        totalTagihan: targetInvoice.totalTagihan,
+        biayaSamsat: targetInvoice.biayaSamsat,
+        isExplicitZero: Boolean(targetInvoice.isExplicitZero),
+        basePaid: 0,
+        payments: allPaymentsAfter,
+      });
+
+      this.financeRepo.updateInvoice(targetInvoice.id, {
+        status: calc.status as any,
+        dibayar: calc.verifiedPaid,
+        sisa: calc.sisaTagihan,
+        overpayment: calc.overpayment,
+        settlementCondition: calc.settlementCondition,
+        profit: calc.grossProfit,
+        profitStatus: calc.profitStatus as any,
+      });
+
+      // 9. Synchronize orders.data_json in-place (AC-C-01, AC-C-03)
+      let recordUpdated = false;
+      const updatedOrderRecords = existingOrderRecords.map((pr: any) => {
+        const isTarget =
+          pr.payment_id === canonicalPaymentId ||
+          pr.paymentId === canonicalPaymentId ||
+          pr.id === canonicalPaymentId ||
+          (targetPaymentRow && (pr.payment_id === targetPaymentRow.payment_id || pr.id === targetPaymentRow.payment_id));
+
+        if (isTarget) {
+          recordUpdated = true;
+          return {
+            ...pr,
+            id: canonicalPaymentId,
+            payment_id: canonicalPaymentId,
+            paymentId: canonicalPaymentId,
+            nominal: resolvedNominal,
+            statusVerifikasi: "TERVERIFIKASI" as const,
+            verifiedAt: nowStr,
+            verifiedBy: effectiveVerifier,
+            kasKantorId: kasItem.id,
+            kas_kantor_id: kasItem.id,
+            catatan: input.notes || pr.catatan || "Verifikasi Pembayaran",
+            buktiPembayaran: effectiveProof || pr.buktiPembayaran,
+          };
+        }
+        return pr;
+      });
+
+      if (!recordUpdated) {
+        updatedOrderRecords.push({
+          id: canonicalPaymentId,
+          payment_id: canonicalPaymentId,
+          paymentId: canonicalPaymentId,
+          nominal: resolvedNominal,
+          tanggal: nowStr,
+          metodePembayaran: targetPaymentRow?.metode_pembayaran || targetOrder.payment?.metodePembayaran || "Transfer Bank",
+          namaBank: targetPaymentRow?.nama_bank || targetOrder.payment?.namaBank || "",
+          nomorRekening: targetPaymentRow?.nomor_rekening || targetOrder.payment?.noRekening || "",
+          statusVerifikasi: "TERVERIFIKASI" as const,
+          verifiedAt: nowStr,
+          verifiedBy: effectiveVerifier,
+          kasKantorId: kasItem.id,
+          kas_kantor_id: kasItem.id,
+          catatan: input.notes || "Verifikasi Pembayaran",
+          buktiPembayaran: effectiveProof,
+        });
+      }
+
+      // History of payment correction
+      const prevConfirmed = targetOrder.payment?.nominalPembayaranAwalTerkonfirmasi ?? targetOrder.payment?.nominalDibayarAwal ?? targetOrder.payment?.dibayar ?? 0;
+      const riwayat = [...(targetOrder.payment?.riwayatKoreksiPembayaran || [])];
+      if (prevConfirmed !== resolvedNominal || input.notes) {
+        riwayat.push({
+          nominalLama: prevConfirmed,
+          nominalBaru: resolvedNominal,
+          tanggal: nowStr,
+          admin: effectiveVerifier,
+          catatan: input.notes,
+        });
+      }
+
+      const orderPaymentStatus = calc.sisaTagihan <= 0 && calc.verifiedPaid > 0 ? "Lunas" : calc.verifiedPaid > 0 ? "Kurang Bayar" : "Belum Bayar";
+
+      const updatedPaymentObj = {
+        ...targetOrder.payment,
+        isPaymentVerified: true,
+        paymentVerifiedAt: nowStr,
+        paymentVerifiedBy: effectiveVerifier,
+        nominalPembayaranAwalTerkonfirmasi: calc.verifiedPaid,
+        statusPembayaran: orderPaymentStatus as any,
+        dibayar: calc.verifiedPaid,
+        kurang: calc.sisaTagihan,
+        overpayment: calc.overpayment,
+        tanggalBayar: targetOrder.payment?.tanggalBayar || nowStr.split("T")[0],
+        buktiPembayaran: effectiveProof,
+        riwayatKoreksiPembayaran: riwayat,
+        paymentRecords: updatedOrderRecords,
+      };
+
+      this.orderRepo.updateOrder(orderNo, { payment: updatedPaymentObj });
+
+      const finalOrder = this.orderRepo.getByOrderNo(orderNo)!;
+      const finalInvoice = this.financeRepo.getInvoiceById(targetInvoice.id)!;
+      const finalPaymentRow = this.financeRepo.getInvoicePaymentById(paymentRowId);
+
+      // 10. Persist Idempotency Record (if key provided) & Audit Log
+      if (rawKey) {
+        this.financeRepo.saveIdempotencyRecord({
+          key: formatScopedIdempotencyKey("PAYMENT_VERIFICATION", rawKey),
+          scope: "PAYMENT_VERIFICATION",
+          user_id: input.user?.userId || null,
+          request_hash: requestHash,
+          resource_id: canonicalPaymentId,
+          response_json: JSON.stringify({
+            orderNo,
+            invoiceNo: resolvedInvoiceNo,
+            paymentId: canonicalPaymentId,
+            amount: resolvedNominal,
+            kasKantorId: kasItem.id,
+            statusVerifikasi: "TERVERIFIKASI",
+          }),
+        });
+      }
+
+      this.auditRepo.save({
+        id: `log-pay-verif-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
+        userId: input.user?.userId || "usr-finance",
+        userName: effectiveVerifier,
+        userRole: input.user?.role || "finance",
+        action: "VERIFY_PAYMENT",
+        module: "Keuangan",
+        details: `Verifikasi pembayaran ${canonicalPaymentId} invoice ${resolvedInvoiceNo} sejumlah Rp ${resolvedNominal.toLocaleString("id-ID")}`,
+        metadata: {
+          orderNo,
+          invoiceNo: resolvedInvoiceNo,
+          paymentId: canonicalPaymentId,
+          amount: resolvedNominal,
+          kasKantorId: kasItem.id,
+        },
+        createdAt: nowStr,
+      });
+
+      return {
+        order: finalOrder,
+        invoice: finalInvoice,
+        payment: finalPaymentRow,
+        kasItem,
+      };
     });
   }
 
@@ -887,7 +1379,7 @@ export class FinanceService {
    */
   public voidInvoicePayment(
     id: number | string,
-    paymentId: number,
+    paymentId: number | string,
     voidReason: string,
     user?: TokenPayload | null
   ): InvoiceBillingRecord {
@@ -976,20 +1468,24 @@ export class FinanceService {
         reversal_kas_id: reversalKasId,
       });
 
-      // 3. Recalculate invoice balance and status strictly from valid non-void payments
-      const validPaymentsTotal = dbFinanceRepository.getValidPaymentsTotal(invoiceNum);
+      // 3. Recalculate invoice balance and status strictly using Canonical Invoice Calculator (GAP-FIN-01 & GAP-FIN-05)
+      const payments = dbFinanceRepository.getPaymentsByOrderNo(inv.orderNo || "");
       const totalTagihan = Number(inv.totalTagihan || 0);
-      const newPaid = validPaymentsTotal;
-      const newSisa = Math.max(0, totalTagihan - newPaid);
-      const newOverpayment = Math.max(0, newPaid - totalTagihan);
-      const newStatus = newOverpayment > 0 ? "OVERPAID" : ((newSisa === 0 && totalTagihan > 0) ? "PAID" : (newPaid > 0 ? "PARTIAL" : "UNPAID"));
-      const newSettlement = newOverpayment > 0 ? "OVERPAID" : ((newSisa === 0 && totalTagihan > 0) ? "BALANCED" : "UNDERPAID");
-      const newRefundStatus = newOverpayment > 0 ? "PENDING" : "NONE";
+      const calc = calculateCanonicalInvoiceTotals({
+        invoiceNo: invoiceNum,
+        orderNo: inv.orderNo || "",
+        totalTagihan,
+        biayaSamsat: Number(inv.biayaSamsat || 0),
+        isExplicitZero: Boolean(inv.isExplicitZero),
+        payments,
+      });
 
-      const recognizedRevenue = Math.min(newPaid, totalTagihan);
-      const biayaSamsat = Number(inv.biayaSamsat || 0);
-      const newProfit = Math.max(0, recognizedRevenue - biayaSamsat);
-      const profitStatus = (newSisa === 0 || newOverpayment > 0) ? "REALIZED" : "PENDING";
+      const newPaid = calc.verifiedPaid;
+      const newSisa = calc.sisaTagihan;
+      const newOverpayment = calc.overpayment;
+      const newSettlement = calc.settlementCondition;
+      const newRefundStatus = calc.overpayment > 0 ? "PENDING" : "NONE";
+      const profitStatus = calc.profitStatus as any;
 
       dbFinanceRepository.updateInvoice(Number(inv.id), {
         dibayar: newPaid,
@@ -997,9 +1493,9 @@ export class FinanceService {
         overpayment: newOverpayment,
         settlementCondition: newSettlement,
         refundStatus: newRefundStatus,
-        profit: newProfit,
-        profitStatus: profitStatus,
-        status: newStatus as any,
+        profit: calc.grossProfit,
+        profitStatus,
+        status: calc.status as any,
         billingStatus: "ACTIVE",
       });
 

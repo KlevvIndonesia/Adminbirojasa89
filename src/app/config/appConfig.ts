@@ -28,9 +28,6 @@ export const APP_CONFIG = {
   dateFormat: "DD/MM/YYYY",
   companyName: "SUN89 Biro Jasa",
   supportContact: "support@sunbirojasa.com",
-  dataProvider: (typeof process !== "undefined" && process.env?.APP_DATA_PROVIDER === "api") ||
-                (typeof import.meta !== "undefined" && (import.meta as any).env?.VITE_APP_DATA_PROVIDER === "api")
-                  ? ("api" as const)
-                  : ("mock" as const),
+  dataProvider: "api" as const,
   apiBaseUrl: resolveApiBaseUrl(),
 } as const;

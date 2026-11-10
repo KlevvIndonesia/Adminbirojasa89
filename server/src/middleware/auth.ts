@@ -192,21 +192,48 @@ export function requireStageAuthority(req: AuthenticatedRequest, res: Response, 
 
   // Admin cannot supervise Stage 6 (advancing FROM Stage 6 to Stage 7)
   const orderNo = req.params?.orderNo;
-  let currentStageName = "";
-  if (orderNo) {
-    const existingOrder = dbOrderRepository.getByOrderNo(orderNo);
-    currentStageName = existingOrder?.currentStageName || "";
-  }
+  const existingOrder = orderNo ? dbOrderRepository.getByOrderNo(orderNo) : null;
+  const currentStageName = existingOrder?.currentStageName || "";
 
   if (userRole === "admin") {
     // Admin is view-only in Stage 6 and cannot approve/advance from Stage 6
-    if (currentStageName === "Supervisi" || req.params?.stage === "Supervisi") {
+    if (currentStageName === "Supervisi" || req.params?.stage === "Supervisi" || req.body?.stage === "Supervisi" || req.body?.currentStage === "Supervisi") {
       res.status(403).json({
         success: false,
-        error: { code: "FORBIDDEN", message: "Hanya Supervisor / SVP yang berwenang melakukan supervisi Stage 6." },
+        error: { code: "FORBIDDEN", message: "Hanya SVP yang berwenang melakukan supervisi Stage 6." },
         timestamp: new Date().toISOString(),
       });
       return;
+    }
+
+    // Rollback protection (BD-RBAC-04 / Security Req 4): Admin cannot overturn Stage 6 SVP approvals via rollback
+    const isRollback = (req.originalUrl || req.url || "").includes("rollback") || req.path.includes("rollback");
+    if (isRollback && existingOrder) {
+      const stepMap: Record<string, number> = {
+        "Verifikasi": 1,
+        "Penjadwalan": 2,
+        "Verifikasi Fisik": 3,
+        "Proses Samsat": 4,
+        "Verifikasi Dokumen": 5,
+        "Supervisi": 6,
+        "Pengantaran": 7,
+        "Dokumen Telah Diterima": 8,
+      };
+      const targetStageStr = req.body?.targetStage || req.body?.nextStage || "";
+      const targetStep = typeof req.body?.targetStep === "number" ? req.body.targetStep : (stepMap[targetStageStr] || 0);
+      const currentStep = existingOrder.currentStep || stepMap[existingOrder.currentStageName] || 0;
+
+      if ((currentStep > 6 || existingOrder.documentApproval?.stage6Approved) && targetStep <= 6) {
+        res.status(403).json({
+          success: false,
+          error: {
+            code: "FORBIDDEN",
+            message: "Hanya SVP yang berwenang melakukan rollback order yang telah melewati persetujuan Supervisi (Stage 6).",
+          },
+          timestamp: new Date().toISOString(),
+        });
+        return;
+      }
     }
   }
 

@@ -6,9 +6,7 @@
  * Manages cache synchronized with the backend and handles optimistic updates with rollback.
  */
 
-import { SystemUser } from "../../domain/user/types";
-import { IUserDataProvider } from "../mock/mockUserProvider";
-import { AuthUserSession, AuthResult, AuthErrorCode, DEMO_CREDENTIALS } from "../repositories/userRepository";
+import { SystemUser, IUserDataProvider, AuthUserSession, AuthResult, AuthErrorCode } from "../../domain/user/types";
 import { APP_CONFIG } from "../../app/config/appConfig";
 
 export class ApiUserProvider implements IUserDataProvider {
@@ -210,10 +208,6 @@ export class ApiUserProvider implements IUserDataProvider {
       });
 
     return true;
-  }
-
-  public getDemoCredentials(): typeof DEMO_CREDENTIALS {
-    return DEMO_CREDENTIALS;
   }
 
   public async resetPassword(id: number | string): Promise<{ success: boolean; message?: string }> {

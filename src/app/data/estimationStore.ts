@@ -26,11 +26,14 @@ import {
   DEFAULT_R2_MUTASI_LD_TEMPLATE,
 } from "../../domain/estimation/defaultTemplates";
 import { calculateEstimation, defaultRuleRegistry } from "../../domain/estimation/estimationEngine";
+import { getStandardJasa } from "../../domain/pricing/pricingResolver";
 import { auditLog } from "../utils/auditLog";
 import { APP_CONFIG } from "../config/appConfig";
 
-const STORAGE_KEY = "sun89_estimation_templates_v3";
+const STORAGE_KEY = "sun89_estimation_templates_v5";
 const LEGACY_STORAGE_KEYS = [
+  "sun89_estimation_templates_v4",
+  "sun89_estimation_templates_v3",
   "sun89_estimation_templates_v2",
   "sun89_estimation_templates",
 ];
@@ -94,18 +97,52 @@ export function sanitizeComponentDescription(desc: string | undefined): string {
 
 /**
  * Recursively sanitizes an EstimationTemplateConfig to ensure all component descriptions,
- * formula conditions, and human formulas are free from Excel cell references.
+ * formula conditions, and human formulas are free from Excel cell references and synchronized
+ * with the canonical pricing Single Source of Truth (Biaya Layanan).
  */
 export function sanitizeEstimationTemplate(tpl: EstimationTemplateConfig): EstimationTemplateConfig {
   if (!tpl) return tpl;
+  const canonicalService = tpl.serviceType === "Mutasi Luar Daerah"
+    ? "Mutasi Luar Daerah"
+    : tpl.serviceType === "Mutasi Antar Samsat"
+    ? "Mutasi Antar Samsat"
+    : tpl.serviceType === "Balik Nama"
+    ? "Balik Nama"
+    : tpl.serviceType === "Tahunan"
+    ? "Perpanjangan 1 Tahun"
+    : tpl.serviceType === "5 Tahunan"
+    ? "Perpanjangan 5 Tahun"
+    : tpl.serviceType;
+
+  const vehicle: "Mobil" | "Motor" = tpl.vehicleType === "Motor" ? "Motor" : "Mobil";
+  const standardJasa = getStandardJasa(canonicalService, vehicle);
+
+  let effectiveBiayaJasa = tpl.biayaJasa;
+  if (tpl.serviceType === "Mutasi Luar Daerah") {
+    effectiveBiayaJasa = vehicle === "Mobil" ? 1500000 : 500000;
+  }
+
   return {
     ...tpl,
-    components: (tpl.components || []).map((comp) => ({
-      ...comp,
-      description: sanitizeComponentDescription(comp.description),
-      formulaCondition: comp.formulaCondition ? sanitizeComponentDescription(comp.formulaCondition) : undefined,
-      humanFormula: comp.humanFormula ? sanitizeComponentDescription(comp.humanFormula) : undefined,
-    })),
+    biayaJasa: effectiveBiayaJasa,
+    components: (tpl.components || []).map((comp) => {
+      const isJasaComp = comp.category === "JASA" || comp.ruleId === "PROSES_DAN_JASA_MUTASI" || comp.ruleId === "JASA" || comp.code === "FEE-01" || comp.id === "proses-dan-jasa";
+      if (isJasaComp && tpl.serviceType === "Mutasi Luar Daerah") {
+        return {
+          ...comp,
+          defaultValue: vehicle === "Mobil" ? 1500000 : 500000,
+          description: `Biaya Proses dan Jasa Mutasi LD ${vehicle === "Mobil" ? "Mobil Rp 1.500.000" : "Motor Rp 500.000"}`,
+          formulaCondition: comp.formulaCondition ? sanitizeComponentDescription(comp.formulaCondition) : undefined,
+          humanFormula: comp.humanFormula ? sanitizeComponentDescription(comp.humanFormula) : undefined,
+        };
+      }
+      return {
+        ...comp,
+        description: sanitizeComponentDescription(comp.description),
+        formulaCondition: comp.formulaCondition ? sanitizeComponentDescription(comp.formulaCondition) : undefined,
+        humanFormula: comp.humanFormula ? sanitizeComponentDescription(comp.humanFormula) : undefined,
+      };
+    }),
   };
 }
 
@@ -206,6 +243,14 @@ class EstimationStore {
         if (Array.isArray(parsed)) {
           for (const item of parsed) {
             if (item && item.id) {
+              if (item.id === "template-mutasi-ld-r4" && item.biayaJasa === 750000) {
+                item.biayaJasa = 1500000;
+                const jasaComp = item.components?.find((c: any) => c.id === "proses-dan-jasa" || c.code === "FEE-01");
+                if (jasaComp && jasaComp.defaultValue === 750000) {
+                  jasaComp.defaultValue = 1500000;
+                  jasaComp.description = "Biaya Proses dan Jasa Mutasi LD Mobil Rp 1.500.000";
+                }
+              }
               const sanitized = sanitizeEstimationTemplate(item);
               this.templates.set(sanitized.id, sanitized);
             }

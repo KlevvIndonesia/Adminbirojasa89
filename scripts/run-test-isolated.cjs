@@ -145,7 +145,7 @@ if (testFileList.length === 0) {
 console.log(`\x1b[36m[TEST ISOLATION] Per-Test-File Isolation Mode Active: ${testFileList.length} suite(s) scheduled\x1b[0m`);
 console.log(`[TEST ISOLATION] Operational database: ${operationalDbPath}`);
 
-let totalSuites = testFileList.length;
+const totalSuites = testFileList.length;
 let passedSuites = 0;
 let failedSuites = 0;
 const suiteResults = [];

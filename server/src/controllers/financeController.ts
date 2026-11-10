@@ -8,6 +8,7 @@ import { AuthenticatedRequest } from "../middleware/auth";
 import { financeService } from "../services/financeService";
 import { normalizeInvoicePaymentPayload } from "../utils/aliasNormalizer";
 import { ApiError } from "../middleware/errorHandler";
+import { validatePositiveInteger, validatePositiveFiniteAmount, discriminatePaymentIdentifier } from "../utils/canonicalHasher";
 
 export async function getInvoices(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
   try {
@@ -59,17 +60,10 @@ export async function getInvoicePayments(req: AuthenticatedRequest, res: Respons
 
 export async function payInvoice(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
   try {
-    const id = parseInt(req.params.id, 10);
-    if (isNaN(id) || id <= 0) {
-      throw new ApiError(400, "VALIDATION_ERROR", "ID invoice harus berupa bilangan bulat positif yang valid.");
-    }
+    const id = validatePositiveInteger(req.params.id, "ID invoice");
 
     normalizeInvoicePaymentPayload(req.body);
-    const amount = req.body.amount;
-    const numAmount = Number(amount);
-    if (!Number.isFinite(numAmount) || numAmount <= 0) {
-      throw new ApiError(400, "VALIDATION_ERROR", "Nominal pembayaran harus berupa angka positif yang lebih besar dari 0.");
-    }
+    const validAmount = validatePositiveFiniteAmount(req.body.amount, "Nominal pembayaran");
 
     const headerKey = (req.headers["idempotency-key"] as string) || (req.headers["x-idempotency-key"] as string);
     const bodyKey = req.body.idempotencyKey || req.body.details?.idempotencyKey || req.body.details?.clientRequestId || req.body.details?.transactionRef;
@@ -83,8 +77,48 @@ export async function payInvoice(req: AuthenticatedRequest, res: Response, next:
       ...(idempotencyKey ? { idempotencyKey } : {}),
     };
 
-    const invoice = financeService.recordPayment(id, Number(amount), details, req.user);
+    const invoice = financeService.recordPayment(id, validAmount, details, req.user);
     res.json({ success: true, message: "Pembayaran berhasil dicatat.", data: invoice, timestamp: new Date().toISOString() });
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function verifyInvoicePayment(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
+  try {
+    const id = validatePositiveInteger(req.params.id, "ID invoice");
+    const paymentId = req.params.paymentId || req.body.paymentId || req.body.payment_id;
+
+    const confirmedAmount = req.body.confirmedAmount !== undefined
+      ? validatePositiveFiniteAmount(req.body.confirmedAmount, "Confirmed Amount")
+      : req.body.amount !== undefined
+      ? validatePositiveFiniteAmount(req.body.amount, "Nominal pembayaran")
+      : undefined;
+
+    const headerKey = (req.headers["idempotency-key"] as string) || (req.headers["x-idempotency-key"] as string);
+    const bodyKey = req.body.idempotencyKey || req.body.clientRequestId;
+    const idempotencyKey = headerKey || bodyKey;
+
+    const notes = req.body.notes || req.body.catatan;
+    const proofPayload = req.body.buktiPembayaran || req.body.proofPayload || req.body.proof;
+
+    const result = financeService.verifyPayment({
+      invoiceId: id,
+      paymentId: paymentId ? String(paymentId).trim() : undefined,
+      verifierName: req.user?.nama || "Finance User",
+      user: req.user,
+      confirmedAmount,
+      notes,
+      proofPayload,
+      idempotencyKey: idempotencyKey ? String(idempotencyKey).trim() : undefined,
+    });
+
+    res.json({
+      success: true,
+      message: "Pembayaran berhasil diverifikasi.",
+      data: result,
+      timestamp: new Date().toISOString(),
+    });
   } catch (err) {
     next(err);
   }
@@ -233,14 +267,11 @@ export async function deleteKasMessenger(req: AuthenticatedRequest, res: Respons
 
 export async function voidInvoicePayment(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
   try {
-    const id = parseInt(req.params.id, 10);
-    const paymentId = parseInt(req.params.paymentId, 10);
-    if (isNaN(id) || id <= 0 || isNaN(paymentId) || paymentId <= 0) {
-      throw new ApiError(400, "VALIDATION_ERROR", "ID invoice dan ID pembayaran harus berupa bilangan bulat positif yang valid.");
-    }
+    const id = validatePositiveInteger(req.params.id, "ID invoice");
+    const paymentIdDiscriminated = discriminatePaymentIdentifier(req.params.paymentId);
 
     const reason = req.body?.reason || req.body?.voidReason || req.body?.alasan;
-    const invoice = financeService.voidInvoicePayment(id, paymentId, reason, req.user);
+    const invoice = financeService.voidInvoicePayment(id, paymentIdDiscriminated.value, reason, req.user);
     res.json({
       success: true,
       message: "Pembayaran berhasil dibatalkan (Void) dan jurnal pembalik telah dicatat.",

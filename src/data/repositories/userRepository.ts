@@ -3,86 +3,11 @@
  * Admin SUN89 — Biro Jasa Management System
  */
 
-import { SystemUser } from "../../domain/user/types";
-import { mockUserProvider, IUserDataProvider, initialUsers } from "../mock/mockUserProvider";
+import { SystemUser, IUserDataProvider, AuthUserSession, AuthResult, AuthErrorCode } from "../../domain/user/types";
 import { ApiUserProvider } from "../api/apiUserProvider";
 
-export interface AuthUserSession {
-  role: 'administrator' | 'finance' | 'admin' | 'messenger';
-  name: string;
-  userId: string;
-  employeeId?: string;
-}
+export type { AuthUserSession, AuthErrorCode, AuthResult };
 
-export type AuthErrorCode =
-  | "INVALID_CREDENTIALS"
-  | "ACCOUNT_INACTIVE"
-  | "TOO_MANY_REQUESTS"
-  | "NETWORK_ERROR"
-  | "TIMEOUT_ERROR"
-  | "SERVER_ERROR"
-  | "VALIDATION_ERROR"
-  | "UNEXPECTED_ERROR";
-
-export interface AuthResult {
-  success: boolean;
-  session?: AuthUserSession;
-  errorCode?: AuthErrorCode;
-  errorMessage?: string;
-  statusCode?: number;
-  retryAfterSeconds?: number;
-}
-
-export const DEMO_CREDENTIALS = {
-  administrator: {
-    email: "svp@birojasa.com",
-    password: "admin123",
-    name: "Admin Super (SVP)",
-    userId: "usr-001",
-    employeeId: "EMP-0001",
-    role: "administrator" as const,
-  },
-  finance: {
-    email: "finance@birojasa.com",
-    password: "finance123",
-    name: "Finance User",
-    userId: "usr-002",
-    employeeId: "EMP-0003",
-    role: "finance" as const,
-  },
-  admin: {
-    email: "admin@birojasa.com",
-    password: "admin123",
-    name: "Admin User",
-    userId: "usr-003",
-    employeeId: "EMP-0002",
-    role: "admin" as const,
-  },
-  messenger1: {
-    email: "budi.messenger@birojasa.com",
-    password: "messenger123",
-    name: "Budi Santoso",
-    userId: "usr-msg-001",
-    employeeId: "EMP-0004",
-    role: "messenger" as const,
-  },
-  messenger2: {
-    email: "andi.messenger@birojasa.com",
-    password: "messenger123",
-    name: "Andi Pratama",
-    userId: "usr-msg-002",
-    employeeId: "EMP-0005",
-    role: "messenger" as const,
-  },
-  messenger: {
-    email: "messenger@birojasa.com",
-    password: "messenger123",
-    name: "Budi Santoso",
-    userId: "usr-msg-001",
-    employeeId: "EMP-0004",
-    role: "messenger" as const,
-  },
-};
 
 export interface IUserRepository {
   getAll(): SystemUser[];
@@ -94,7 +19,6 @@ export interface IUserRepository {
   subscribe(listener: () => void): () => void;
   authenticate(email: string, password: string): Promise<AuthUserSession | null>;
   authenticateDetailed(email: string, password: string): Promise<AuthResult>;
-  getDemoCredentials(): typeof DEMO_CREDENTIALS;
   resetPassword?(id: number | string): Promise<{ success: boolean; message?: string }>;
   isLoading?(): boolean;
   getError?(): string | null;
@@ -106,13 +30,7 @@ export class UserRepository implements IUserRepository {
   private provider: IUserDataProvider;
 
   constructor(provider?: IUserDataProvider) {
-    if (provider) {
-      this.provider = provider;
-    } else {
-      const isApi = (typeof process !== "undefined" && process.env?.APP_DATA_PROVIDER === "api") ||
-                    (typeof import.meta !== "undefined" && (import.meta as any).env?.VITE_APP_DATA_PROVIDER === "api");
-      this.provider = isApi ? new ApiUserProvider() : mockUserProvider;
-    }
+    this.provider = provider || new ApiUserProvider();
   }
 
   public setProvider(provider: IUserDataProvider): void {
@@ -149,10 +67,6 @@ export class UserRepository implements IUserRepository {
 
   public subscribe(listener: () => void): () => void {
     return this.provider.subscribe(listener);
-  }
-
-  public getDemoCredentials(): typeof DEMO_CREDENTIALS {
-    return this.provider.getDemoCredentials();
   }
 
   public async resetPassword(id: number | string): Promise<{ success: boolean; message?: string }> {

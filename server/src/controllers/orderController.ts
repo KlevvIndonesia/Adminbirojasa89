@@ -262,9 +262,20 @@ export async function verifyPayment(req: AuthenticatedRequest, res: Response, ne
     const { orderNo } = req.params;
     const verifierName = req.user?.nama || req.body.verifierName || "Admin";
     const confirmedAmount = req.body.confirmedAmount !== undefined ? Number(req.body.confirmedAmount) : undefined;
-    const notes = req.body.notes;
+    const notes = req.body.notes || req.body.catatan;
     const proofPayload = req.body.buktiPembayaran || req.body.proofPayload || req.body.proof;
-    const order = orderService.verifyPayment(orderNo, verifierName, req.user, confirmedAmount, notes, proofPayload);
+    const paymentId = req.body.paymentId || req.body.payment_id;
+    const idempotencyKey = req.body.idempotencyKey || (req.headers["idempotency-key"] as string | undefined);
+    const order = orderService.verifyPayment(
+      orderNo,
+      verifierName,
+      req.user,
+      confirmedAmount,
+      notes,
+      proofPayload,
+      paymentId,
+      idempotencyKey
+    );
     res.json({ success: true, message: "Pembayaran berhasil diverifikasi.", data: order, timestamp: new Date().toISOString() });
   } catch (err) {
     next(err);

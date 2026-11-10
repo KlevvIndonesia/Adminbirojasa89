@@ -7,9 +7,8 @@ import {
   SamsatCostItem,
   ServicePackageConfig,
   OrderCostSnapshot,
+  IPricingDataProvider,
 } from "../../domain/pricing/types";
-import { pricingStore } from "../../app/data/pricingStore";
-import { mockPricingProvider, IPricingDataProvider } from "../mock/mockPricingProvider";
 import { ApiPricingProvider } from "../api/apiPricingProvider";
 
 export interface IPricingRepository {
@@ -23,21 +22,6 @@ export interface IPricingRepository {
   updateServicePricing?(id: string, config: any): Promise<boolean> | boolean;
   createServicePricing?(config: any): Promise<any> | any;
   deleteServicePricing?(id: string): Promise<boolean> | boolean;
-  getServicePackages(): Record<string, ServicePackageConfig>;
-  getServicePackage(serviceNameOrId: string): ServicePackageConfig | undefined;
-  updateServicePackage(serviceNameOrId: string, updates: Partial<ServicePackageConfig>): boolean;
-  calculateOrderCost(params: {
-    serviceName?: string;
-    serviceId?: string;
-    samsatId?: string;
-    wilayahSamsat?: string;
-    metodeLayanan: "Antar Jemput" | "Datang Langsung";
-    pkb?: number;
-    swdkllj?: number;
-    dendaSwdkllj?: number;
-    customComponents?: Record<string, boolean>;
-    customItemToggles?: Record<string, boolean>;
-  }): OrderCostSnapshot;
   subscribe(listener: () => void): () => void;
   setProvider?(provider: IPricingDataProvider): void;
   getProvider?(): IPricingDataProvider;
@@ -55,13 +39,7 @@ export class PricingRepository implements IPricingRepository {
   private provider: IPricingDataProvider;
 
   constructor(provider?: IPricingDataProvider) {
-    if (provider) {
-      this.provider = provider;
-    } else {
-      const isApi = (typeof process !== "undefined" && process.env?.APP_DATA_PROVIDER === "api") ||
-                    (typeof import.meta !== "undefined" && (import.meta as any).env?.VITE_APP_DATA_PROVIDER === "api");
-      this.provider = isApi ? new ApiPricingProvider() : mockPricingProvider;
-    }
+    this.provider = provider || new ApiPricingProvider();
   }
 
   public setProvider(provider: IPricingDataProvider): void {
@@ -94,10 +72,6 @@ export class PricingRepository implements IPricingRepository {
 
   getSamsatOffices(): any[] {
     return this.provider.getSamsatOffices ? this.provider.getSamsatOffices() : [];
-  }
-
-  getAvailableServices(): string[] {
-    return pricingStore.getAvailableServices();
   }
 
   async updateServicePricing(id: string, config: any): Promise<boolean> {
@@ -147,22 +121,6 @@ export class PricingRepository implements IPricingRepository {
       return await this.provider.batchReplicateServicePricing(params);
     }
     return null;
-  }
-
-  getServicePackages(): Record<string, ServicePackageConfig> {
-    return pricingStore.getServicePackages();
-  }
-
-  getServicePackage(serviceNameOrId: string): ServicePackageConfig | undefined {
-    return pricingStore.getServicePackage(serviceNameOrId);
-  }
-
-  updateServicePackage(serviceNameOrId: string, updates: Partial<ServicePackageConfig>): boolean {
-    return pricingStore.updateServicePackage(serviceNameOrId, updates);
-  }
-
-  calculateOrderCost(params: any): OrderCostSnapshot {
-    return pricingStore.calculateOrderCost(params);
   }
 
   subscribe(listener: () => void): () => void {

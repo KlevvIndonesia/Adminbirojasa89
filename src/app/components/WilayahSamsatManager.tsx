@@ -237,7 +237,7 @@ export function WilayahSamsatManager() {
   const handleOpenEditSamsat = (samsat: SamsatMasterItem) => {
     setSelectedSamsat(samsat);
     let provCode = "31";
-    let kabCode = samsat.kode_kabupaten_kota || "31.75";
+    const kabCode = samsat.kode_kabupaten_kota || "31.75";
     if (samsat.kode_kabupaten_kota) {
       const parts = samsat.kode_kabupaten_kota.split(".");
       provCode = parts[0] || "31";

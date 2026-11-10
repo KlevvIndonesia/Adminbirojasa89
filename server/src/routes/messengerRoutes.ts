@@ -6,6 +6,7 @@
 import { Router } from "express";
 import { requireAuth, requireRoles } from "../middleware/auth";
 import {
+  getMyTasks,
   getMessengersWithStats,
   getMessengerHistory,
   getTaskDetail,
@@ -17,6 +18,14 @@ import {
 } from "../controllers/messengerController";
 
 export const messengerRouter = Router();
+
+// 0. Dedicated Courier Assigned Tasks (BD-RBAC-03)
+messengerRouter.get(
+  "/my-tasks",
+  requireAuth,
+  requireRoles("messenger", "administrator", "admin"),
+  getMyTasks
+);
 
 // 1. Messenger Selection & Statistics
 messengerRouter.get(
@@ -78,6 +87,6 @@ messengerRouter.post(
 messengerRouter.post(
   "/reimbursements/:id/void",
   requireAuth,
-  requireRoles("administrator", "supervisor", "svp"),
+  requireRoles("administrator", "svp"),
   voidReimbursement
 );

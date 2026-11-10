@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert";
-import { MockOrderProvider } from "../src/data/mock/mockOrderProvider";
+import { MockOrderProvider } from "./fixtures/mock/mockOrderProvider";
 import { OperationalOrder, STAGES } from "../src/domain/order/types";
 
 // Workstream B: Explicit deterministic test fixture factory for MockOrderProvider

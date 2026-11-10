@@ -8,7 +8,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from ".
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "./ui/table";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "./ui/dialog";
 import { Label } from "./ui/label";
-import { Search, Eye, FileDown, FileText, Printer, RotateCcw, AlertTriangle, RefreshCw, Loader2, Trash2 } from "lucide-react";
+import { Search, Eye, FileDown, FileText, Printer, RotateCcw, AlertTriangle, RefreshCw, Loader2, Trash2, ShieldCheck } from "lucide-react";
 import { toast } from "sonner";
 import { auditLog, AuditLogEntry } from "../utils/auditLog";
 import { exportToCSV, exportToPrintablePDF } from "../utils/exportUtils";
@@ -334,22 +334,15 @@ export function AuditLog({ currentUserRole }: AuditLogProps) {
                 <span>PDF</span>
               </Button>
 
-              {/* Permanent Clear History Button (Administrator & SVP) */}
-              {(currentUserRole === "administrator" || currentUserRole === "svp") && (
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() => {
-                    setClearConfirmationInput("");
-                    setIsClearHistoryOpen(true);
-                  }}
-                  className="border-rose-500/30 text-rose-600 dark:text-rose-400 hover:bg-rose-500/10 hover:text-rose-700 text-xs h-8 px-2.5 gap-1.5 shrink-0"
-                  title="Hapus riwayat aktivitas secara permanen dari database"
-                >
-                  <Trash2 className="w-3.5 h-3.5" />
-                  <span>Clear Riwayat</span>
-                </Button>
-              )}
+              {/* Immutable Audit Trail Badge (BD-RBAC-01) */}
+              <Badge
+                variant="outline"
+                className="border-emerald-500/30 text-emerald-600 dark:text-emerald-400 bg-emerald-500/5 text-xs h-8 px-2.5 gap-1.5 shrink-0 font-normal"
+                title="Audit log dilindungi oleh kebijakan imutabilitas (BD-RBAC-01)"
+              >
+                <ShieldCheck className="w-3.5 h-3.5 text-emerald-500" />
+                <span>Audit Trail Imutabel</span>
+              </Badge>
             </div>
           </div>
 
@@ -471,88 +464,7 @@ export function AuditLog({ currentUserRole }: AuditLogProps) {
         </div>
       </Card>
 
-      {/* Permanent Clear History Confirmation Dialog */}
-      <Dialog open={isClearHistoryOpen} onOpenChange={setIsClearHistoryOpen}>
-        <DialogContent className="border-border sm:max-w-md">
-          <DialogHeader>
-            <div className="flex items-center gap-3">
-              <div className="w-10 h-10 rounded-full bg-rose-500/10 flex items-center justify-center text-rose-600 dark:text-rose-400 shrink-0">
-                <AlertTriangle className="w-5 h-5" />
-              </div>
-              <div>
-                <DialogTitle className="text-base font-semibold text-rose-600 dark:text-rose-400">
-                  Hapus Permanen Riwayat Aktivitas
-                </DialogTitle>
-                <DialogDescription className="text-xs text-muted-foreground">
-                  Tindakan ini tidak dapat dibatalkan
-                </DialogDescription>
-              </div>
-            </div>
-          </DialogHeader>
-
-          <div className="space-y-4 py-2">
-            <div className="p-3 bg-rose-500/10 border border-rose-500/20 rounded-lg text-xs space-y-1.5 text-rose-700 dark:text-rose-400">
-              <p className="font-semibold flex items-center gap-1.5">
-                <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
-                Peringatan Kerusakan Permanen
-              </p>
-              <p className="text-[11px] leading-relaxed text-muted-foreground">
-                Seluruh {filteredLogs.length} catatan riwayat aktivitas operasional akan dihapus permanen dari database SQLite. Tindakan ini tidak dapat dipulihkan atau di-undo.
-              </p>
-            </div>
-
-            <div className="space-y-2">
-              <Label htmlFor="confirm-clear" className="text-xs font-medium text-foreground">
-                Ketik <span className="font-mono font-bold text-foreground bg-muted px-1 py-0.5 rounded border border-border">Hapus riwayat aktivitas</span> untuk mengonfirmasi:
-              </Label>
-              <Input
-                id="confirm-clear"
-                placeholder="Hapus riwayat aktivitas"
-                value={clearConfirmationInput}
-                onChange={(e) => setClearConfirmationInput(e.target.value)}
-                className="h-8 text-xs bg-background border-border font-medium"
-                autoComplete="off"
-              />
-            </div>
-          </div>
-
-          <DialogFooter className="mt-2 gap-2 flex justify-end">
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              onClick={() => {
-                setIsClearHistoryOpen(false);
-                setClearConfirmationInput("");
-              }}
-              disabled={isClearingHistory}
-              className="h-8 text-xs border-border"
-            >
-              Batal
-            </Button>
-            <Button
-              type="button"
-              variant="destructive"
-              size="sm"
-              disabled={!isClearConfirmationValid || isClearingHistory}
-              onClick={handleExecuteClearHistory}
-              className="h-8 text-xs bg-rose-600 hover:bg-rose-700 text-white gap-1.5 font-medium"
-            >
-              {isClearingHistory ? (
-                <>
-                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                  <span>Membersihkan...</span>
-                </>
-              ) : (
-                <>
-                  <Trash2 className="w-3.5 h-3.5" />
-                  <span>Hapus Riwayat Sekarang</span>
-                </>
-              )}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+      {/* Clear History Dialog Removed per BD-RBAC-01 (Immutable Audit Trail) */}
 
       {/* View Log Detail Dialog */}
       <Dialog open={isViewDialogOpen} onOpenChange={setIsViewDialogOpen}>

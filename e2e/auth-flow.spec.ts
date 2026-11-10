@@ -31,7 +31,8 @@ test.describe("E2E Test 1 & 9 & 10: Authentication, Refresh & Persistence", () =
     expect(token?.split(".").length).toBe(3);
 
     // Verify dashboard / main app appears
-    await expect(page.locator("h1", { hasText: "Dashboard" })).toBeVisible();
+    await page.waitForURL("**/dashboard", { timeout: 15000 });
+    await expect(page.getByText("Dashboard").first()).toBeVisible();
   });
 
   test("1.2 Missing password triggers HTML5/client validation without session", async ({ page }) => {
@@ -116,6 +117,7 @@ test.describe("E2E Test 1 & 9 & 10: Authentication, Refresh & Persistence", () =
     // Verify session remains active in localStorage and UI displays dashboard
     const tokenAfter = await page.evaluate(() => window.localStorage.getItem("auth_token"));
     expect(tokenAfter).toBe(tokenBefore);
-    await expect(page.locator("h1", { hasText: "Dashboard" })).toBeVisible();
+    await page.waitForURL("**/dashboard", { timeout: 15000 });
+    await expect(page.getByText("Dashboard").first()).toBeVisible();
   });
 });

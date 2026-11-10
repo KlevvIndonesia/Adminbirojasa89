@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert";
 import { orderRepository, OrderRepository } from "../src/data/repositories/orderRepository";
-import { MockOrderProvider } from "../src/data/mock/mockOrderProvider";
+import { MockOrderProvider } from "./fixtures/mock/mockOrderProvider";
 import { OperationalOrder } from "../src/domain/order/types";
 
 test("OrderRepository - Read operations return valid fixture collections", () => {

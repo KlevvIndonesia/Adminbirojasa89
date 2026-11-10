@@ -24,7 +24,6 @@ import {
   RefundStatus,
   RekapDocument,
 } from "../../domain/order/types";
-import { createInitialOrders } from "../../data/mock/orderMockData";
 import { orderRepository, IOrderRepository } from "../../data/repositories/orderRepository";
 import { APP_CONFIG } from "../config/appConfig";
 import { ActionApiError, fetchWithTimeout, parseApiErrorResponse } from "../utils/actionErrorClassifier";
@@ -42,7 +41,7 @@ export type {
   RefundStatus,
   RekapDocument,
 };
-export { STAGES, getDefaultSamsatProcesses, createInitialOrders };
+export { STAGES, getDefaultSamsatProcesses };
 
 export function extractPeriodMMYY(dateStr?: string): string {
   if (!dateStr) {

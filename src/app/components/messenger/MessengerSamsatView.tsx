@@ -199,6 +199,64 @@ export function MessengerSamsatView({
     ];
   }, [currentSelectedTask]);
 
+  // Validation & Component Progress computed unconditionally at top-level
+  const samsatValidation = useMemo(() => {
+    if (!currentSelectedTask?.rawOrder) {
+      return {
+        allowed: false,
+        error: "Data order tidak tersedia",
+        totalComponents: 0,
+        completedComponents: 0,
+        incompleteComponents: [],
+      };
+    }
+    return validateSamsatComponents(currentSelectedTask.rawOrder);
+  }, [currentSelectedTask?.rawOrder]);
+
+  const comps: MessengerComponentProgress[] = useMemo(() => {
+    if (!currentSelectedTask) return [];
+    const map = new Map<string, MessengerComponentProgress>();
+
+    // 1. From samsatProcesses
+    if (currentSelectedTask.rawOrder?.samsatProcesses) {
+      for (const p of currentSelectedTask.rawOrder.samsatProcesses) {
+        if (!p || !p.name) continue;
+        const id = String(p.id || p.name).trim();
+        map.set(id, {
+          componentId: id,
+          name: p.name,
+          category: p.category,
+          nominal: p.basePrice || 0,
+          masterPrice: p.basePrice || 0,
+          actualOrderPrice: p.actualCost || p.basePrice || 0,
+          status:
+            p.status === "Selesai" || (p.status as string) === "COMPLETED"
+              ? "COMPLETED"
+              : p.status === "Sedang Diproses" || (p.status as string) === "IN_PROGRESS" || (p.status as string) === "Dalam Proses"
+              ? "IN_PROGRESS"
+              : (p.status as string) === "Menunggu" || (p.status as string) === "WAITING"
+              ? "WAITING"
+              : "NOT_STARTED",
+        });
+      }
+    }
+
+    // 2. Overlay live progress from messengerComponentProgress
+    if (currentSelectedTask.componentProgress && currentSelectedTask.componentProgress.length > 0) {
+      for (const cp of currentSelectedTask.componentProgress) {
+        if (!cp || !cp.name) continue;
+        const compKey = String(cp.componentId).trim();
+        const existing = map.get(compKey) || {};
+        map.set(compKey, {
+          ...existing,
+          ...cp,
+        });
+      }
+    }
+
+    return Array.from(map.values());
+  }, [currentSelectedTask?.componentProgress, currentSelectedTask?.rawOrder?.samsatProcesses, currentSelectedTask]);
+
   // Open single duration dialog on "Mulai Proses"
   const handleOpenStartProcess = (orderNo: string, comp: MessengerComponentProgress) => {
     setStartProcessOrderNo(orderNo);
@@ -800,56 +858,8 @@ export function MessengerSamsatView({
       task.rawOrder?.samsatStatus !== "Belum Dimulai")
   );
 
-  const samsatValidation = useMemo(() => {
-    if (!task.rawOrder) return { allowed: false, error: "Data order tidak tersedia", totalComponents: 0, completedComponents: 0, incompleteComponents: [] };
-    return validateSamsatComponents(task.rawOrder);
-  }, [task.rawOrder]);
-
   const canCompleteSamsat = samsatValidation.allowed;
   const completionValidationMessage = samsatValidation.error;
-
-  const comps: MessengerComponentProgress[] = useMemo(() => {
-    const map = new Map<string, MessengerComponentProgress>();
-
-    // 1. From samsatProcesses
-    if (task.rawOrder?.samsatProcesses) {
-      for (const p of task.rawOrder.samsatProcesses) {
-        if (!p || !p.name) continue;
-        const id = String(p.id || p.name).trim();
-        map.set(id, {
-          componentId: id,
-          name: p.name,
-          category: p.category,
-          nominal: p.basePrice || 0,
-          masterPrice: p.basePrice || 0,
-          actualOrderPrice: p.actualCost || p.basePrice || 0,
-          status:
-            p.status === "Selesai" || (p.status as string) === "COMPLETED"
-              ? "COMPLETED"
-              : p.status === "Sedang Diproses" || (p.status as string) === "IN_PROGRESS" || (p.status as string) === "Dalam Proses"
-              ? "IN_PROGRESS"
-              : (p.status as string) === "Menunggu" || (p.status as string) === "WAITING"
-              ? "WAITING"
-              : "NOT_STARTED",
-        });
-      }
-    }
-
-    // 2. Overlay live progress from messengerComponentProgress
-    if (task.componentProgress && task.componentProgress.length > 0) {
-      for (const cp of task.componentProgress) {
-        if (!cp || !cp.name) continue;
-        const compKey = String(cp.componentId).trim();
-        const existing = map.get(compKey) || {};
-        map.set(compKey, {
-          ...existing,
-          ...cp,
-        });
-      }
-    }
-
-    return Array.from(map.values());
-  }, [task.componentProgress, task.rawOrder?.samsatProcesses]);
 
   const validComps = comps.filter((c) => {
     if (

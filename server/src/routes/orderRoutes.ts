@@ -48,11 +48,11 @@ import {
 export const orderRouter = Router();
 
 // Read operations (Protected against anonymous access)
-orderRouter.get("/", requireAuth, getOrders);
-orderRouter.get("/archived", requireAuth, getArchivedOrders);
-orderRouter.get("/archive", requireAuth, getArchivedOrders);
-orderRouter.get("/:orderNo", requireAuth, getOrderByNo);
-orderRouter.get("/:orderNo/status-history", requireAuth, getOrderStatusHistory);
+orderRouter.get("/", requireAuth, requireRoles("administrator", "admin", "finance", "svp"), getOrders);
+orderRouter.get("/archived", requireAuth, requireRoles("administrator", "admin", "finance", "svp"), getArchivedOrders);
+orderRouter.get("/archive", requireAuth, requireRoles("administrator", "admin", "finance", "svp"), getArchivedOrders);
+orderRouter.get("/:orderNo", requireAuth, requireRoles("administrator", "admin", "finance", "svp"), getOrderByNo);
+orderRouter.get("/:orderNo/status-history", requireAuth, requireRoles("administrator", "admin", "finance", "svp"), getOrderStatusHistory);
 
 // Write operations (Protected with role and stage authority)
 orderRouter.post(
@@ -66,7 +66,7 @@ orderRouter.post(
 orderRouter.put(
   "/:orderNo",
   requireAuth,
-  requireRoles("administrator", "admin", "finance", "svp", "messenger"),
+  requireRoles("administrator", "admin", "svp", "messenger"),
   validateOrderUpdatePayload,
   updateOrder
 );
@@ -91,14 +91,14 @@ orderRouter.post(
 orderRouter.delete(
   "/archive/clear-all",
   requireAuth,
-  requireRoles("administrator", "admin", "svp"),
+  requireRoles("administrator", "svp"),
   clearArchivedOrders
 );
 // Backward-compatibility route alias for legacy callers
 orderRouter.delete(
   "/archived/clear-all",
   requireAuth,
-  requireRoles("administrator", "admin", "svp"),
+  requireRoles("administrator", "svp"),
   clearArchivedOrders
 );
 
@@ -112,14 +112,14 @@ orderRouter.post(
 orderRouter.delete(
   "/:orderNo/archive",
   requireAuth,
-  requireRoles("administrator", "admin", "svp"),
+  requireRoles("administrator", "svp"),
   deleteArchivedOrder
 );
 
 orderRouter.delete(
   "/:orderNo",
   requireAuth,
-  requireRoles("administrator", "admin", "finance", "svp"),
+  requireRoles("administrator", "svp"),
   hardDeleteOrder
 );
 
@@ -140,14 +140,14 @@ orderRouter.post(
 orderRouter.post(
   "/:orderNo/request-correction",
   requireAuth,
-  requireRoles("administrator", "admin", "svp", "finance", "staff"),
+  requireRoles("administrator", "admin", "svp", "finance"),
   requestOrderCorrection
 );
 
 orderRouter.post(
   "/:orderNo/verify-cost",
   requireAuth,
-  requireRoles("administrator", "admin", "svp", "supervisor", "spv"),
+  requireRoles("administrator", "admin", "svp"),
   validateOrderCostVerificationPayload,
   verifyOrderCost
 );

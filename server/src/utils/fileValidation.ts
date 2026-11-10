@@ -479,7 +479,7 @@ export function validateUploadedDocument(
   }
 
   // 4. Dedicated structural validation
-  let canonicalMime: AllowedMimeType = detectedMime;
+  const canonicalMime: AllowedMimeType = detectedMime;
   let canonicalExt: AllowedExtension;
 
   if (detectedMime === "application/pdf") {

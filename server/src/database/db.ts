@@ -135,28 +135,143 @@ export function initDatabase(options?: {
   return database;
 }
 
-let inTransaction = false;
+/**
+ * Per-database connection transaction depth map.
+ * Replaces the fragile global inTransaction boolean flag with instance-level isolation.
+ */
+const _txDepthMap = new WeakMap<DatabaseSync, number>();
 
+/**
+ * Quarantined database connections whose transaction state became corrupt or un-terminated
+ * following a fatal ROLLBACK or SAVEPOINT release/rollback failure.
+ */
+const _corruptedConnections = new WeakSet<DatabaseSync>();
+
+/**
+ * Checks whether a database connection has been quarantined due to an unrecoverable transaction failure.
+ */
+export function isConnectionCorrupted(customDb?: DatabaseSync): boolean {
+  return _corruptedConnections.has(customDb ?? getDb());
+}
+
+/**
+ * Returns the current active transaction depth for a given database connection.
+ * Useful for assertions, diagnostics, and test verifications.
+ */
+export function getTransactionDepth(customDb?: DatabaseSync): number {
+  return _txDepthMap.get(customDb ?? getDb()) || 0;
+}
+
+/**
+ * Checks whether a callback is a native AsyncFunction before invocation.
+ */
+function isNativeAsyncFunction(fn: unknown): boolean {
+  if (typeof fn !== "function") return false;
+  return (
+    fn.constructor?.name === "AsyncFunction" ||
+    (fn as any)[Symbol.toStringTag] === "AsyncFunction"
+  );
+}
+
+/**
+ * Executes a callback within a managed SQLite transaction using BEGIN IMMEDIATE.
+ * 
+ * Hardening Guarantees:
+ * 1. Immediate reserved lock acquisition via BEGIN IMMEDIATE; (WAL write lock).
+ * 2. Per-connection transaction tracking: isolated depth per DatabaseSync instance.
+ * 3. Pre-execution rejection of native AsyncFunction callbacks (body never starts executing).
+ * 4. Runtime rejection of Promise/thenable returns with immediate synchronous rollback.
+ * 5. Connection quarantine: if ROLLBACK or SAVEPOINT fails, connection is quarantined and never silently reused.
+ * 6. Nested transaction support via SQLite SAVEPOINT with isolated rollback on inner failure.
+ * 7. Anti-poisoning: depth is incremented only after successful lock acquisition.
+ */
 export function runInTransaction<T>(fn: () => T, customDb?: DatabaseSync): T {
   const activeDb = customDb ?? getDb();
-  if (inTransaction) {
-    return fn();
+
+  // Guard 0: Check connection health
+  if (_corruptedConnections.has(activeDb)) {
+    throw new Error(
+      "[FATAL_TRANSACTION_CORRUPTION] The database connection has an un-terminated or corrupt transaction state from a previous fatal COMMIT/ROLLBACK failure and cannot be safely reused."
+    );
   }
-  inTransaction = true;
+
+  // Guard 1: Reject native async functions BEFORE invocation
+  if (isNativeAsyncFunction(fn)) {
+    throw new Error(
+      "[TRANSACTION_ASYNC_NOT_SUPPORTED] runInTransaction only supports synchronous callbacks. Native async functions cannot be used inside managed transactions."
+    );
+  }
+
+  const currentDepth = _txDepthMap.get(activeDb) || 0;
+
+  // Nested call on the SAME database instance: use SAVEPOINT
+  if (currentDepth > 0) {
+    const savepointName = `sp_${currentDepth}_${Math.random().toString(36).substring(2, 8)}`;
+    activeDb.exec(`SAVEPOINT ${savepointName};`);
+    _txDepthMap.set(activeDb, currentDepth + 1);
+
+    try {
+      const result = fn();
+      if (result !== null && typeof result === "object" && typeof (result as any).then === "function") {
+        throw new Error(
+          "[TRANSACTION_ASYNC_NOT_SUPPORTED] runInTransaction only supports synchronous callbacks. Passing an async function or Promise leads to premature commit before asynchronous database operations resolve."
+        );
+      }
+      try {
+        activeDb.exec(`RELEASE SAVEPOINT ${savepointName};`);
+      } catch (releaseErr) {
+        _corruptedConnections.add(activeDb);
+        throw releaseErr;
+      }
+      return result;
+    } catch (err) {
+      try {
+        activeDb.exec(`ROLLBACK TO SAVEPOINT ${savepointName};`);
+        activeDb.exec(`RELEASE SAVEPOINT ${savepointName};`);
+      } catch (savepointRollbackErr) {
+        // Savepoint desynchronization corrupts connection state
+        _corruptedConnections.add(activeDb);
+      }
+      throw err;
+    } finally {
+      if (!_corruptedConnections.has(activeDb)) {
+        _txDepthMap.set(activeDb, currentDepth);
+      }
+    }
+  }
+
+  // Top-level transaction on this database instance
   activeDb.exec("BEGIN IMMEDIATE;");
+  _txDepthMap.set(activeDb, 1);
+
   try {
     const result = fn();
+    if (result !== null && typeof result === "object" && typeof (result as any).then === "function") {
+      throw new Error(
+        "[TRANSACTION_ASYNC_NOT_SUPPORTED] runInTransaction only supports synchronous callbacks. Passing an async function or Promise leads to premature commit before asynchronous database operations resolve."
+      );
+    }
     activeDb.exec("COMMIT;");
-    inTransaction = false;
     return result;
   } catch (err) {
     try {
       activeDb.exec("ROLLBACK;");
-    } catch {
-      // ignore rollback errors if already aborted
+    } catch (rollbackErr) {
+      // Fatal: rollback failed. The connection has an un-terminated transaction and is poisoned.
+      _corruptedConnections.add(activeDb);
+      if (_db === activeDb) {
+        try { _db.close(); } catch {}
+        _db = null;
+      }
+      throw new Error(
+        `[FATAL_TRANSACTION_ROLLBACK_FAILURE] Fatal error rolling back transaction. Connection has been quarantined: ${(rollbackErr as any)?.message || rollbackErr}`
+      );
     }
-    inTransaction = false;
     throw err;
+  } finally {
+    if (!_corruptedConnections.has(activeDb)) {
+      _txDepthMap.set(activeDb, 0);
+    }
   }
 }
 

@@ -1,4 +1,4 @@
-import { useState, useRef, useMemo } from "react";
+import { useState, useRef, useMemo, useEffect } from "react";
 import {
   Dialog,
   DialogContent,
@@ -80,8 +80,6 @@ export function MessengerTaskDetailModal({
   currentUser,
   onTaskUpdated,
 }: MessengerTaskDetailModalProps) {
-  if (!task) return null;
-
   const [activeTab, setActiveTab] = useState<string>("operational");
   const [isWaitingDialogOpen, setIsWaitingDialogOpen] = useState(false);
   const [waitingTargetComponentId, setWaitingTargetComponentId] = useState<string | null>(null);
@@ -91,17 +89,18 @@ export function MessengerTaskDetailModal({
   const evidenceFileInputRef = useRef<HTMLInputElement>(null);
   const [selectedCompForEvidence, setSelectedCompForEvidence] = useState<{ id: string; name: string } | null>(null);
   const [isUploadingEvidence, setIsUploadingEvidence] = useState(false);
-  const [recipientName, setRecipientName] = useState(task.rawOrder.deliveryHandover?.recipientName || task.customer || "");
-  const [relationship, setRelationship] = useState(task.rawOrder.deliveryHandover?.relationship || "Pemilik Langsung");
-  const [deliveryFileUrl, setDeliveryFileUrl] = useState<string>(task.rawOrder.deliveryHandover?.photoProofUrl || "");
-  const [deliveryFileName, setDeliveryFileName] = useState<string>(task.rawOrder.deliveryHandover?.fileName || (task.rawOrder.deliveryHandover?.photoProofUrl ? "Foto_Serah_Terima.jpg" : ""));
-  const [deliveryFileType, setDeliveryFileType] = useState<"image" | "pdf">(task.rawOrder.deliveryHandover?.fileType || "image");
-  const [deliveryFileSize, setDeliveryFileSize] = useState<number>(task.rawOrder.deliveryHandover?.fileSize || 0);
+  const [recipientName, setRecipientName] = useState(task?.rawOrder?.deliveryHandover?.recipientName || task?.customer || "");
+  const [relationship, setRelationship] = useState(task?.rawOrder?.deliveryHandover?.relationship || "Pemilik Langsung");
+  const [deliveryFileUrl, setDeliveryFileUrl] = useState<string>(task?.rawOrder?.deliveryHandover?.photoProofUrl || "");
+  const [deliveryFileName, setDeliveryFileName] = useState<string>(task?.rawOrder?.deliveryHandover?.fileName || (task?.rawOrder?.deliveryHandover?.photoProofUrl ? "Foto_Serah_Terima.jpg" : ""));
+  const [deliveryFileType, setDeliveryFileType] = useState<"image" | "pdf">(task?.rawOrder?.deliveryHandover?.fileType || "image");
+  const [deliveryFileSize, setDeliveryFileSize] = useState<number>(task?.rawOrder?.deliveryHandover?.fileSize || 0);
   const [isCompressingDeliveryFile, setIsCompressingDeliveryFile] = useState(false);
 
   // Section 2.B Checklist Dokumen Wajib
   const requiredDocs = useMemo(() => {
-    const clientDocs = task.rawOrder.clientDocuments;
+    if (!task) return [];
+    const clientDocs = task.rawOrder?.clientDocuments;
     if (clientDocs && Object.keys(clientDocs).length > 0) {
       return Object.entries(clientDocs).map(([key, doc]) => ({
         key,
@@ -116,13 +115,14 @@ export function MessengerTaskDetailModal({
       { key: "skkp", name: "SKKP (Surat Ketetapan Pajak)", isMandatory: false },
       { key: "lainnya", name: "Dokumen Tambahan / Surat Kuasa", isMandatory: false },
     ];
-  }, [task.rawOrder.clientDocuments]);
+  }, [task?.rawOrder?.clientDocuments, task]);
 
   const [checkedDocs, setCheckedDocs] = useState<Record<string, boolean>>(() => {
-    return task.rawOrder.pickupChecklist || {};
+    return task?.rawOrder?.pickupChecklist || {};
   });
 
   const handleToggleDoc = (key: string, checked: boolean) => {
+    if (!task) return;
     const updated = { ...checkedDocs, [key]: checked };
     setCheckedDocs(updated);
     orderStore.updateOrder(task.orderNo, {
@@ -131,9 +131,23 @@ export function MessengerTaskDetailModal({
   };
 
   const [isSubmittingPickup, setIsSubmittingPickup] = useState(false);
+  const [isStartingTask, setIsStartingTask] = useState(false);
+
+  // Synchronize local form states whenever task changes
+  useEffect(() => {
+    if (!task) return;
+    setRecipientName(task.rawOrder?.deliveryHandover?.recipientName || task.customer || "");
+    setRelationship(task.rawOrder?.deliveryHandover?.relationship || "Pemilik Langsung");
+    setDeliveryFileUrl(task.rawOrder?.deliveryHandover?.photoProofUrl || "");
+    setDeliveryFileName(task.rawOrder?.deliveryHandover?.fileName || (task.rawOrder?.deliveryHandover?.photoProofUrl ? "Foto_Serah_Terima.jpg" : ""));
+    setDeliveryFileType(task.rawOrder?.deliveryHandover?.fileType || "image");
+    setDeliveryFileSize(task.rawOrder?.deliveryHandover?.fileSize || 0);
+    setCheckedDocs(task.rawOrder?.pickupChecklist || {});
+  }, [task]);
 
   const handleCompletePickup = (e?: React.FormEvent) => {
     if (e) e.preventDefault();
+    if (!task) return;
     const missingMandatory = requiredDocs.filter((d) => d.isMandatory && !checkedDocs[d.key]);
     if (missingMandatory.length > 0) {
       toast.error(
@@ -162,13 +176,21 @@ export function MessengerTaskDetailModal({
   };
 
   // Handler: Start task
-  const handleStartTask = () => {
-    const res = startMessengerTask(task.orderNo, currentUser);
-    if (res.success) {
-      toast.success(`Tugas ${task.orderNo} berhasil dimulai!`);
-      onTaskUpdated();
-    } else {
-      toast.error(res.error || "Gagal memulai tugas");
+  const handleStartTask = async () => {
+    if (!task || isStartingTask) return;
+    setIsStartingTask(true);
+    try {
+      const res = await startMessengerTask(task.orderNo, currentUser);
+      if (res.success) {
+        toast.success(`Tugas ${task.orderNo} berhasil dimulai!`);
+        onTaskUpdated();
+      } else {
+        toast.error(res.error || "Gagal memulai tugas");
+      }
+    } catch (err: any) {
+      toast.error(err?.message || "Gagal memulai tugas");
+    } finally {
+      setIsStartingTask(false);
     }
   };
 
@@ -179,6 +201,7 @@ export function MessengerTaskDetailModal({
   };
 
   const handleWaitingDialogSubmit = (reason: WaitingReason) => {
+    if (!task) return;
     if (waitingTargetComponentId) {
       // Component-level waiting
       const res = updateMessengerComponent(
@@ -214,6 +237,7 @@ export function MessengerTaskDetailModal({
 
   // Handler: Update component status
   const handleUpdateComponentStatus = (componentId: string, status: any) => {
+    if (!task) return;
     if (status === "WAITING") {
       handleOpenWaitingDialog(componentId);
       return;
@@ -235,6 +259,7 @@ export function MessengerTaskDetailModal({
 
   // Handler: Update component duration estimation
   const handleUpdateComponentDuration = (componentId: string, minutes: number) => {
+    if (!task) return;
     const res = updateMessengerComponent(
       task.orderNo,
       componentId,
@@ -255,7 +280,7 @@ export function MessengerTaskDetailModal({
   // Handler: Real evidence upload for component
   const handleEvidenceFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
-    if (!file || !selectedCompForEvidence) return;
+    if (!file || !selectedCompForEvidence || !task) return;
 
     try {
       setIsUploadingEvidence(true);
@@ -307,7 +332,7 @@ export function MessengerTaskDetailModal({
   // Handler: Real file change for delivery handover (PDF, JPG, JPEG, PNG, HEIC up to 5MB with compression)
   const handleDeliveryFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
-    if (!file) return;
+    if (!file || !task) return;
 
     try {
       setIsCompressingDeliveryFile(true);
@@ -353,6 +378,7 @@ export function MessengerTaskDetailModal({
   // Handler: Submit delivery completion (Stage 7 -> 8)
   const handleCompleteDelivery = (e: React.FormEvent) => {
     e.preventDefault();
+    if (!task) return;
     if (!recipientName.trim()) {
       toast.error("Nama penerima dokumen wajib diisi!");
       return;
@@ -378,6 +404,8 @@ export function MessengerTaskDetailModal({
       toast.error(res.error || "Gagal menyelesaikan pengantaran");
     }
   };
+
+  if (!task) return null;
 
   const mapsUrl =
     task.rawOrder.alamatPenjemputan?.mapsUrl ||
@@ -456,9 +484,10 @@ export function MessengerTaskDetailModal({
                         <Button
                           size="sm"
                           onClick={handleStartTask}
+                          disabled={isStartingTask}
                           className="bg-primary hover:bg-primary/90 text-primary-foreground text-xs font-semibold shadow-xs"
                         >
-                          <Play className="w-3.5 h-3.5 mr-1 fill-current" /> Mulai Penjemputan
+                          <Play className="w-3.5 h-3.5 mr-1 fill-current" /> {isStartingTask ? "Memulai..." : "Mulai Penjemputan"}
                         </Button>
                       )}
                     </div>

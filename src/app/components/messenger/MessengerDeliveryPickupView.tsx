@@ -44,6 +44,7 @@ export function MessengerDeliveryPickupView({
   const [selectedChip, setSelectedChip] = useState<DeliveryChip>("ALL");
   const [selectedTask, setSelectedTask] = useState<MessengerTaskItem | null>(null);
   const [isDetailOpen, setIsDetailOpen] = useState(false);
+  const [startingOrderNo, setStartingOrderNo] = useState<string | null>(null);
 
   // Dedicated Jemput Hasil page lifecycle: Notify parent workspace to hide bottom navigation bar
   const isJemputHasilOpen = Boolean(selectedTask && selectedTask.keteranganTugas === "Jemput Hasil Samsat");
@@ -98,12 +99,20 @@ export function MessengerDeliveryPickupView({
     setIsDetailOpen(true);
   };
 
-  const handleStartTask = (task: MessengerTaskItem) => {
-    const res = startMessengerTask(task.orderNo, currentUser);
-    if (res.success) {
-      toast.success(`Tugas ${task.orderNo} (${task.keteranganTugas}) berhasil dimulai!`);
-    } else {
-      toast.error(res.error || "Gagal memulai tugas");
+  const handleStartTask = async (task: MessengerTaskItem) => {
+    if (startingOrderNo === task.orderNo) return;
+    setStartingOrderNo(task.orderNo);
+    try {
+      const res = await startMessengerTask(task.orderNo, currentUser);
+      if (res.success) {
+        toast.success(`Tugas ${task.orderNo} (${task.keteranganTugas}) berhasil dimulai!`);
+      } else {
+        toast.error(res.error || "Gagal memulai tugas");
+      }
+    } catch (err: any) {
+      toast.error(err?.message || "Gagal memulai tugas");
+    } finally {
+      setStartingOrderNo(null);
     }
   };
 

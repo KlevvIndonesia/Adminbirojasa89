@@ -6,8 +6,7 @@
  * and underlying data providers (Mock provider currently, API provider in Phase 7).
  */
 
-import { OperationalOrder, StageName } from "../../domain/order/types";
-import { mockOrderProvider, IOrderDataProvider } from "../mock/mockOrderProvider";
+import { OperationalOrder, StageName, IOrderDataProvider } from "../../domain/order/types";
 import { ApiOrderProvider } from "../api/apiOrderProvider";
 
 export interface IOrderRepository {
@@ -47,13 +46,7 @@ export class OrderRepository implements IOrderRepository {
   private unsubscribeProvider?: () => void;
 
   constructor(provider?: IOrderDataProvider) {
-    if (provider) {
-      this.provider = provider;
-    } else {
-      const isApi = (typeof process !== "undefined" && process.env?.APP_DATA_PROVIDER === "api") ||
-                    (typeof import.meta !== "undefined" && (import.meta as any).env?.VITE_APP_DATA_PROVIDER === "api");
-      this.provider = isApi ? new ApiOrderProvider() : mockOrderProvider;
-    }
+    this.provider = provider || new ApiOrderProvider();
     this.wireProvider();
   }
 

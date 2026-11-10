@@ -220,6 +220,7 @@ class AuditLogService {
   }
 
   public async clearLogsOnServer(): Promise<{ success: boolean; deletedCount: number; message: string }> {
+    throw new Error("Audit log bersifat imutabel dan penghapusan riwayat telah dinonaktifkan (BD-RBAC-01).");
     const authHeaders = this.getAuthHeader();
     if (!authHeaders.Authorization) {
       throw new Error("Sesi login Anda tidak valid atau telah kedaluwarsa. Silakan login kembali.");

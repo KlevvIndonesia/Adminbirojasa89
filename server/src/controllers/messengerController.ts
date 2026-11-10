@@ -32,6 +32,25 @@ function resolveAuthenticatedMessenger(user: any): { employeeId: string; name: s
   return { employeeId: canonicalId, name: name || "Petugas Operasional", userId };
 }
 
+
+export async function getMyTasks(req: Request, res: Response, next: NextFunction): Promise<void> {
+  try {
+    const user = (req as any).user;
+    if (!user) {
+      throw new ApiError(401, "UNAUTHENTICATED", "Autentikasi diperlukan.");
+    }
+    const data = messengerService.getMyTasks(user);
+    res.json({
+      success: true,
+      message: "OK",
+      data,
+      timestamp: new Date().toISOString(),
+    });
+  } catch (err) {
+    next(err);
+  }
+}
+
 export async function getMessengersWithStats(req: Request, res: Response, next: NextFunction): Promise<void> {
   try {
     const { dateFrom, dateTo } = req.query as { dateFrom?: string; dateTo?: string };

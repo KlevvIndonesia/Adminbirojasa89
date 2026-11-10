@@ -63,6 +63,23 @@ export function FinanceDetailPage({
   const navigate = useNavigate();
   const { setCustomHeader } = useNavigationGuard();
 
+  // Canonical order resolution (checks orderNo, "Nomor Order", "No Order", or ID prefixed with "ord:")
+  const orderNo = item
+    ? item.orderNo ||
+      item["Nomor Order"] ||
+      item["No Order"] ||
+      item.order_no ||
+      (typeof item.id === "string" && item.id.startsWith("ord:")
+        ? item.id.slice(4)
+        : typeof item.id === "string" && item.id.toUpperCase().startsWith("ORD-")
+        ? item.id
+        : null)
+    : null;
+
+  const canonicalOrder = orderNo ? orderRepository.getByOrderNo(orderNo) : null;
+  const isProjectedOrder = Boolean(canonicalOrder);
+
+  // Top-level Hooks (Unconditionally called on every render)
   const [previewDoc, setPreviewDoc] = useState<{
     name: string;
     title: string;
@@ -70,33 +87,6 @@ export function FinanceDetailPage({
     fileType?: string;
     documentId?: string;
   } | null>(null);
-
-  if (!item) {
-    return (
-      <div className="p-8 text-center space-y-4">
-        <p className="text-muted-foreground text-sm">Data transaksi tidak ditemukan</p>
-        <Button variant="outline" size="sm" onClick={onBack}>
-          <ArrowLeft className="w-4 h-4 mr-1.5" />
-          Kembali
-        </Button>
-      </div>
-    );
-  }
-
-  // Canonical order resolution (checks orderNo, "Nomor Order", "No Order", or ID prefixed with "ord:")
-  const orderNo =
-    item.orderNo ||
-    item["Nomor Order"] ||
-    item["No Order"] ||
-    item.order_no ||
-    (typeof item.id === "string" && item.id.startsWith("ord:")
-      ? item.id.slice(4)
-      : typeof item.id === "string" && item.id.toUpperCase().startsWith("ORD-")
-      ? item.id
-      : null);
-
-  const canonicalOrder = orderNo ? orderRepository.getByOrderNo(orderNo) : null;
-  const isProjectedOrder = Boolean(canonicalOrder);
 
   const [serverDocs, setServerDocs] = useState<any[]>([]);
 
@@ -118,24 +108,55 @@ export function FinanceDetailPage({
     };
   }, [orderNo]);
 
-  // Derive Canonical Service Name
-  const rawService =
-    item["Jenis Pengurusan"] ||
-    canonicalOrder?.layanan ||
-    item.layanan ||
-    (subTabTitle && subTabTitle.replace(/^Data Penjualan\s*[-–—]\s*/i, "")) ||
-    "Perpanjangan 1 Tahun";
+  // Derive Canonical Service Name & Header metadata safely for the header effect
+  const rawService = item
+    ? item["Jenis Pengurusan"] ||
+      canonicalOrder?.layanan ||
+      item.layanan ||
+      (subTabTitle && subTabTitle.replace(/^Data Penjualan\s*[-–—]\s*/i, "")) ||
+      "Perpanjangan 1 Tahun"
+    : "";
 
   const serviceName = rawService.trim();
+  const customerName = item ? item["Nama Customer"] || canonicalOrder?.customer || item.customer || "-" : "-";
+  const platNo = item ? item["Plat No"] || canonicalOrder?.nopol || item.nopol || "-" : "-";
+
+  // Register Header Tunggal Terpadu (Unified App Shell Header)
+  useEffect(() => {
+    if (!item) return;
+    const headerTitle = `Detail Data Penjualan - ${serviceName}`;
+    const headerSubtitle = `${orderNo || "-"} • ${customerName} • ${platNo}`;
+    setCustomHeader({
+      title: headerTitle,
+      subtitle: headerSubtitle,
+      showBackButton: true,
+      onBack: onBack,
+      hideBreadcrumbs: true,
+    });
+    return () => {
+      setCustomHeader(null);
+    };
+  }, [item, serviceName, orderNo, customerName, platNo, onBack, setCustomHeader]);
+
+  if (!item) {
+    return (
+      <div className="p-8 text-center space-y-4">
+        <p className="text-muted-foreground text-sm">Data transaksi tidak ditemukan</p>
+        <Button variant="outline" size="sm" onClick={onBack}>
+          <ArrowLeft className="w-4 h-4 mr-1.5" />
+          Kembali
+        </Button>
+      </div>
+    );
+  }
+
   const isMutasiService =
     serviceName.toLowerCase().includes("mutasi") ||
     (subTabTitle && subTabTitle.toLowerCase().includes("mutasi"));
 
   // Customer & Vehicle attributes
-  const customerName = item["Nama Customer"] || canonicalOrder?.customer || item.customer || "-";
   const customerPhone = item["Nomor HP"] || item["No HP"] || canonicalOrder?.nomorHP || item.phone || "-";
   const namaPemilik = item["Nama Pemilik (STNK/BPKB)"] || canonicalOrder?.namaPemilik || item.namaPemilik || customerName;
-  const platNo = item["Plat No"] || canonicalOrder?.nopol || item.nopol || "-";
   const r4r2 = item["R4 / R2"] || canonicalOrder?.jenisKendaraan || (canonicalOrder as any)?.r4_r2 || item.r4_r2 || "R4";
   const statusKepemilikan = item["Status Kepemilikan"] || canonicalOrder?.kepemilikanKendaraan || (canonicalOrder as any)?.statusKepemilikan || "Pribadi";
   const tanggalMasukBerkas = item["Tanggal Masuk Berkas"] || item.tanggalMasukBerkas || (canonicalOrder as any)?.tanggalOrder || canonicalOrder?.createdAt || item.tanggal || item["Tanggal"] || "-";
@@ -333,21 +354,6 @@ export function FinanceDetailPage({
   const bankKeluar = item["Bank Uang Keluar"] || item.bankKeluar || "-";
   const noRekKeluar = item["Nomor Rekening Penerima"] || item.noRekeningPenerima || "-";
 
-  // Register Header Tunggal Terpadu (Unified App Shell Header)
-  useEffect(() => {
-    const headerTitle = `Detail Data Penjualan - ${serviceName}`;
-    const headerSubtitle = `${orderNo || "-"} • ${customerName} • ${platNo}`;
-    setCustomHeader({
-      title: headerTitle,
-      subtitle: headerSubtitle,
-      showBackButton: true,
-      onBack: onBack,
-      hideBreadcrumbs: true,
-    });
-    return () => {
-      setCustomHeader(null);
-    };
-  }, [serviceName, orderNo, customerName, platNo, onBack, setCustomHeader]);
 
   // Download helper for attached files
   const handleDownloadFile = (url?: string, filename?: string) => {

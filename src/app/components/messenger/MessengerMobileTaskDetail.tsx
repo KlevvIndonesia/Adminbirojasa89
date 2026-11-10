@@ -1,4 +1,4 @@
-import { useState, useRef, useMemo } from "react";
+import { useState, useRef, useMemo, useEffect } from "react";
 import {
   Dialog,
   DialogContent,
@@ -79,8 +79,6 @@ export function MessengerMobileTaskDetail({
   onAcceptTask,
   onDeclineTask,
 }: MessengerMobileTaskDetailProps) {
-  if (!task) return null;
-
   const [isWaitingDialogOpen, setIsWaitingDialogOpen] = useState(false);
   const [isAcceptingTask, setIsAcceptingTask] = useState(false);
   const [isDetailDeclineOpen, setIsDetailDeclineOpen] = useState(false);
@@ -88,6 +86,7 @@ export function MessengerMobileTaskDetail({
   const [isDetailDeclineSubmitting, setIsDetailDeclineSubmitting] = useState(false);
 
   const handleAcceptPendingTask = async () => {
+    if (!task) return;
     setIsAcceptingTask(true);
     try {
       if (onAcceptTask) {
@@ -122,16 +121,13 @@ export function MessengerMobileTaskDetail({
   };
 
   const handleConfirmDetailDecline = async () => {
-    if (!detailDeclineReason.trim()) {
-      toast.error("Alasan penolakan tugas wajib diisi!");
-      return;
-    }
+    if (!task) return;
     setIsDetailDeclineSubmitting(true);
     try {
       const res = await declineMessengerTaskAction(
         task.orderNo,
         task.keteranganTugas,
-        detailDeclineReason.trim(),
+        detailDeclineReason.trim() || undefined,
         currentUser
       );
       if (res.success) {
@@ -153,12 +149,14 @@ export function MessengerMobileTaskDetail({
   const deliveryFileInputRef = useRef<HTMLInputElement>(null);
 
   // Local state for Jemput Dokumen completion form
-  const [pickupPhotoUrl, setPickupPhotoUrl] = useState(task.pickupProof?.photoProofUrl || "");
+  const [pickupPhotoUrl, setPickupPhotoUrl] = useState(task?.pickupProof?.photoProofUrl || "");
   const [isSubmittingPickup, setIsSubmittingPickup] = useState(false);
+  const [isStartingTask, setIsStartingTask] = useState(false);
 
   // Section 2.B Checklist Dokumen Wajib
   const requiredDocs = useMemo(() => {
-    const clientDocs = task.rawOrder.clientDocuments;
+    if (!task) return [];
+    const clientDocs = task.rawOrder?.clientDocuments;
     if (clientDocs && Object.keys(clientDocs).length > 0) {
       return Object.entries(clientDocs).map(([key, doc]) => ({
         key,
@@ -183,13 +181,14 @@ export function MessengerMobileTaskDetail({
       { key: "skkp", name: "SKKP (Surat Ketetapan Pajak)", isMandatory: false },
       { key: "lainnya", name: "Dokumen Tambahan / Surat Kuasa", isMandatory: false },
     ];
-  }, [task.rawOrder.clientDocuments, task.rawOrder?.service_id, task.rawOrder?.layanan, task.jenisTugas]);
+  }, [task?.rawOrder?.clientDocuments, task?.rawOrder?.service_id, task?.rawOrder?.layanan, task?.jenisTugas, task]);
 
   const [checkedDocs, setCheckedDocs] = useState<Record<string, boolean>>(() => {
-    return task.rawOrder.pickupChecklist || {};
+    return task?.rawOrder?.pickupChecklist || {};
   });
 
   const handleToggleDoc = (key: string, checked: boolean) => {
+    if (!task) return;
     const updated = { ...checkedDocs, [key]: checked };
     setCheckedDocs(updated);
     orderStore.updateOrder(task.orderNo, {
@@ -199,22 +198,22 @@ export function MessengerMobileTaskDetail({
 
   // Local state for Delivery Handover Form (Stage 7 -> 8)
   const [recipientName, setRecipientName] = useState(
-    task.rawOrder.deliveryHandover?.recipientName || task.customer || ""
+    task?.rawOrder?.deliveryHandover?.recipientName || task?.customer || ""
   );
   const [relationship, setRelationship] = useState(
-    task.rawOrder.deliveryHandover?.relationship || "Pemilik Langsung"
+    task?.rawOrder?.deliveryHandover?.relationship || "Pemilik Langsung"
   );
   const [deliveryFileUrl, setDeliveryFileUrl] = useState<string>(
-    task.rawOrder.deliveryHandover?.photoProofUrl || ""
+    task?.rawOrder?.deliveryHandover?.photoProofUrl || ""
   );
   const [deliveryFileName, setDeliveryFileName] = useState<string>(
-    task.rawOrder.deliveryHandover?.fileName || ""
+    task?.rawOrder?.deliveryHandover?.fileName || ""
   );
   const [deliveryFileType, setDeliveryFileType] = useState<"image" | "pdf">(
-    task.rawOrder.deliveryHandover?.fileType || "image"
+    task?.rawOrder?.deliveryHandover?.fileType || "image"
   );
   const [deliveryFileSize, setDeliveryFileSize] = useState<number>(
-    task.rawOrder.deliveryHandover?.fileSize || 0
+    task?.rawOrder?.deliveryHandover?.fileSize || 0
   );
   const [isCompressingDeliveryFile, setIsCompressingDeliveryFile] = useState(false);
   const [isSubmittingDelivery, setIsSubmittingDelivery] = useState(false);
@@ -227,20 +226,34 @@ export function MessengerMobileTaskDetail({
   const [saveProgressReleaseToPool, setSaveProgressReleaseToPool] = useState(false);
   const [isSavingProgress, setIsSavingProgress] = useState(false);
 
+  // Synchronize local form states whenever task changes
+  useEffect(() => {
+    if (!task) return;
+    setPickupPhotoUrl(task.pickupProof?.photoProofUrl || "");
+    setCheckedDocs(task.rawOrder?.pickupChecklist || {});
+    setRecipientName(task.rawOrder?.deliveryHandover?.recipientName || task.customer || "");
+    setRelationship(task.rawOrder?.deliveryHandover?.relationship || "Pemilik Langsung");
+    setDeliveryFileUrl(task.rawOrder?.deliveryHandover?.photoProofUrl || "");
+    setDeliveryFileName(task.rawOrder?.deliveryHandover?.fileName || "");
+    setDeliveryFileType(task.rawOrder?.deliveryHandover?.fileType || "image");
+    setDeliveryFileSize(task.rawOrder?.deliveryHandover?.fileSize || 0);
+  }, [task]);
+
   const handleOpenSaveProgress = () => {
     setSaveProgressReleaseToPool(false);
     setIsSaveProgressOpen(true);
   };
 
   const handleConfirmSaveProgress = async () => {
+    if (!task) return;
     setIsSavingProgress(true);
     try {
       if (saveProgressReleaseToPool) {
         let res: { success: boolean; error?: string };
         if (task.keteranganTugas === "Jemput Dokumen") {
-          res = releasePickupTaskAction(task.orderNo, currentUser);
+          res = await releasePickupTaskAction(task.orderNo, currentUser);
         } else if (task.keteranganTugas === "Pengantaran Dokumen") {
-          res = releaseDeliveryTaskAction(task.orderNo, currentUser);
+          res = await releaseDeliveryTaskAction(task.orderNo, currentUser);
         } else {
           res = { success: false, error: "Workflow tidak mendukung serah terima tugas" };
         }
@@ -281,6 +294,8 @@ export function MessengerMobileTaskDetail({
     }
   };
 
+  if (!task) return null;
+
   const isStartable =
     task.status === "Belum Diambil" ||
     task.statusCode === "NOT_STARTED" ||
@@ -297,13 +312,21 @@ export function MessengerMobileTaskDetail({
     task.rawOrder.alamatPengantaran?.mapsUrl ||
     `https://maps.google.com/?q=${encodeURIComponent(task.lokasi)}`;
 
-  const handleStartTask = () => {
-    const res = startMessengerTask(task.orderNo, currentUser);
-    if (res.success) {
-      toast.success(`Tugas ${task.orderNo} berhasil dimulai!`);
-      onTaskUpdated();
-    } else {
-      toast.error(res.error || "Gagal memulai tugas");
+  const handleStartTask = async () => {
+    if (!task || isStartingTask) return;
+    setIsStartingTask(true);
+    try {
+      const res = await startMessengerTask(task.orderNo, currentUser);
+      if (res.success) {
+        toast.success(`Tugas ${task.orderNo} berhasil dimulai!`);
+        onTaskUpdated();
+      } else {
+        toast.error(res.error || "Gagal memulai tugas");
+      }
+    } catch (err: any) {
+      toast.error(err?.message || "Gagal memulai tugas");
+    } finally {
+      setIsStartingTask(false);
     }
   };
 
@@ -367,7 +390,7 @@ export function MessengerMobileTaskDetail({
     }
   };
 
-  const handleCompletePickup = (e: React.FormEvent) => {
+  const handleCompletePickup = async (e: React.FormEvent) => {
     e.preventDefault();
 
     // Section 2.B: Messenger harus mencentang seluruh dokumen wajib sebelum dapat menyelesaikan tugas penjemputan
@@ -380,27 +403,29 @@ export function MessengerMobileTaskDetail({
     }
 
     setIsSubmittingPickup(true);
+    try {
+      const res = await completeMessengerPickup(
+        task.orderNo,
+        {
+          photoProofUrl: pickupPhotoUrl || undefined,
+          pickupChecklist: checkedDocs,
+        },
+        currentUser
+      );
 
-    const res = completeMessengerPickup(
-      task.orderNo,
-      {
-        photoProofUrl: pickupPhotoUrl || undefined,
-        pickupChecklist: checkedDocs,
-      },
-      currentUser
-    );
-
-    setIsSubmittingPickup(false);
-    if (res.success) {
-      toast.success(`Penjemputan dokumen untuk order ${task.orderNo} selesai!`);
-      onTaskUpdated();
-      onOpenChange(false);
-    } else {
-      toast.error(res.error || "Gagal menyelesaikan penjemputan");
+      if (res.success) {
+        toast.success(`Penjemputan dokumen untuk order ${task.orderNo} selesai!`);
+        onTaskUpdated();
+        onOpenChange(false);
+      } else {
+        toast.error(res.error || "Gagal menyelesaikan penjemputan");
+      }
+    } finally {
+      setIsSubmittingPickup(false);
     }
   };
 
-  const handleCompleteDelivery = (e: React.FormEvent) => {
+  const handleCompleteDelivery = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!recipientName.trim()) {
       toast.error("Nama penerima wajib diisi!");
@@ -408,43 +433,48 @@ export function MessengerMobileTaskDetail({
     }
 
     setIsSubmittingDelivery(true);
-    // Section 4: Hapus field catatan serah terima dari form, pertahankan penerima & bukti
-    const proof: DeliveryHandoverProof = {
-      recipientName: recipientName.trim(),
-      relationship,
-      photoProofUrl: deliveryFileUrl || undefined,
-      fileName: deliveryFileName || undefined,
-      fileType: deliveryFileType,
-      fileSize: deliveryFileSize || undefined,
-      notes: undefined,
-      completedAt: new Date().toISOString(),
-    };
+    try {
+      // Section 4: Hapus field catatan serah terima dari form, pertahankan penerima & bukti
+      const proof: DeliveryHandoverProof = {
+        recipientName: recipientName.trim(),
+        relationship,
+        photoProofUrl: deliveryFileUrl || undefined,
+        fileName: deliveryFileName || undefined,
+        fileType: deliveryFileType,
+        fileSize: deliveryFileSize || undefined,
+        notes: undefined,
+        completedAt: new Date().toISOString(),
+      };
 
-    const res = completeMessengerDelivery(task.orderNo, proof, currentUser);
-    setIsSubmittingDelivery(false);
+      const res = await completeMessengerDelivery(task.orderNo, proof, currentUser);
 
-    if (res.success) {
-      toast.success(`Pengantaran order ${task.orderNo} berhasil diselesaikan!`);
-      onTaskUpdated();
-      onOpenChange(false);
-    } else {
-      toast.error(res.error || "Gagal menyelesaikan pengantaran");
+      if (res.success) {
+        toast.success(`Pengantaran order ${task.orderNo} berhasil diselesaikan!`);
+        onTaskUpdated();
+        onOpenChange(false);
+      } else {
+        toast.error(res.error || "Gagal menyelesaikan pengantaran");
+      }
+    } finally {
+      setIsSubmittingDelivery(false);
     }
   };
 
-  const handleCompleteSamsatResultPickupSubmit = (e: React.FormEvent) => {
+  const handleCompleteSamsatResultPickupSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setIsSubmittingSamsatPickup(true);
+    try {
+      const res = await completeSamsatResultPickup(task.orderNo, undefined, currentUser);
 
-    const res = completeSamsatResultPickup(task.orderNo, undefined, currentUser);
-    setIsSubmittingSamsatPickup(false);
-
-    if (res.success) {
-      toast.success(`Dokumen hasil Samsat untuk order ${task.orderNo} berhasil diserahkan ke kantor!`);
-      onTaskUpdated();
-      onOpenChange(false);
-    } else {
-      toast.error(res.error || "Gagal memperbarui status penyerahan dokumen");
+      if (res.success) {
+        toast.success(`Dokumen hasil Samsat untuk order ${task.orderNo} berhasil diserahkan ke kantor!`);
+        onTaskUpdated();
+        onOpenChange(false);
+      } else {
+        toast.error(res.error || "Gagal memperbarui status penyerahan dokumen");
+      }
+    } finally {
+      setIsSubmittingSamsatPickup(false);
     }
   };
 
@@ -1085,10 +1115,11 @@ export function MessengerMobileTaskDetail({
                 {isStartable && (
                   <Button
                     onClick={handleStartTask}
+                    disabled={isStartingTask}
                     className="bg-primary hover:bg-primary/90 text-primary-foreground text-sm sm:text-base font-semibold min-h-[48px] h-12 px-5 flex-1 rounded-xl shadow-xs"
                   >
                     <Play className="w-4 h-4 mr-2 fill-current" />
-                    Mulai Tugas
+                    {isStartingTask ? "Memulai Tugas..." : "Mulai Tugas"}
                   </Button>
                 )}
 
@@ -1225,12 +1256,12 @@ export function MessengerMobileTaskDetail({
 
             <div className="space-y-1.5">
               <label className="text-xs font-semibold text-foreground">
-                Alasan Penolakan <span className="text-rose-500">*</span>
+                Alasan Penolakan <span className="text-muted-foreground text-[10px] font-normal">(opsional)</span>
               </label>
               <Textarea
                 value={detailDeclineReason}
                 onChange={(e) => setDetailDeclineReason(e.target.value)}
-                placeholder="Contoh: Kendaraan sedang servis, kapasitas tugas penuh..."
+                placeholder="Catatan penolakan tugas (opsional)..."
                 rows={3}
                 className="text-sm rounded-xl"
               />
@@ -1248,7 +1279,7 @@ export function MessengerMobileTaskDetail({
             </Button>
             <Button
               onClick={handleConfirmDetailDecline}
-              disabled={isDetailDeclineSubmitting || !detailDeclineReason.trim()}
+              disabled={isDetailDeclineSubmitting}
               className="h-11 px-5 text-sm font-bold rounded-xl bg-rose-600 hover:bg-rose-700 text-white shadow-xs"
             >
               {isDetailDeclineSubmitting ? "Menolak..." : "Ya, Tolak Tugas"}

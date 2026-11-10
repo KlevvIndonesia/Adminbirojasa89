@@ -1254,6 +1254,48 @@ export function checkTaskOwnership(
   };
 }
 
+// ==========================================
+// Phase 2B: Authoritative Task Action Results & Helpers
+// ==========================================
+
+export type TaskActionResult = Promise<{ success: boolean; error?: string }> & {
+  success: boolean;
+  error?: string;
+};
+
+function createActionResult(
+  promise: Promise<{ success: boolean; error?: string }>,
+  immediate: { success: boolean; error?: string } = { success: true }
+): TaskActionResult {
+  return Object.assign(promise, immediate);
+}
+
+function getAuthHeader(): Record<string, string> {
+  try {
+    if (typeof window !== "undefined" && window.localStorage) {
+      const token =
+        window.localStorage.getItem("auth_token") ||
+        window.localStorage.getItem("sun89_auth_token");
+      if (token) {
+        return { Authorization: `Bearer ${token}` };
+      }
+    }
+    if (typeof process !== "undefined" && process.env?.AUTH_TOKEN) {
+      return { Authorization: `Bearer ${process.env.AUTH_TOKEN}` };
+    }
+  } catch {}
+  return {};
+}
+
+function applyServerSnapshot(orderNo: string, backendOrder: OperationalOrder): void {
+  const provider: any = (orderStore as any).repository?.getProvider?.();
+  if (provider && typeof provider.applyServerOrderSnapshot === "function") {
+    provider.applyServerOrderSnapshot(orderNo, backendOrder);
+  } else {
+    orderStore.updateOrder(orderNo, backendOrder);
+  }
+}
+
 /**
  * Start task (Action: Mulai Tugas)
  * Transitions status to IN_PROGRESS, assigns to messenger if unassigned, and records startedAt timestamp
@@ -1264,65 +1306,94 @@ export function checkTaskOwnership(
 export function startPickupTaskAction(
   orderNo: string,
   user: UserContext
-): { success: boolean; error?: string } {
+): TaskActionResult {
   const order = orderStore.getOrderByNo(orderNo);
-  if (!order) return { success: false, error: `Order ${orderNo} tidak ditemukan` };
+  if (!order) {
+    const err = `Order ${orderNo} tidak ditemukan`;
+    return createActionResult(Promise.resolve({ success: false, error: err }), { success: false, error: err });
+  }
 
   if ((order as any).isCancelled || order.currentStageName === "Dibatalkan" || (order as any).status === "Dibatalkan") {
-    return { success: false, error: `Order ${orderNo} sudah dibatalkan.` };
+    const err = `Order ${orderNo} sudah dibatalkan.`;
+    return createActionResult(Promise.resolve({ success: false, error: err }), { success: false, error: err });
   }
   if (order.currentStep !== 2 && order.currentStageName !== "Penjadwalan") {
-    return {
-      success: false,
-      error: `Penjemputan berkas hanya dapat dimulai pada tahap Penjadwalan (Step 2), saat ini berada di Step ${order.currentStep}.`,
-    };
+    const err = `Penjemputan berkas hanya dapat dimulai pada tahap Penjadwalan (Step 2), saat ini berada di Step ${order.currentStep}.`;
+    return createActionResult(Promise.resolve({ success: false, error: err }), { success: false, error: err });
   }
 
   const authCheck = checkTaskOwnership(order, user, "Jemput Dokumen");
-  if (!authCheck.allowed) return { success: false, error: authCheck.error };
+  if (!authCheck.allowed) {
+    return createActionResult(Promise.resolve({ success: false, error: authCheck.error }), { success: false, error: authCheck.error });
+  }
 
   if (order.pickupCompleted || order.messengerTaskStatus === "Dokumen Sudah Tersedia" || order.messengerTaskStatus === "Selesai") {
-    return { success: false, error: `Penjemputan berkas untuk order ${orderNo} sudah selesai.` };
+    const err = `Penjemputan berkas untuk order ${orderNo} sudah selesai.`;
+    return createActionResult(Promise.resolve({ success: false, error: err }), { success: false, error: err });
   }
 
   // Idempotency: Already started
   if (order.messengerTaskStatus === "Sedang Dijemput" || order.messengerTaskStatus === "Dalam Proses") {
-    return { success: true };
+    return createActionResult(Promise.resolve({ success: true }), { success: true });
   }
 
-  const nowIso = new Date().toISOString();
-  const timelineEvent: MessengerTimelineEvent = {
-    id: `tl-pickup-start-${Date.now()}`,
-    timestamp: nowIso,
-    title: "Mulai Penjemputan Dokumen",
-    note: `Kurir ${user.userName} memulai proses penjemputan berkas fisik dari klien.`,
-    author: user.userName,
-    type: "STATUS_CHANGE",
+  const applyLocal = (): { success: boolean; error?: string } => {
+    const nowIso = new Date().toISOString();
+    const timelineEvent: MessengerTimelineEvent = {
+      id: `tl-pickup-start-${Date.now()}`,
+      timestamp: nowIso,
+      title: "Mulai Penjemputan Dokumen",
+      note: `Kurir ${user.userName} memulai proses penjemputan berkas fisik dari klien.`,
+      author: user.userName,
+      type: "STATUS_CHANGE",
+    };
+
+    const existingTimeline = order.messengerTimeline || [];
+    const success = orderStore.updateOrder(orderNo, {
+      startedAt: order.startedAt || nowIso,
+      messengerTaskStatus: "Sedang Dijemput",
+      messengerTimeline: [timelineEvent, ...existingTimeline],
+    });
+
+    return { success, error: success ? undefined : "Gagal memulai penjemputan berkas" };
   };
 
-  const existingTimeline = order.messengerTimeline || [];
-  const success = orderStore.updateOrder(orderNo, {
-    startedAt: order.startedAt || nowIso,
-    messengerTaskStatus: "Sedang Dijemput",
-    messengerTimeline: [timelineEvent, ...existingTimeline],
-  });
-
-  if (typeof fetch !== "undefined") {
-    const token = typeof localStorage !== "undefined" ? localStorage.getItem("auth_token") : null;
-    fetch(`${APP_CONFIG.apiBaseUrl}/orders/${encodeURIComponent(orderNo)}/pickup/start`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        ...(token ? { Authorization: `Bearer ${token}` } : {}),
-      },
-    }).catch(() => {});
+  const authHeaders = getAuthHeader();
+  if (typeof fetch !== "undefined" && authHeaders.Authorization) {
+    const promise = (async () => {
+      try {
+        const res = await fetchWithTimeout(
+          `${APP_CONFIG.apiBaseUrl}/orders/${encodeURIComponent(orderNo)}/pickup/start`,
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json", ...authHeaders },
+          }
+        );
+        if (!res.ok) {
+          const errorMsg = await parseApiErrorResponse(res, `Gagal memulai penjemputan berkas (${res.status})`);
+          return { success: false, error: errorMsg };
+        }
+        const data = await res.json().catch(() => ({}));
+        if (data?.data && typeof data.data === "object") {
+          applyServerSnapshot(orderNo, data.data);
+          return { success: true };
+        }
+      } catch (err: any) {
+        return { success: false, error: err?.message || "Gagal menghubungi server untuk memulai penjemputan" };
+      }
+      return applyLocal();
+    })();
+    return createActionResult(promise);
   }
 
-  return { success, error: success ? undefined : "Gagal memulai penjemputan berkas" };
+  const syncResult = applyLocal();
+  return createActionResult(Promise.resolve(syncResult), syncResult);
 }
 
 /**
  * Complete Pickup Task Action (Scope B)
+ * Synchronized with backend orderService.completePickupTask contract:
+ * Expects { checklist, photoUrl }. Strict zero free-text notes for courier.
  */
 export function completePickupTaskAction(
   orderNo: string,
@@ -1331,79 +1402,125 @@ export function completePickupTaskAction(
     photoProofUrl?: string;
   },
   user: UserContext
-): { success: boolean; error?: string } {
+): TaskActionResult {
   const order = orderStore.getOrderByNo(orderNo);
-  if (!order) return { success: false, error: `Order ${orderNo} tidak ditemukan` };
+  if (!order) {
+    const err = `Order ${orderNo} tidak ditemukan`;
+    return createActionResult(Promise.resolve({ success: false, error: err }), { success: false, error: err });
+  }
 
   if ((order as any).isCancelled || order.currentStageName === "Dibatalkan" || (order as any).status === "Dibatalkan") {
-    return { success: false, error: `Order ${orderNo} sudah dibatalkan.` };
+    const err = `Order ${orderNo} sudah dibatalkan.`;
+    return createActionResult(Promise.resolve({ success: false, error: err }), { success: false, error: err });
   }
   if (order.currentStep !== 2 && order.currentStageName !== "Penjadwalan") {
-    return {
-      success: false,
-      error: `Penjemputan berkas hanya dapat diselesaikan pada tahap Penjadwalan (Step 2), saat ini berada di Step ${order.currentStep}.`,
-    };
+    const err = `Penjemputan berkas hanya dapat diselesaikan pada tahap Penjadwalan (Step 2), saat ini berada di Step ${order.currentStep}.`;
+    return createActionResult(Promise.resolve({ success: false, error: err }), { success: false, error: err });
   }
 
   const authCheck = checkTaskOwnership(order, user, "Jemput Dokumen");
-  if (!authCheck.allowed) return { success: false, error: authCheck.error };
+  if (!authCheck.allowed) {
+    return createActionResult(Promise.resolve({ success: false, error: authCheck.error }), { success: false, error: authCheck.error });
+  }
 
-  const isStarted = order.messengerTaskStatus === "Sedang Dijemput" || order.messengerTaskStatus === "Dalam Proses" || Boolean(order.startedAt);
+  const isStarted =
+    order.messengerTaskStatus === "Sedang Dijemput" ||
+    order.messengerTaskStatus === "Dalam Proses" ||
+    (order as any).status === "Dalam Proses" ||
+    Boolean(order.startedAt);
   if (!isStarted) {
-    return { success: false, error: "Penjemputan berkas belum dimulai. Tekan 'Mulai Tugas' terlebih dahulu." };
+    const err = "Penjemputan berkas belum dimulai. Tekan 'Mulai Tugas' terlebih dahulu.";
+    return createActionResult(Promise.resolve({ success: false, error: err }), { success: false, error: err });
   }
 
   if (order.pickupCompleted && order.messengerTaskStatus === "Dokumen Sudah Tersedia") {
-    return { success: true };
+    return createActionResult(Promise.resolve({ success: true }), { success: true });
   }
 
   const checklist = payload.pickupChecklist || order.pickupChecklist;
   if (checklist && order.clientDocuments && Object.keys(order.clientDocuments).length > 0) {
     for (const [docKey, doc] of Object.entries(order.clientDocuments)) {
-      if (doc.isOptional !== true && !checklist[docKey]) {
-        return { success: false, error: `Dokumen wajib '${doc.name || docKey}' belum dicentang.` };
+      const isDocMandatory = typeof doc === "object" && doc !== null
+        ? doc.isOptional !== true
+        : ["stnk", "stnkAsli", "bpkb", "bpkbAsli", "ktp", "ktpAsli"].includes(docKey);
+      if (isDocMandatory && !checklist[docKey]) {
+        const docName = (typeof doc === "object" && doc !== null && (doc as any).name) || docKey;
+        const err = `Dokumen wajib '${docName}' belum dicentang.`;
+        return createActionResult(Promise.resolve({ success: false, error: err }), { success: false, error: err });
       }
     }
   }
 
-  const nowIso = new Date().toISOString();
-  const timelineEvent: MessengerTimelineEvent = {
-    id: `tl-pickup-comp-${Date.now()}`,
-    timestamp: nowIso,
-    title: "Penjemputan Dokumen Selesai",
-    note: `Dokumen fisik berhasil diambil oleh kurir ${user.userName}. Berkas siap diverifikasi kantor.`,
-    author: user.userName,
-    type: "STATUS_CHANGE",
+  const applyLocal = (): { success: boolean; error?: string } => {
+    const nowIso = new Date().toISOString();
+    const timelineEvent: MessengerTimelineEvent = {
+      id: `tl-pickup-comp-${Date.now()}`,
+      timestamp: nowIso,
+      title: "Penjemputan Dokumen Selesai",
+      note: `Dokumen fisik berhasil diambil oleh kurir ${user.userName}. Berkas siap diverifikasi kantor.`,
+      author: user.userName,
+      type: "STATUS_CHANGE",
+    };
+
+    const existingTimeline = order.messengerTimeline || [];
+    const success = orderStore.updateOrder(orderNo, {
+      pickupCompleted: true,
+      pickupCompletedAt: nowIso,
+      completedAt: nowIso,
+      messengerTaskStatus: "Dokumen Sudah Tersedia",
+      pickupChecklist: checklist || order.pickupChecklist,
+      pickupProof: {
+        photoProofUrl: payload.photoProofUrl || order.pickupProof?.photoProofUrl,
+        pickupChecklist: checklist || order.pickupChecklist,
+        completedAt: nowIso,
+      },
+      messengerTimeline: [timelineEvent, ...existingTimeline],
+    });
+
+    return { success, error: success ? undefined : "Gagal menyelesaikan penjemputan berkas" };
   };
 
-  const existingTimeline = order.messengerTimeline || [];
-  const success = orderStore.updateOrder(orderNo, {
-    pickupCompleted: true,
-    pickupCompletedAt: nowIso,
-    completedAt: nowIso,
-    messengerTaskStatus: "Dokumen Sudah Tersedia",
-    pickupChecklist: checklist || order.pickupChecklist,
-    pickupProof: {
-      photoProofUrl: payload.photoProofUrl || order.pickupProof?.photoProofUrl,
-      pickupChecklist: checklist || order.pickupChecklist,
-      completedAt: nowIso,
-    },
-    messengerTimeline: [timelineEvent, ...existingTimeline],
-  });
+  const authHeaders = getAuthHeader();
+  if (typeof fetch !== "undefined" && authHeaders.Authorization) {
+    const promise = (async () => {
+      try {
+        const backendPayload: Record<string, any> = {};
+        if (checklist) backendPayload.checklist = checklist;
+        const photoUrl = payload.photoProofUrl || order.pickupProof?.photoProofUrl;
+        if (photoUrl) backendPayload.photoUrl = photoUrl;
+        // BD-WF-01 Zero Free-Text Notes: courier never sends notes or note
 
-  if (typeof fetch !== "undefined") {
-    const token = typeof localStorage !== "undefined" ? localStorage.getItem("auth_token") : null;
-    fetch(`${APP_CONFIG.apiBaseUrl}/orders/${encodeURIComponent(orderNo)}/pickup/complete`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        ...(token ? { Authorization: `Bearer ${token}` } : {}),
-      },
-      body: JSON.stringify(payload),
-    }).catch(() => {});
+        const res = await fetchWithTimeout(
+          `${APP_CONFIG.apiBaseUrl}/orders/${encodeURIComponent(orderNo)}/pickup/complete`,
+          {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              ...authHeaders,
+            },
+            body: JSON.stringify(backendPayload),
+          }
+        );
+
+        if (!res.ok) {
+          const errorMsg = await parseApiErrorResponse(res, `Gagal menyelesaikan penjemputan berkas (${res.status})`);
+          return { success: false, error: errorMsg };
+        }
+        const data = await res.json().catch(() => ({}));
+        if (data?.data && typeof data.data === "object") {
+          applyServerSnapshot(orderNo, data.data);
+          return { success: true };
+        }
+      } catch (err: any) {
+        return { success: false, error: err?.message || "Gagal menghubungi server untuk menyelesaikan penjemputan" };
+      }
+      return applyLocal();
+    })();
+    return createActionResult(promise);
   }
 
-  return { success, error: success ? undefined : "Gagal menyelesaikan penjemputan berkas" };
+  const syncResult = applyLocal();
+  return createActionResult(Promise.resolve(syncResult), syncResult);
 }
 
 /**
@@ -1413,52 +1530,82 @@ export function releasePickupTaskAction(
   orderNo: string,
   user: UserContext,
   notes?: string
-): { success: boolean; error?: string } {
+): TaskActionResult {
   const order = orderStore.getOrderByNo(orderNo);
-  if (!order) return { success: false, error: `Order ${orderNo} tidak ditemukan` };
-
-  const authCheck = checkTaskOwnership(order, user, "Jemput Dokumen");
-  if (!authCheck.allowed) return { success: false, error: authCheck.error };
-
-  const nowIso = new Date().toISOString();
-  const timelineEvent: MessengerTimelineEvent = {
-    id: `tl-rel-pickup-${Date.now()}`,
-    timestamp: nowIso,
-    title: "Tugas Penjemputan Diserahkan ke Tim",
-    note: notes || `Kurir ${user.userName} menyimpan progres dan mengembalikan tugas penjemputan ke pool untuk dilanjutkan rekan kurir.`,
-    author: user.userName,
-    type: "STATUS_CHANGE",
-  };
-
-  const updatedAcceptance = {
-    ...(order.taskAcceptance || {}),
-    ["Jemput Dokumen"]: {
-      status: "PENDING" as const,
-      isLocked: false,
-    },
-  };
-
-  const success = orderStore.updateOrder(orderNo, {
-    messenger: "Belum Ditugaskan",
-    assignedMessengerName: "Belum Ditugaskan",
-    assignedMessengerId: undefined,
-    taskAcceptance: updatedAcceptance,
-    messengerTimeline: [timelineEvent, ...(order.messengerTimeline || [])],
-  });
-
-  if (typeof fetch !== "undefined") {
-    const token = typeof localStorage !== "undefined" ? localStorage.getItem("auth_token") : null;
-    fetch(`${APP_CONFIG.apiBaseUrl}/orders/${encodeURIComponent(orderNo)}/pickup/release`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        ...(token ? { Authorization: `Bearer ${token}` } : {}),
-      },
-      body: JSON.stringify({ notes }),
-    }).catch(() => {});
+  if (!order) {
+    const err = `Order ${orderNo} tidak ditemukan`;
+    return createActionResult(Promise.resolve({ success: false, error: err }), { success: false, error: err });
   }
 
-  return { success, error: success ? undefined : "Gagal melepaskan tugas penjemputan" };
+  const authCheck = checkTaskOwnership(order, user, "Jemput Dokumen");
+  if (!authCheck.allowed) {
+    return createActionResult(Promise.resolve({ success: false, error: authCheck.error }), { success: false, error: authCheck.error });
+  }
+
+  const applyLocal = (): { success: boolean; error?: string } => {
+    const nowIso = new Date().toISOString();
+    const timelineEvent: MessengerTimelineEvent = {
+      id: `tl-rel-pickup-${Date.now()}`,
+      timestamp: nowIso,
+      title: "Tugas Penjemputan Diserahkan ke Tim",
+      note: notes || `Kurir ${user.userName} menyimpan progres dan mengembalikan tugas penjemputan ke pool untuk dilanjutkan rekan kurir.`,
+      author: user.userName,
+      type: "STATUS_CHANGE",
+    };
+
+    const updatedAcceptance = {
+      ...(order.taskAcceptance || {}),
+      ["Jemput Dokumen"]: {
+        status: "PENDING" as const,
+        isLocked: false,
+      },
+    };
+
+    const success = orderStore.updateOrder(orderNo, {
+      messenger: "Belum Ditugaskan",
+      assignedMessengerName: "Belum Ditugaskan",
+      assignedMessengerId: undefined,
+      taskAcceptance: updatedAcceptance,
+      messengerTimeline: [timelineEvent, ...(order.messengerTimeline || [])],
+    });
+
+    return { success, error: success ? undefined : "Gagal melepaskan tugas penjemputan" };
+  };
+
+  const authHeaders = getAuthHeader();
+  if (typeof fetch !== "undefined" && authHeaders.Authorization) {
+    const promise = (async () => {
+      try {
+        const res = await fetchWithTimeout(
+          `${APP_CONFIG.apiBaseUrl}/orders/${encodeURIComponent(orderNo)}/pickup/release`,
+          {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              ...authHeaders,
+            },
+            body: JSON.stringify({ notes }),
+          }
+        );
+        if (!res.ok) {
+          const errorMsg = await parseApiErrorResponse(res, `Gagal melepaskan tugas penjemputan (${res.status})`);
+          return { success: false, error: errorMsg };
+        }
+        const data = await res.json().catch(() => ({}));
+        if (data?.data && typeof data.data === "object") {
+          applyServerSnapshot(orderNo, data.data);
+          return { success: true };
+        }
+      } catch (err: any) {
+        return { success: false, error: err?.message || "Gagal menghubungi server untuk melepaskan tugas penjemputan" };
+      }
+      return applyLocal();
+    })();
+    return createActionResult(promise);
+  }
+
+  const syncResult = applyLocal();
+  return createActionResult(Promise.resolve(syncResult), syncResult);
 }
 
 /**
@@ -1467,66 +1614,95 @@ export function releasePickupTaskAction(
 export function startDeliveryTaskAction(
   orderNo: string,
   user: UserContext
-): { success: boolean; error?: string } {
+): TaskActionResult {
   const order = orderStore.getOrderByNo(orderNo);
-  if (!order) return { success: false, error: `Order ${orderNo} tidak ditemukan` };
+  if (!order) {
+    const err = `Order ${orderNo} tidak ditemukan`;
+    return createActionResult(Promise.resolve({ success: false, error: err }), { success: false, error: err });
+  }
 
   if ((order as any).isCancelled || order.currentStageName === "Dibatalkan" || (order as any).status === "Dibatalkan") {
-    return { success: false, error: `Order ${orderNo} sudah dibatalkan.` };
+    const err = `Order ${orderNo} sudah dibatalkan.`;
+    return createActionResult(Promise.resolve({ success: false, error: err }), { success: false, error: err });
   }
   if (order.currentStep !== 7 && order.currentStageName !== "Pengantaran") {
-    return {
-      success: false,
-      error: `Pengantaran berkas hanya dapat dimulai pada tahap Pengantaran (Step 7), saat ini berada di Step ${order.currentStep}.`,
-    };
+    const err = `Pengantaran berkas hanya dapat dimulai pada tahap Pengantaran (Step 7), saat ini berada di Step ${order.currentStep}.`;
+    return createActionResult(Promise.resolve({ success: false, error: err }), { success: false, error: err });
   }
 
   const authCheck = checkTaskOwnership(order, user, "Pengantaran Dokumen");
-  if (!authCheck.allowed) return { success: false, error: authCheck.error };
+  if (!authCheck.allowed) {
+    return createActionResult(Promise.resolve({ success: false, error: authCheck.error }), { success: false, error: authCheck.error });
+  }
 
   if (order.deliveryStatus === "Dokumen Diserahkan" || order.isReceived) {
-    return { success: false, error: `Pengantaran berkas untuk order ${orderNo} sudah selesai.` };
+    const err = `Pengantaran berkas untuk order ${orderNo} sudah selesai.`;
+    return createActionResult(Promise.resolve({ success: false, error: err }), { success: false, error: err });
   }
 
   // Idempotency: Already started
   if (order.deliveryStatus === "Sedang Diantar") {
-    return { success: true };
+    return createActionResult(Promise.resolve({ success: true }), { success: true });
   }
 
-  const nowIso = new Date().toISOString();
-  const timelineEvent: MessengerTimelineEvent = {
-    id: `tl-deliv-start-${Date.now()}`,
-    timestamp: nowIso,
-    title: "Mulai Pengantaran Dokumen",
-    note: `Kurir ${user.userName} memulai proses pengantaran dokumen ke klien.`,
-    author: user.userName,
-    type: "STATUS_CHANGE",
+  const applyLocal = (): { success: boolean; error?: string } => {
+    const nowIso = new Date().toISOString();
+    const timelineEvent: MessengerTimelineEvent = {
+      id: `tl-deliv-start-${Date.now()}`,
+      timestamp: nowIso,
+      title: "Mulai Pengantaran Dokumen",
+      note: `Kurir ${user.userName} memulai proses pengantaran dokumen ke klien.`,
+      author: user.userName,
+      type: "STATUS_CHANGE",
+    };
+
+    const existingTimeline = order.messengerTimeline || [];
+    const success = orderStore.updateOrder(orderNo, {
+      deliveryStartedAt: (order as any).deliveryStartedAt || nowIso,
+      deliveryStatus: "Sedang Diantar",
+      messengerTaskStatus: "Dalam Proses",
+      messengerTimeline: [timelineEvent, ...existingTimeline],
+    });
+
+    return { success, error: success ? undefined : "Gagal memulai pengantaran dokumen" };
   };
 
-  const existingTimeline = order.messengerTimeline || [];
-  const success = orderStore.updateOrder(orderNo, {
-    deliveryStartedAt: (order as any).deliveryStartedAt || nowIso,
-    deliveryStatus: "Sedang Diantar",
-    messengerTaskStatus: "Dalam Proses",
-    messengerTimeline: [timelineEvent, ...existingTimeline],
-  });
-
-  if (typeof fetch !== "undefined") {
-    const token = typeof localStorage !== "undefined" ? localStorage.getItem("auth_token") : null;
-    fetch(`${APP_CONFIG.apiBaseUrl}/orders/${encodeURIComponent(orderNo)}/delivery/start`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        ...(token ? { Authorization: `Bearer ${token}` } : {}),
-      },
-    }).catch(() => {});
+  const authHeaders = getAuthHeader();
+  if (typeof fetch !== "undefined" && authHeaders.Authorization) {
+    const promise = (async () => {
+      try {
+        const res = await fetchWithTimeout(
+          `${APP_CONFIG.apiBaseUrl}/orders/${encodeURIComponent(orderNo)}/delivery/start`,
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json", ...authHeaders },
+          }
+        );
+        if (!res.ok) {
+          const errorMsg = await parseApiErrorResponse(res, `Gagal memulai pengantaran dokumen (${res.status})`);
+          return { success: false, error: errorMsg };
+        }
+        const data = await res.json().catch(() => ({}));
+        if (data?.data && typeof data.data === "object") {
+          applyServerSnapshot(orderNo, data.data);
+          return { success: true };
+        }
+      } catch (err: any) {
+        return { success: false, error: err?.message || "Gagal menghubungi server untuk memulai pengantaran" };
+      }
+      return applyLocal();
+    })();
+    return createActionResult(promise);
   }
 
-  return { success, error: success ? undefined : "Gagal memulai pengantaran dokumen" };
+  const syncResult = applyLocal();
+  return createActionResult(Promise.resolve(syncResult), syncResult);
 }
 
 /**
  * Complete Delivery Task Action (Scope B)
+ * Synchronized with backend orderService.completeDeliveryTask contract:
+ * Expects { receiverName, photoUrl }. Strict zero free-text notes for courier.
  */
 export function completeDeliveryTaskAction(
   orderNo: string,
@@ -1540,87 +1716,135 @@ export function completeDeliveryTaskAction(
     notes?: string;
   },
   user: UserContext
-): { success: boolean; error?: string } {
+): TaskActionResult {
   const order = orderStore.getOrderByNo(orderNo);
-  if (!order) return { success: false, error: `Order ${orderNo} tidak ditemukan` };
+  if (!order) {
+    const err = `Order ${orderNo} tidak ditemukan`;
+    return createActionResult(Promise.resolve({ success: false, error: err }), { success: false, error: err });
+  }
 
   if ((order as any).isCancelled || order.currentStageName === "Dibatalkan" || (order as any).status === "Dibatalkan") {
-    return { success: false, error: `Order ${orderNo} sudah dibatalkan.` };
+    const err = `Order ${orderNo} sudah dibatalkan.`;
+    return createActionResult(Promise.resolve({ success: false, error: err }), { success: false, error: err });
   }
   if (order.currentStep !== 7 && order.currentStageName !== "Pengantaran") {
-    return {
-      success: false,
-      error: `Pengantaran berkas hanya dapat diselesaikan pada tahap Pengantaran (Step 7), saat ini berada di Step ${order.currentStep}.`,
-    };
+    const err = `Pengantaran berkas hanya dapat diselesaikan pada tahap Pengantaran (Step 7), saat ini berada di Step ${order.currentStep}.`;
+    return createActionResult(Promise.resolve({ success: false, error: err }), { success: false, error: err });
   }
 
   const authCheck = checkTaskOwnership(order, user, "Pengantaran Dokumen");
-  if (!authCheck.allowed) return { success: false, error: authCheck.error };
+  if (!authCheck.allowed) {
+    return createActionResult(Promise.resolve({ success: false, error: authCheck.error }), { success: false, error: authCheck.error });
+  }
 
-  const isStarted = order.deliveryStatus === "Sedang Diantar" || order.messengerTaskStatus === "Dalam Proses" || Boolean((order as any).deliveryStartedAt);
+  const isStarted =
+    order.deliveryStatus === "Sedang Diantar" ||
+    order.messengerTaskStatus === "Dalam Proses" ||
+    (order as any).status === "Dalam Proses" ||
+    Boolean((order as any).deliveryStartedAt);
   if (!isStarted) {
-    return { success: false, error: "Pengantaran berkas belum dimulai. Tekan 'Mulai Tugas' terlebih dahulu." };
+    const err = "Pengantaran berkas belum dimulai. Tekan 'Mulai Tugas' terlebih dahulu.";
+    return createActionResult(Promise.resolve({ success: false, error: err }), { success: false, error: err });
   }
 
   if (order.deliveryStatus === "Dokumen Diserahkan" && order.isReceived) {
-    return { success: true };
+    return createActionResult(Promise.resolve({ success: true }), { success: true });
   }
 
   if (!payload || !payload.recipientName || !payload.recipientName.trim()) {
-    return { success: false, error: "Nama penerima dokumen wajib diisi pada bukti serah terima." };
+    const err = "Nama penerima dokumen wajib diisi pada bukti serah terima.";
+    return createActionResult(Promise.resolve({ success: false, error: err }), { success: false, error: err });
   }
   if (!payload.relationship || !payload.relationship.trim()) {
-    return { success: false, error: "Hubungan penerima dengan customer wajib diisi." };
+    const err = "Hubungan penerima dengan customer wajib diisi.";
+    return createActionResult(Promise.resolve({ success: false, error: err }), { success: false, error: err });
   }
 
-  const nowIso = new Date().toISOString();
-  const dateStr = nowIso.split("T")[0];
   const cleanRecipient = payload.recipientName.trim();
   const cleanRelationship = payload.relationship.trim();
+  const isMessenger = user.role === "kurir" || user.role === "messenger" || user.role === "courier";
 
-  const timelineEvent: MessengerTimelineEvent = {
-    id: `tl-deliv-comp-${Date.now()}`,
-    timestamp: nowIso,
-    title: "Serah Terima Dokumen Selesai",
-    note: `Dokumen diserahkan kepada ${cleanRecipient} (${cleanRelationship}).`,
-    author: user.userName,
-    type: "DELIVERY",
+  const applyLocal = (): { success: boolean; error?: string } => {
+    const nowIso = new Date().toISOString();
+    const dateStr = nowIso.split("T")[0];
+
+    const timelineEvent: MessengerTimelineEvent = {
+      id: `tl-deliv-comp-${Date.now()}`,
+      timestamp: nowIso,
+      title: "Serah Terima Dokumen Selesai",
+      note: `Dokumen diserahkan kepada ${cleanRecipient} (${cleanRelationship}).`,
+      author: user.userName,
+      type: "DELIVERY",
+    };
+
+    const existingTimeline = order.messengerTimeline || [];
+    const success = orderStore.updateOrder(orderNo, {
+      deliveryStatus: "Dokumen Diserahkan",
+      isReceived: true,
+      receiverName: cleanRecipient,
+      tanggalDiterima: dateStr,
+      completedAt: nowIso,
+      messengerTaskStatus: "Selesai",
+      deliveryHandover: {
+        recipientName: cleanRecipient,
+        relationship: cleanRelationship,
+        photoProofUrl: payload.photoProofUrl,
+        fileName: payload.fileName,
+        fileType: payload.fileType || "image",
+        fileSize: payload.fileSize || 0,
+        notes: isMessenger ? undefined : payload.notes,
+        completedAt: nowIso,
+      },
+      messengerTimeline: [timelineEvent, ...existingTimeline],
+    });
+
+    return { success, error: success ? undefined : "Gagal menyelesaikan serah terima dokumen" };
   };
 
-  const existingTimeline = order.messengerTimeline || [];
-  const success = orderStore.updateOrder(orderNo, {
-    deliveryStatus: "Dokumen Diserahkan",
-    isReceived: true,
-    receiverName: cleanRecipient,
-    tanggalDiterima: dateStr,
-    completedAt: nowIso,
-    messengerTaskStatus: "Selesai",
-    deliveryHandover: {
-      recipientName: cleanRecipient,
-      relationship: cleanRelationship,
-      photoProofUrl: payload.photoProofUrl,
-      fileName: payload.fileName,
-      fileType: payload.fileType || "image",
-      fileSize: payload.fileSize || 0,
-      notes: payload.notes,
-      completedAt: nowIso,
-    },
-    messengerTimeline: [timelineEvent, ...existingTimeline],
-  });
+  const authHeaders = getAuthHeader();
+  if (typeof fetch !== "undefined" && authHeaders.Authorization) {
+    const promise = (async () => {
+      try {
+        const backendPayload: Record<string, any> = {
+          receiverName: cleanRecipient,
+        };
+        if (payload.photoProofUrl) backendPayload.photoUrl = payload.photoProofUrl;
+        // BD-WF-01 Zero Free-Text Notes: courier must never send notes or note
+        if (!isMessenger && payload.notes?.trim()) {
+          backendPayload.notes = payload.notes.trim();
+        }
 
-  if (typeof fetch !== "undefined") {
-    const token = typeof localStorage !== "undefined" ? localStorage.getItem("auth_token") : null;
-    fetch(`${APP_CONFIG.apiBaseUrl}/orders/${encodeURIComponent(orderNo)}/delivery/complete`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        ...(token ? { Authorization: `Bearer ${token}` } : {}),
-      },
-      body: JSON.stringify(payload),
-    }).catch(() => {});
+        const res = await fetchWithTimeout(
+          `${APP_CONFIG.apiBaseUrl}/orders/${encodeURIComponent(orderNo)}/delivery/complete`,
+          {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              ...authHeaders,
+            },
+            body: JSON.stringify(backendPayload),
+          }
+        );
+
+        if (!res.ok) {
+          const errorMsg = await parseApiErrorResponse(res, `Gagal menyelesaikan serah terima dokumen (${res.status})`);
+          return { success: false, error: errorMsg };
+        }
+        const data = await res.json().catch(() => ({}));
+        if (data?.data && typeof data.data === "object") {
+          applyServerSnapshot(orderNo, data.data);
+          return { success: true };
+        }
+      } catch (err: any) {
+        return { success: false, error: err?.message || "Gagal menghubungi server untuk menyelesaikan pengantaran" };
+      }
+      return applyLocal();
+    })();
+    return createActionResult(promise);
   }
 
-  return { success, error: success ? undefined : "Gagal menyelesaikan serah terima dokumen" };
+  const syncResult = applyLocal();
+  return createActionResult(Promise.resolve(syncResult), syncResult);
 }
 
 /**
@@ -1630,61 +1854,92 @@ export function releaseDeliveryTaskAction(
   orderNo: string,
   user: UserContext,
   notes?: string
-): { success: boolean; error?: string } {
+): TaskActionResult {
   const order = orderStore.getOrderByNo(orderNo);
-  if (!order) return { success: false, error: `Order ${orderNo} tidak ditemukan` };
-
-  const authCheck = checkTaskOwnership(order, user, "Pengantaran Dokumen");
-  if (!authCheck.allowed) return { success: false, error: authCheck.error };
-
-  const nowIso = new Date().toISOString();
-  const timelineEvent: MessengerTimelineEvent = {
-    id: `tl-rel-deliv-${Date.now()}`,
-    timestamp: nowIso,
-    title: "Tugas Pengantaran Diserahkan ke Tim",
-    note: notes || `Kurir ${user.userName} menyimpan progres dan mengembalikan tugas pengantaran ke pool untuk dilanjutkan rekan kurir.`,
-    author: user.userName,
-    type: "STATUS_CHANGE",
-  };
-
-  const updatedAcceptance = {
-    ...(order.taskAcceptance || {}),
-    ["Pengantaran Dokumen"]: {
-      status: "PENDING" as const,
-      isLocked: false,
-    },
-  };
-
-  const success = orderStore.updateOrder(orderNo, {
-    messengerPengantar: "Belum Ditugaskan",
-    deliveryMessengerId: undefined,
-    taskAcceptance: updatedAcceptance,
-    messengerTimeline: [timelineEvent, ...(order.messengerTimeline || [])],
-  } as any);
-
-  if (typeof fetch !== "undefined") {
-    const token = typeof localStorage !== "undefined" ? localStorage.getItem("auth_token") : null;
-    fetch(`${APP_CONFIG.apiBaseUrl}/orders/${encodeURIComponent(orderNo)}/delivery/release`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        ...(token ? { Authorization: `Bearer ${token}` } : {}),
-      },
-      body: JSON.stringify({ notes }),
-    }).catch(() => {});
+  if (!order) {
+    const err = `Order ${orderNo} tidak ditemukan`;
+    return createActionResult(Promise.resolve({ success: false, error: err }), { success: false, error: err });
   }
 
-  return { success, error: success ? undefined : "Gagal melepaskan tugas pengantaran" };
+  const authCheck = checkTaskOwnership(order, user, "Pengantaran Dokumen");
+  if (!authCheck.allowed) {
+    return createActionResult(Promise.resolve({ success: false, error: authCheck.error }), { success: false, error: authCheck.error });
+  }
+
+  const applyLocal = (): { success: boolean; error?: string } => {
+    const nowIso = new Date().toISOString();
+    const timelineEvent: MessengerTimelineEvent = {
+      id: `tl-rel-deliv-${Date.now()}`,
+      timestamp: nowIso,
+      title: "Tugas Pengantaran Diserahkan ke Tim",
+      note: notes || `Kurir ${user.userName} menyimpan progres dan mengembalikan tugas pengantaran ke pool untuk dilanjutkan rekan kurir.`,
+      author: user.userName,
+      type: "STATUS_CHANGE",
+    };
+
+    const updatedAcceptance = {
+      ...(order.taskAcceptance || {}),
+      ["Pengantaran Dokumen"]: {
+        status: "PENDING" as const,
+        isLocked: false,
+      },
+    };
+
+    const success = orderStore.updateOrder(orderNo, {
+      messengerPengantar: "Belum Ditugaskan",
+      deliveryMessengerId: undefined,
+      taskAcceptance: updatedAcceptance,
+      messengerTimeline: [timelineEvent, ...(order.messengerTimeline || [])],
+    } as any);
+
+    return { success, error: success ? undefined : "Gagal melepaskan tugas pengantaran" };
+  };
+
+  const authHeaders = getAuthHeader();
+  if (typeof fetch !== "undefined" && authHeaders.Authorization) {
+    const promise = (async () => {
+      try {
+        const res = await fetchWithTimeout(
+          `${APP_CONFIG.apiBaseUrl}/orders/${encodeURIComponent(orderNo)}/delivery/release`,
+          {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              ...authHeaders,
+            },
+            body: JSON.stringify({ notes }),
+          }
+        );
+        if (!res.ok) {
+          const errorMsg = await parseApiErrorResponse(res, `Gagal melepaskan tugas pengantaran (${res.status})`);
+          return { success: false, error: errorMsg };
+        }
+        const data = await res.json().catch(() => ({}));
+        if (data?.data && typeof data.data === "object") {
+          applyServerSnapshot(orderNo, data.data);
+          return { success: true };
+        }
+      } catch (err: any) {
+        return { success: false, error: err?.message || "Gagal menghubungi server untuk melepaskan tugas pengantaran" };
+      }
+      return applyLocal();
+    })();
+    return createActionResult(promise);
+  }
+
+  const syncResult = applyLocal();
+  return createActionResult(Promise.resolve(syncResult), syncResult);
 }
 
 /**
  * Start task (Action: Mulai Tugas)
  * Cleanly routes to the workflow-specific start action.
  */
-export function startMessengerTask(orderNo: string, user: UserContext): { success: boolean; error?: string } {
+export function startMessengerTask(orderNo: string, user: UserContext): TaskActionResult {
   const order = orderStore.getOrderByNo(orderNo);
   if (!order) {
-    return { success: false, error: `Order ${orderNo} tidak ditemukan` };
+    const err = { success: false, error: `Order ${orderNo} tidak ditemukan` };
+    return createActionResult(Promise.resolve(err), err);
   }
 
   const task = deriveSingleTaskFromOrder(order);
@@ -1698,22 +1953,8 @@ export function startMessengerTask(orderNo: string, user: UserContext): { succes
     return startSamsatResultPickup(orderNo, user);
   }
 
-  return { success: false, error: `Jenis tugas ${task.keteranganTugas} tidak mendukung aksi mulai tugas` };
-}
-
-function getAuthHeader(): Record<string, string> {
-  try {
-    if (typeof window !== "undefined" && window.localStorage) {
-      const token = window.localStorage.getItem("auth_token") || window.localStorage.getItem("sun89_auth_token");
-      if (token) {
-        return { Authorization: `Bearer ${token}` };
-      }
-    }
-    if (typeof process !== "undefined" && process.env?.AUTH_TOKEN) {
-      return { Authorization: `Bearer ${process.env.AUTH_TOKEN}` };
-    }
-  } catch {}
-  return {};
+  const err = { success: false, error: `Jenis tugas ${task.keteranganTugas} tidak mendukung aksi mulai tugas` };
+  return createActionResult(Promise.resolve(err), err);
 }
 
 /**
@@ -1750,23 +1991,28 @@ export async function acceptMessengerTaskAction(
   }
 
   // Backend API call
-  try {
-    const authHeaders = getAuthHeader();
-    if (authHeaders.Authorization) {
-      const res = await fetch(
-        `${APP_CONFIG.apiBaseUrl}/orders/${orderNo}/tasks/${encodeURIComponent(taskType)}/accept`,
+  const authHeaders = getAuthHeader();
+  if (typeof fetch !== "undefined" && authHeaders.Authorization) {
+    try {
+      const res = await fetchWithTimeout(
+        `${APP_CONFIG.apiBaseUrl}/orders/${encodeURIComponent(orderNo)}/tasks/${encodeURIComponent(taskType)}/accept`,
         {
           method: "POST",
           headers: { "Content-Type": "application/json", ...authHeaders },
         }
       );
       if (!res.ok) {
-        const payload = await res.json().catch(() => ({}));
-        return { success: false, error: payload.message || `Gagal menerima tugas (${res.status})` };
+        const errorMsg = (await parseApiErrorResponse(res, `Gagal menerima tugas (${res.status})`)).message;
+        return { success: false, error: errorMsg };
       }
+      const data = await res.json().catch(() => ({}));
+      if (data?.data && typeof data.data === "object") {
+        applyServerSnapshot(orderNo, data.data);
+        return { success: true };
+      }
+    } catch (err: any) {
+      return { success: false, error: err?.message || "Gagal menghubungi server untuk menerima tugas" };
     }
-  } catch (err) {
-    console.warn("API accept error, falling back to local store update:", err);
   }
 
   // Update orderStore
@@ -1812,7 +2058,8 @@ export async function acceptMessengerTaskAction(
     orderUpdates.samsatPickupMessenger = user.userName;
     orderUpdates.samsatPickupMessengerNama = user.userName;
     orderUpdates.samsatPickupMessengerId = resolvedEmpId;
-    orderUpdates.samsatPickupStatus = "Terjadwal";
+    // Finding WF-07 Alignment: Canonical backend status is "Sedang Jemput Dokumen Samsat"
+    orderUpdates.samsatPickupStatus = "Sedang Jemput Dokumen Samsat";
   } else if (taskType === "Pengantaran Dokumen") {
     orderUpdates.messengerPengantar = user.userName;
     (orderUpdates as any).deliveryMessengerId = resolvedEmpId;
@@ -1826,20 +2073,25 @@ export async function acceptMessengerTaskAction(
 }
 
 /**
- * Messenger declines a task (Tolak Tugas dengan Alasan)
+ * Messenger declines a task (Tolak Tugas)
+ * BD-WF-01: Zero Free-Text Notes policy. Courier can decline without notes/reason.
  * Resets task to unassigned so admin can reassign
  */
 export async function declineMessengerTaskAction(
   orderNo: string,
   taskType: string,
-  reason: string,
+  reason: string | undefined,
   user: UserContext
 ): Promise<{ success: boolean; error?: string }> {
   const order = orderStore.getOrderByNo(orderNo);
   if (!order) return { success: false, error: `Order ${orderNo} tidak ditemukan` };
 
+  const isMessenger = user.role === "kurir" || user.role === "messenger" || user.role === "courier";
   const cleanReason = (reason || "").trim();
-  if (!cleanReason) {
+
+  // For non-messenger (e.g. admin), reason is mandatory if provided
+  // For courier, BD-WF-01 strictly maintains Zero Free-Text Notes: no reason required and none sent to backend
+  if (!isMessenger && !cleanReason) {
     return { success: false, error: "Alasan penolakan tugas wajib diisi." };
   }
 
@@ -1851,44 +2103,55 @@ export async function declineMessengerTaskAction(
     return { success: false, error: "Identitas kurir tidak valid atau tidak terverifikasi." };
   }
 
-  // Backend API call
-  try {
-    const authHeaders = getAuthHeader();
-    if (authHeaders.Authorization) {
-      const res = await fetch(
-        `${APP_CONFIG.apiBaseUrl}/orders/${orderNo}/tasks/${encodeURIComponent(taskType)}/decline`,
+  // Backend API call: courier sends {} (omitting reason/notes to avoid MESSENGER_NOTES_NOT_ALLOWED)
+  const authHeaders = getAuthHeader();
+  if (typeof fetch !== "undefined" && authHeaders.Authorization) {
+    try {
+      const backendBody = isMessenger ? {} : (cleanReason ? { reason: cleanReason } : {});
+      const res = await fetchWithTimeout(
+        `${APP_CONFIG.apiBaseUrl}/orders/${encodeURIComponent(orderNo)}/tasks/${encodeURIComponent(taskType)}/decline`,
         {
           method: "POST",
           headers: { "Content-Type": "application/json", ...authHeaders },
-          body: JSON.stringify({ reason: cleanReason }),
+          body: JSON.stringify(backendBody),
         }
       );
       if (!res.ok) {
-        const payload = await res.json().catch(() => ({}));
-        return { success: false, error: payload.message || `Gagal menolak tugas (${res.status})` };
+        const errorMsg = (await parseApiErrorResponse(res, `Gagal menolak tugas (${res.status})`)).message;
+        return { success: false, error: errorMsg };
       }
+      const data = await res.json().catch(() => ({}));
+      if (data?.data && typeof data.data === "object") {
+        applyServerSnapshot(orderNo, data.data);
+        return { success: true };
+      }
+    } catch (err: any) {
+      return { success: false, error: err?.message || "Gagal menghubungi server untuk menolak tugas" };
     }
-  } catch (err) {
-    console.warn("API decline error, falling back to local store update:", err);
   }
 
+  const declineNote = isMessenger ? "Ditolak oleh kurir" : (cleanReason || "Ditolak oleh admin");
   const updatedAcceptance = {
     ...(order.taskAcceptance || {}),
     [taskType]: {
       status: "DECLINED" as const,
       declinedAt: nowIso,
-      declineReason: cleanReason,
+      declineReason: declineNote,
       courierId: resolvedEmpId,
       courierName: user.userName,
       isLocked: false,
     },
   };
 
+  const timelineNote = isMessenger
+    ? `Tugas ditolak oleh ${user.userName}.`
+    : `Tugas ditolak oleh ${user.userName}.${cleanReason ? ` Alasan: ${cleanReason}` : ""}`;
+
   const timelineEvent: MessengerTimelineEvent = {
     id: `tl-dec-${Date.now()}`,
     timestamp: nowIso,
     title: `Tugas ${taskType} Ditolak`,
-    note: `Tugas ditolak oleh ${user.userName}. Alasan: ${cleanReason}`,
+    note: timelineNote,
     author: user.userName,
     type: "STATUS_CHANGE",
   };
@@ -1903,10 +2166,12 @@ export async function declineMessengerTaskAction(
     updates.messenger = "Belum Ditugaskan";
     updates.assignedMessengerName = "Belum Ditugaskan";
     updates.assignedMessengerId = undefined;
+    updates.messengerTaskStatus = "Belum Diambil";
   } else if (taskType === "Proses Samsat") {
     updates.samsatMessenger = "Belum Ditugaskan";
     updates.samsatMessengerNama = "Belum Ditugaskan";
     updates.samsatMessengerId = undefined;
+    updates.messengerTaskStatus = "Belum Diambil";
   } else if (taskType === "Jemput Hasil Samsat") {
     updates.samsatPickupMessenger = undefined;
     updates.samsatPickupMessengerNama = undefined;
@@ -1915,6 +2180,8 @@ export async function declineMessengerTaskAction(
   } else if (taskType === "Pengantaran Dokumen") {
     updates.messengerPengantar = "Belum Ditugaskan";
     (updates as any).deliveryMessengerId = undefined;
+    updates.deliveryStatus = "Belum Ditugaskan";
+    updates.messengerTaskStatus = "Belum Diambil";
   }
 
   const success = orderStore.updateOrder(orderNo, updates);
@@ -1942,6 +2209,13 @@ export async function reassignMessengerTaskAction(
   }
   if (!newCourierName || !newCourierName.trim()) {
     return { success: false, error: "Nama kurir pengganti wajib dipilih." };
+  }
+  if (!newCourierId || !newCourierId.trim() || newCourierId.trim().toUpperCase() === "EMP-MSG" || newCourierId === "Belum Ditugaskan" || newCourierId === "-") {
+    return { success: false, error: "ID kurir pengganti tidak valid atau belum terdaftar." };
+  }
+  const expectedId = resolveMessengerEmployeeId(newCourierName);
+  if (expectedId && expectedId.toLowerCase() !== newCourierId.trim().toLowerCase()) {
+    return { success: false, error: `Employee ID '${newCourierId}' tidak cocok dengan kurir yang dipilih '${newCourierName}'.` };
   }
 
   const nowIso = new Date().toISOString();
@@ -2172,11 +2446,17 @@ export function addAdditionalProcess(
 export function startSamsatResultPickup(
   orderNo: string,
   user: UserContext
-): { success: boolean; error?: string } {
+): TaskActionResult {
   const order = orderStore.getOrderByNo(orderNo);
-  if (!order) return { success: false, error: `Order ${orderNo} tidak ditemukan` };
+  if (!order) {
+    const err = { success: false, error: `Order ${orderNo} tidak ditemukan` };
+    return createActionResult(Promise.resolve(err), err);
+  }
   const authCheck = checkTaskOwnership(order, user);
-  if (!authCheck.allowed) return { success: false, error: authCheck.error };
+  if (!authCheck.allowed) {
+    const err = { success: false, error: authCheck.error };
+    return createActionResult(Promise.resolve(err), err);
+  }
 
   const nowIso = new Date().toISOString();
   const timelineEvent: MessengerTimelineEvent = {
@@ -2195,7 +2475,8 @@ export function startSamsatResultPickup(
     messengerTimeline: [timelineEvent, ...existingTimeline],
   });
 
-  return { success, error: success ? undefined : "Gagal memperbarui status penjemputan hasil Samsat" };
+  const res = { success, error: success ? undefined : "Gagal memperbarui status penjemputan hasil Samsat" };
+  return createActionResult(Promise.resolve(res), res);
 }
 
 /**
@@ -2218,61 +2499,94 @@ export function completeSamsatResultPickup(
 export function reportSamsatPickupKendalaAction(
   orderNo: string,
   user: UserContext
-): { success: boolean; error?: string } {
+): TaskActionResult {
   const order = orderStore.getOrderByNo(orderNo);
-  if (!order) return { success: false, error: `Order ${orderNo} tidak ditemukan` };
+  if (!order) {
+    const err = `Order ${orderNo} tidak ditemukan`;
+    return createActionResult(Promise.resolve({ success: false, error: err }), { success: false, error: err });
+  }
 
   const authCheck = checkTaskOwnership(order, user, "Jemput Hasil Samsat");
-  if (!authCheck.allowed) return { success: false, error: authCheck.error };
+  if (!authCheck.allowed) {
+    return createActionResult(Promise.resolve({ success: false, error: authCheck.error }), { success: false, error: authCheck.error });
+  }
 
   if (order.samsatPickupStatus === "Dokumen Samsat Diterima di Kantor") {
-    return { success: false, error: "Tugas penjemputan hasil Samsat sudah selesai diserahkan ke kantor." };
+    const err = "Tugas penjemputan hasil Samsat sudah selesai diserahkan ke kantor.";
+    return createActionResult(Promise.resolve({ success: false, error: err }), { success: false, error: err });
   }
 
   // Idempotency: Already Terkendala
   if (order.samsatPickupStatus === "Terkendala") {
-    return { success: true };
+    return createActionResult(Promise.resolve({ success: true }), { success: true });
   }
 
-  const nowIso = new Date().toISOString();
-  const timelineEvent: MessengerTimelineEvent = {
-    id: `tl-kendala-pickup-${Date.now()}`,
-    timestamp: nowIso,
-    title: "Kendala Jemput Hasil Samsat",
-    note: "Kurir melaporkan kendala pada penjemputan berkas hasil Samsat. Menunggu instruksi atau recovery dari Admin/Supervisor.",
-    author: user.userName,
-    type: "STATUS_CHANGE",
+  const applyLocal = (): { success: boolean; error?: string } => {
+    const nowIso = new Date().toISOString();
+    const timelineEvent: MessengerTimelineEvent = {
+      id: `tl-kendala-pickup-${Date.now()}`,
+      timestamp: nowIso,
+      title: "Kendala Jemput Hasil Samsat",
+      note: "Kurir melaporkan kendala pada penjemputan berkas hasil Samsat. Menunggu instruksi atau recovery dari Admin/Supervisor.",
+      author: user.userName,
+      type: "STATUS_CHANGE",
+    };
+
+    const pickupTaskAcc = (order.taskAcceptance || {})["Jemput Hasil Samsat"] || {};
+    const currentCycle = (order as any).samsatCycle || 1;
+
+    const success = orderStore.updateOrder(orderNo, {
+      samsatPickupStatus: "Terkendala",
+      taskAcceptance: {
+        ...(order.taskAcceptance || {}),
+        ["Jemput Hasil Samsat"]: {
+          ...pickupTaskAcc,
+          hasKendala: true,
+          kendalaAt: nowIso,
+          cycle: currentCycle,
+        },
+      },
+      messengerTimeline: [timelineEvent, ...(order.messengerTimeline || [])],
+    } as any);
+
+    return { success, error: success ? undefined : "Gagal melaporkan kendala penjemputan hasil Samsat" };
   };
 
-  const pickupTaskAcc = (order.taskAcceptance || {})["Jemput Hasil Samsat"] || {};
-  const currentCycle = (order as any).samsatCycle || 1;
-
-  const success = orderStore.updateOrder(orderNo, {
-    samsatPickupStatus: "Terkendala",
-    taskAcceptance: {
-      ...(order.taskAcceptance || {}),
-      ["Jemput Hasil Samsat"]: {
-        ...pickupTaskAcc,
-        hasKendala: true,
-        kendalaAt: nowIso,
-        cycle: currentCycle,
-      },
-    },
-    messengerTimeline: [timelineEvent, ...(order.messengerTimeline || [])],
-  } as any);
-
-  if (typeof fetch !== "undefined") {
-    const token = typeof localStorage !== "undefined" ? localStorage.getItem("auth_token") : null;
-    fetch(`${APP_CONFIG.apiBaseUrl}/orders/${encodeURIComponent(orderNo)}/samsat-pickup/kendala`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        ...(token ? { Authorization: `Bearer ${token}` } : {}),
-      },
-    }).catch(() => {});
+  const authHeaders = getAuthHeader();
+  if (typeof fetch !== "undefined" && authHeaders.Authorization) {
+    const promise = (async () => {
+      try {
+        const res = await fetchWithTimeout(
+          `${APP_CONFIG.apiBaseUrl}/orders/${encodeURIComponent(orderNo)}/samsat-pickup/kendala`,
+          {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              ...authHeaders,
+            },
+            // BD-WF-01: Courier sends {} (no free-text notes)
+            body: JSON.stringify({}),
+          }
+        );
+        if (!res.ok) {
+          const errorMsg = await parseApiErrorResponse(res, `Gagal melaporkan kendala penjemputan hasil Samsat (${res.status})`);
+          return { success: false, error: errorMsg };
+        }
+        const data = await res.json().catch(() => ({}));
+        if (data?.data && typeof data.data === "object") {
+          applyServerSnapshot(orderNo, data.data);
+          return { success: true };
+        }
+      } catch (err: any) {
+        return { success: false, error: err?.message || "Gagal menghubungi server untuk melaporkan kendala" };
+      }
+      return applyLocal();
+    })();
+    return createActionResult(promise);
   }
 
-  return { success, error: success ? undefined : "Gagal melaporkan kendala penjemputan hasil Samsat" };
+  const syncResult = applyLocal();
+  return createActionResult(Promise.resolve(syncResult), syncResult);
 }
 
 /**
@@ -2340,7 +2654,7 @@ export async function recoverSamsatPickupKendalaAction(
   }
 
   const authHeaders = getAuthHeader();
-  const shouldCallApi = APP_CONFIG.dataProvider === "api" || Boolean(authHeaders.Authorization);
+  const shouldCallApi = Boolean(authHeaders.Authorization);
 
   if (shouldCallApi) {
     try {
@@ -2468,65 +2782,98 @@ export async function recoverSamsatPickupKendalaAction(
 export function completeSamsatPickupTaskAction(
   orderNo: string,
   user: UserContext
-): { success: boolean; error?: string } {
+): TaskActionResult {
   const order = orderStore.getOrderByNo(orderNo);
-  if (!order) return { success: false, error: `Order ${orderNo} tidak ditemukan` };
+  if (!order) {
+    const err = `Order ${orderNo} tidak ditemukan`;
+    return createActionResult(Promise.resolve({ success: false, error: err }), { success: false, error: err });
+  }
 
   const authCheck = checkTaskOwnership(order, user, "Jemput Hasil Samsat");
-  if (!authCheck.allowed) return { success: false, error: authCheck.error };
+  if (!authCheck.allowed) {
+    return createActionResult(Promise.resolve({ success: false, error: authCheck.error }), { success: false, error: authCheck.error });
+  }
 
   if (order.samsatPickupStatus === "Terkendala") {
-    return { success: false, error: "Tugas masih dalam kondisi Terkendala. Harap selesaikan kendala melalui Admin sebelum menyerahkan dokumen." };
+    const err = "Tugas masih dalam kondisi Terkendala. Harap selesaikan kendala melalui Admin sebelum menyerahkan dokumen.";
+    return createActionResult(Promise.resolve({ success: false, error: err }), { success: false, error: err });
   }
 
   // Idempotency: Already completed
   if (order.samsatPickupStatus === "Dokumen Samsat Diterima di Kantor") {
-    return { success: true };
+    return createActionResult(Promise.resolve({ success: true }), { success: true });
   }
 
-  const nowIso = new Date().toISOString();
-  const timelineEvent: MessengerTimelineEvent = {
-    id: `tl-pickup-done-office-${Date.now()}`,
-    timestamp: nowIso,
-    title: "Dokumen Hasil Samsat Diterima di Kantor",
-    note: `Berkas hasil proses Samsat telah diserahkan oleh kurir ${user.userName} dan diterima di kantor.`,
-    author: user.userName,
-    type: "STATUS_CHANGE",
+  const applyLocal = (): { success: boolean; error?: string } => {
+    const nowIso = new Date().toISOString();
+    const timelineEvent: MessengerTimelineEvent = {
+      id: `tl-pickup-done-office-${Date.now()}`,
+      timestamp: nowIso,
+      title: "Dokumen Hasil Samsat Diterima di Kantor",
+      note: `Berkas hasil proses Samsat telah diserahkan oleh kurir ${user.userName} dan diterima di kantor.`,
+      author: user.userName,
+      type: "STATUS_CHANGE",
+    };
+
+    const pickupTaskAcc = (order.taskAcceptance || {})["Jemput Hasil Samsat"] || {};
+    const currentCycle = (order as any).samsatCycle || 1;
+
+    const success = orderStore.updateOrder(orderNo, {
+      samsatPickupStatus: "Dokumen Samsat Diterima di Kantor",
+      samsatPickupCompletedAt: nowIso,
+      taskAcceptance: {
+        ...(order.taskAcceptance || {}),
+        ["Jemput Hasil Samsat"]: {
+          ...pickupTaskAcc,
+          status: "COMPLETED",
+          completedAt: nowIso,
+          completedBy: user.userName,
+          completedById: user.employeeId || user.userId,
+          isLocked: true,
+          cycle: currentCycle,
+        },
+      },
+      messengerTimeline: [timelineEvent, ...(order.messengerTimeline || [])],
+    } as any);
+
+    return { success, error: success ? undefined : "Gagal menyerahkan berkas hasil Samsat ke kantor" };
   };
 
-  const pickupTaskAcc = (order.taskAcceptance || {})["Jemput Hasil Samsat"] || {};
-  const currentCycle = (order as any).samsatCycle || 1;
-
-  const success = orderStore.updateOrder(orderNo, {
-    samsatPickupStatus: "Dokumen Samsat Diterima di Kantor",
-    samsatPickupCompletedAt: nowIso,
-    taskAcceptance: {
-      ...(order.taskAcceptance || {}),
-      ["Jemput Hasil Samsat"]: {
-        ...pickupTaskAcc,
-        status: "COMPLETED",
-        completedAt: nowIso,
-        completedBy: user.userName,
-        completedById: user.employeeId || user.userId,
-        isLocked: true,
-        cycle: currentCycle,
-      },
-    },
-    messengerTimeline: [timelineEvent, ...(order.messengerTimeline || [])],
-  } as any);
-
-  if (typeof fetch !== "undefined") {
-    const token = typeof localStorage !== "undefined" ? localStorage.getItem("auth_token") : null;
-    fetch(`${APP_CONFIG.apiBaseUrl}/orders/${encodeURIComponent(orderNo)}/samsat-pickup/complete`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        ...(token ? { Authorization: `Bearer ${token}` } : {}),
-      },
-    }).catch(() => {});
+  const authHeaders = getAuthHeader();
+  if (typeof fetch !== "undefined" && authHeaders.Authorization) {
+    const promise = (async () => {
+      try {
+        const res = await fetchWithTimeout(
+          `${APP_CONFIG.apiBaseUrl}/orders/${encodeURIComponent(orderNo)}/samsat-pickup/complete`,
+          {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              ...authHeaders,
+            },
+            // BD-WF-01: Courier sends {} (no free-text notes)
+            body: JSON.stringify({}),
+          }
+        );
+        if (!res.ok) {
+          const errorMsg = await parseApiErrorResponse(res, `Gagal menyerahkan berkas hasil Samsat ke kantor (${res.status})`);
+          return { success: false, error: errorMsg };
+        }
+        const data = await res.json().catch(() => ({}));
+        if (data?.data && typeof data.data === "object") {
+          applyServerSnapshot(orderNo, data.data);
+          return { success: true };
+        }
+      } catch (err: any) {
+        return { success: false, error: err?.message || "Gagal menghubungi server untuk menyerahkan berkas hasil Samsat" };
+      }
+      return applyLocal();
+    })();
+    return createActionResult(promise);
   }
 
-  return { success, error: success ? undefined : "Gagal menyerahkan berkas hasil Samsat ke kantor" };
+  const syncResult = applyLocal();
+  return createActionResult(Promise.resolve(syncResult), syncResult);
 }
 
 /**
@@ -2967,77 +3314,26 @@ export function uploadMessengerEvidence(
 /**
  * Complete delivery task (Stage 7 -> Stage 8)
  * Enforces mandatory handover proof
+ * Delegates to authoritative completeDeliveryTaskAction
  */
 export function completeMessengerDelivery(
   orderNo: string,
   handoverProof: DeliveryHandoverProof,
   user: UserContext
-): { success: boolean; error?: string } {
-  const order = orderStore.getOrderByNo(orderNo);
-  if (!order) {
-    return { success: false, error: `Order ${orderNo} tidak ditemukan` };
-  }
-
-  const authCheck = checkTaskOwnership(order, user);
-  if (!authCheck.allowed) {
-    return { success: false, error: authCheck.error };
-  }
-
-  if (!handoverProof.recipientName || !handoverProof.recipientName.trim()) {
-    return { success: false, error: "Nama penerima dokumen wajib diisi pada Bukti Serah Terima." };
-  }
-
-  if (!handoverProof.relationship || !handoverProof.relationship.trim()) {
-    return { success: false, error: "Hubungan penerima dengan customer wajib diisi." };
-  }
-
-  const nowIso = new Date().toISOString();
-  const dateStr = nowIso.split("T")[0];
-
-  const timelineEvent: MessengerTimelineEvent = {
-    id: `tl-${Date.now()}`,
-    timestamp: nowIso,
-    title: "Serah Terima Dokumen Selesai",
-    note: `Dokumen diserahkan kepada ${handoverProof.recipientName} (${handoverProof.relationship}). Catatan: ${handoverProof.notes || "-"}`,
-    author: user.userName,
-    type: "DELIVERY",
-  };
-
-  const existingTimeline = order.messengerTimeline || [];
-
-  // Complete delivery without premature advanceOrder (Admin confirms & advances to Stage 8)
-  const success = orderStore.updateOrder(orderNo, {
-    deliveryStatus: "Dokumen Diserahkan",
-    isReceived: true,
-    receiverName: handoverProof.recipientName,
-    tanggalDiterima: dateStr,
-    completedAt: nowIso,
-    deliveryHandover: {
-      ...handoverProof,
-      completedAt: nowIso,
+): TaskActionResult {
+  return completeDeliveryTaskAction(
+    orderNo,
+    {
+      recipientName: handoverProof.recipientName,
+      relationship: handoverProof.relationship,
+      photoProofUrl: handoverProof.photoProofUrl,
+      fileName: handoverProof.fileName,
+      fileType: handoverProof.fileType,
+      fileSize: handoverProof.fileSize,
+      notes: handoverProof.notes,
     },
-    messengerTaskNotes: handoverProof.notes?.trim() || order.messengerTaskNotes,
-    messengerTaskStatus: "Selesai",
-    messengerTimeline: [timelineEvent, ...existingTimeline],
-  });
-
-  if (success) {
-    try {
-      auditLog.log({
-        userId: user.employeeId || "emp-messenger",
-        userName: user.userName,
-        userRole: toAuditRole(user.role),
-        action: "UPDATE",
-        module: "Messenger Workspace",
-        details: `Serah terima dokumen order ${orderNo} diselesaikan oleh ${user.userName}. Penerima: ${handoverProof.recipientName}`,
-        metadata: { orderNo, recipient: handoverProof.recipientName },
-      });
-    } catch {
-      // safe fallback
-    }
-  }
-
-  return { success, error: success ? undefined : "Gagal menyelesaikan pengantaran di store" };
+    user
+  );
 }
 
 /**
@@ -3461,6 +3757,7 @@ export function deleteSamsatComponentFromOrder(
 /**
  * Complete document pickup (Jemput Dokumen)
  * Allows optional photo proof and notes
+ * Delegates to authoritative completePickupTaskAction
  */
 export function completeMessengerPickup(
   orderNo: string,
@@ -3472,65 +3769,15 @@ export function completeMessengerPickup(
     documentChecklist?: any;
   },
   user: UserContext
-): { success: boolean; error?: string } {
-  const order = orderStore.getOrderByNo(orderNo);
-  if (!order) {
-    return { success: false, error: `Order ${orderNo} tidak ditemukan` };
-  }
-
-  const authCheck = checkTaskOwnership(order, user);
-  if (!authCheck.allowed) {
-    return { success: false, error: authCheck.error };
-  }
-
-  const nowIso = new Date().toISOString();
-  const timelineEvent: MessengerTimelineEvent = {
-    id: `tl-${Date.now()}`,
-    timestamp: nowIso,
-    title: "Penjemputan Dokumen Selesai",
-    note: evidence.notes ? `Catatan: ${evidence.notes}` : "Dokumen fisik berhasil diambil dari klien",
-    author: user.userName,
-    type: "STATUS_CHANGE",
-  };
-
-  const existingTimeline = order.messengerTimeline || [];
-
-  // Update order status to "Dokumen Sudah Tersedia" without premature advanceOrder
-  const success = orderStore.updateOrder(orderNo, {
-    pickupCompleted: true,
-    pickupCompletedAt: nowIso,
-    messengerTaskStatus: "Dokumen Sudah Tersedia",
-    completedAt: nowIso,
-    pickupChecklist: evidence.pickupChecklist || order.pickupChecklist,
-    catatanKendala: evidence.catatanKendala || order.catatanKendala,
-    pickupProof: {
+): TaskActionResult {
+  return completePickupTaskAction(
+    orderNo,
+    {
+      pickupChecklist: evidence.pickupChecklist || evidence.documentChecklist,
       photoProofUrl: evidence.photoProofUrl,
-      notes: evidence.notes,
-      catatanKendala: evidence.catatanKendala || order.catatanKendala,
-      pickupChecklist: evidence.pickupChecklist || order.pickupChecklist,
-      completedAt: nowIso,
     },
-    messengerTaskNotes: evidence.catatanKendala || evidence.notes?.trim() || order.messengerTaskNotes,
-    messengerTimeline: [timelineEvent, ...existingTimeline],
-  });
-
-  if (success) {
-    try {
-      auditLog.log({
-        userId: user.employeeId || "emp-messenger",
-        userName: user.userName,
-        userRole: toAuditRole(user.role),
-        action: "UPDATE",
-        module: "Messenger Workspace",
-        details: `Penjemputan berkas fisik order ${orderNo} diselesaikan oleh ${user.userName}`,
-        metadata: { orderNo },
-      });
-    } catch {
-      // safe fallback
-    }
-  }
-
-  return { success, error: success ? undefined : "Gagal memperbarui status penjemputan" };
+    user
+  );
 }
 
 /**
@@ -3639,31 +3886,33 @@ export function validateSamsatComponents(order: OperationalOrder): {
 export function startSamsatProcessAction(
   orderNo: string,
   user: UserContext
-): { success: boolean; error?: string } {
+): TaskActionResult {
   const order = orderStore.getOrderByNo(orderNo);
-  if (!order) return { success: false, error: `Order ${orderNo} tidak ditemukan` };
+  if (!order) {
+    const err = `Order ${orderNo} tidak ditemukan`;
+    return createActionResult(Promise.resolve({ success: false, error: err }), { success: false, error: err });
+  }
 
   // Task A: Lifecycle Guard
   if ((order as any).isCancelled || order.currentStageName === "Dibatalkan" || (order as any).status === "Dibatalkan") {
-    return { success: false, error: `Order ${orderNo} sudah dibatalkan.` };
+    const err = `Order ${orderNo} sudah dibatalkan.`;
+    return createActionResult(Promise.resolve({ success: false, error: err }), { success: false, error: err });
   }
   const isSamsatStage = order.currentStep === 4 || order.currentStageName === "Proses Samsat";
   if (!isSamsatStage) {
-    return {
-      success: false,
-      error: `Order ${orderNo} berada pada tahap '${order.currentStageName}' (Step ${order.currentStep}), bukan pada tahap Proses Samsat.`,
-    };
+    const err = `Order ${orderNo} berada pada tahap '${order.currentStageName}' (Step ${order.currentStep}), bukan pada tahap Proses Samsat.`;
+    return createActionResult(Promise.resolve({ success: false, error: err }), { success: false, error: err });
   }
 
   const authCheck = checkTaskOwnership(order, user);
-  if (!authCheck.allowed) return { success: false, error: authCheck.error };
+  if (!authCheck.allowed) {
+    return createActionResult(Promise.resolve({ success: false, error: authCheck.error }), { success: false, error: authCheck.error });
+  }
 
   const currentCycle = (order as any).samsatCycle || 1;
   if (order.samsatStatus === "Selesai" && (order as any).samsatCompletedCycle === currentCycle) {
-    return {
-      success: false,
-      error: `Proses Samsat siklus ${currentCycle} untuk order ${orderNo} sudah selesai. Gunakan alur rollback jika perlu pembetulan loket.`,
-    };
+    const err = `Proses Samsat siklus ${currentCycle} untuk order ${orderNo} sudah selesai. Gunakan alur rollback jika perlu pembetulan loket.`;
+    return createActionResult(Promise.resolve({ success: false, error: err }), { success: false, error: err });
   }
 
   // Idempotency check: Already started
@@ -3672,165 +3921,207 @@ export function startSamsatProcessAction(
     order.samsatStatus === "Menuju Samsat" ||
     order.samsatStatus === "Di Lokasi Samsat"
   ) {
-    return { success: true };
+    return createActionResult(Promise.resolve({ success: true }), { success: true });
   }
 
-  const nowIso = new Date().toISOString();
-  const timelineEvent: MessengerTimelineEvent = {
-    id: `tl-start-${Date.now()}`,
-    timestamp: nowIso,
-    title: "Mulai Proses Samsat",
-    note: `Petugas ${user.userName} memulai proses pengurusan berkas di loket Samsat.`,
-    author: user.userName,
-    type: "STATUS_CHANGE",
+  const applyLocal = (): { success: boolean; error?: string } => {
+    const nowIso = new Date().toISOString();
+    const timelineEvent: MessengerTimelineEvent = {
+      id: `tl-start-${Date.now()}`,
+      timestamp: nowIso,
+      title: "Mulai Proses Samsat",
+      note: `Petugas ${user.userName} memulai proses pengurusan berkas di loket Samsat.`,
+      author: user.userName,
+      type: "STATUS_CHANGE",
+    };
+
+    const existingTimeline = order.messengerTimeline || [];
+    const success = orderStore.updateOrder(orderNo, {
+      samsatStatus: "Sedang Proses Samsat",
+      samsatStartedAt: order.samsatStartedAt || nowIso,
+      samsatJourneyStartedAt: order.samsatJourneyStartedAt || nowIso,
+      messengerTimeline: [timelineEvent, ...existingTimeline],
+    });
+
+    return { success, error: success ? undefined : "Gagal memulai proses Samsat" };
   };
 
-  const existingTimeline = order.messengerTimeline || [];
-  const success = orderStore.updateOrder(orderNo, {
-    samsatStatus: "Sedang Proses Samsat",
-    samsatStartedAt: order.samsatStartedAt || nowIso,
-    samsatJourneyStartedAt: order.samsatJourneyStartedAt || nowIso,
-    messengerTimeline: [timelineEvent, ...existingTimeline],
-  });
-
-  if (typeof fetch !== "undefined") {
-    const token = typeof localStorage !== "undefined" ? localStorage.getItem("auth_token") : null;
-    fetch(`${APP_CONFIG.apiBaseUrl}/orders/${encodeURIComponent(orderNo)}/samsat/start`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        ...(token ? { Authorization: `Bearer ${token}` } : {}),
-      },
-    }).catch(() => {});
+  const authHeaders = getAuthHeader();
+  if (typeof fetch !== "undefined" && authHeaders.Authorization) {
+    const promise = (async () => {
+      try {
+        const res = await fetchWithTimeout(
+          `${APP_CONFIG.apiBaseUrl}/orders/${encodeURIComponent(orderNo)}/samsat/start`,
+          {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              ...authHeaders,
+            },
+          }
+        );
+        if (!res.ok) {
+          const errorMsg = await parseApiErrorResponse(res, `Gagal memulai proses Samsat (${res.status})`);
+          return { success: false, error: errorMsg };
+        }
+        const data = await res.json().catch(() => ({}));
+        if (data?.data && typeof data.data === "object") {
+          applyServerSnapshot(orderNo, data.data);
+          return { success: true };
+        }
+      } catch (err: any) {
+        return { success: false, error: err?.message || "Gagal menghubungi server untuk memulai proses Samsat" };
+      }
+      return applyLocal();
+    })();
+    return createActionResult(promise);
   }
 
-  return { success, error: success ? undefined : "Gagal memulai proses Samsat" };
+  const syncResult = applyLocal();
+  return createActionResult(Promise.resolve(syncResult), syncResult);
 }
 
 /**
  * Complete Samsat Process (Kirim Hasil)
  * Transitions Samsat stage when all components are completed
+ * Synchronized with backend Zero Free-Text Notes policy (BD-WF-01)
  */
 export function completeSamsatProcess(
   orderNo: string,
   user: UserContext,
   note?: string
-): { success: boolean; error?: string } {
+): TaskActionResult {
   const order = orderStore.getOrderByNo(orderNo);
   if (!order) {
-    return { success: false, error: `Order ${orderNo} tidak ditemukan` };
+    const err = `Order ${orderNo} tidak ditemukan`;
+    return createActionResult(Promise.resolve({ success: false, error: err }), { success: false, error: err });
   }
 
   // Task A: Lifecycle Guard
   if ((order as any).isCancelled || order.currentStageName === "Dibatalkan" || (order as any).status === "Dibatalkan") {
-    return { success: false, error: `Order ${orderNo} sudah dibatalkan.` };
+    const err = `Order ${orderNo} sudah dibatalkan.`;
+    return createActionResult(Promise.resolve({ success: false, error: err }), { success: false, error: err });
   }
   const isSamsatStage = order.currentStep === 4 || order.currentStageName === "Proses Samsat";
   if (!isSamsatStage) {
-    return {
-      success: false,
-      error: `Order ${orderNo} berada pada tahap '${order.currentStageName}' (Step ${order.currentStep}), bukan pada tahap Proses Samsat.`,
-    };
+    const err = `Order ${orderNo} berada pada tahap '${order.currentStageName}' (Step ${order.currentStep}), bukan pada tahap Proses Samsat.`;
+    return createActionResult(Promise.resolve({ success: false, error: err }), { success: false, error: err });
   }
 
   const authCheck = checkTaskOwnership(order, user);
   if (!authCheck.allowed) {
-    return { success: false, error: authCheck.error };
+    return createActionResult(Promise.resolve({ success: false, error: authCheck.error }), { success: false, error: authCheck.error });
   }
 
   // Authoritative Component Validation (Scope 2)
   const valResult = validateSamsatComponents(order);
   if (!valResult.allowed) {
-    return { success: false, error: valResult.error };
+    return createActionResult(Promise.resolve({ success: false, error: valResult.error }), { success: false, error: valResult.error });
   }
 
   const currentCycle = (order as any).samsatCycle || 1;
 
   // Idempotency: Already completed in current cycle
   if (order.samsatStatus === "Selesai" && (order as any).samsatCompletedCycle === currentCycle) {
-    return { success: true };
+    return createActionResult(Promise.resolve({ success: true }), { success: true });
   }
 
-  const nowIso = new Date().toISOString();
-  const currentPickupTask = (order.taskAcceptance || {})["Jemput Hasil Samsat"];
-  const isSpawnedForCurrentCycle = Boolean(
-    currentPickupTask && (currentPickupTask as any).cycle === currentCycle
-  );
+  const isMessenger = user.role === "kurir" || user.role === "messenger" || user.role === "courier";
 
-  const timelineEventsToPrepend: MessengerTimelineEvent[] = [];
-  if (!isSpawnedForCurrentCycle) {
+  const applyLocal = (): { success: boolean; error?: string } => {
+    const nowIso = new Date().toISOString();
+    const currentPickupTask = (order.taskAcceptance || {})["Jemput Hasil Samsat"];
+    const isSpawnedForCurrentCycle = Boolean(
+      currentPickupTask && (currentPickupTask as any).cycle === currentCycle
+    );
+
+    const timelineEventsToPrepend: MessengerTimelineEvent[] = [];
+    if (!isSpawnedForCurrentCycle) {
+      timelineEventsToPrepend.push({
+        id: `tl-spawn-pickup-c${currentCycle}-${Date.now()}`,
+        timestamp: nowIso,
+        title: "Tugas Otomatis: Jemput Hasil Samsat",
+        note: "Sistem otomatis membuat tugas penjemputan berkas hasil Samsat ke kantor (tersedia bagi kurir).",
+        author: "Sistem Otomasi",
+        type: "STATUS_CHANGE",
+      });
+    }
+
     timelineEventsToPrepend.push({
-      id: `tl-spawn-pickup-c${currentCycle}-${Date.now()}`,
+      id: `tl-samsat-done-c${currentCycle}-${Date.now()}`,
       timestamp: nowIso,
-      title: "Tugas Otomatis: Jemput Hasil Samsat",
-      note: "Sistem otomatis membuat tugas penjemputan berkas hasil Samsat ke kantor (tersedia bagi kurir).",
-      author: "Sistem Otomasi",
+      title: "Proses Samsat Selesai (Kirim Hasil)",
+      note: isMessenger
+        ? "Seluruh tahapan komponen pengurusan di loket Samsat telah selesai diproses."
+        : (note || "Seluruh tahapan komponen pengurusan di loket Samsat telah selesai diproses."),
+      author: user.userName,
       type: "STATUS_CHANGE",
     });
-  }
 
-  timelineEventsToPrepend.push({
-    id: `tl-samsat-done-c${currentCycle}-${Date.now()}`,
-    timestamp: nowIso,
-    title: "Proses Samsat Selesai (Kirim Hasil)",
-    note: note || "Seluruh tahapan komponen pengurusan di loket Samsat telah selesai diproses.",
-    author: user.userName,
-    type: "STATUS_CHANGE",
-  });
+    const existingTimeline = order.messengerTimeline || [];
 
-  const existingTimeline = order.messengerTimeline || [];
+    const updatedAcceptance = {
+      ...(order.taskAcceptance || {}),
+      ["Jemput Hasil Samsat"]: {
+        status: "PENDING" as const,
+        isLocked: false,
+        spawnedAt: nowIso,
+        cycle: currentCycle,
+      },
+    };
 
-  const updatedAcceptance = {
-    ...(order.taskAcceptance || {}),
-    ["Jemput Hasil Samsat"]: {
-      status: "PENDING" as const,
-      isLocked: false,
-      spawnedAt: nowIso,
-      cycle: currentCycle,
-    },
+    // Update in-memory orderStore
+    const success = orderStore.updateOrder(orderNo, {
+      samsatStatus: "Selesai",
+      samsatCompletedAt: nowIso,
+      samsatCompletedCycle: currentCycle,
+      samsatPickupStatus: order.samsatPickupStatus && order.samsatPickupStatus !== "Belum Dijadwal"
+        ? order.samsatPickupStatus
+        : "Belum Dijadwal",
+      taskAcceptance: updatedAcceptance,
+      messengerTaskNotes: isMessenger ? order.messengerTaskNotes : (note?.trim() || order.messengerTaskNotes),
+      messengerTimeline: [...timelineEventsToPrepend, ...existingTimeline],
+    });
+
+    return { success, error: success ? undefined : "Gagal menyelesaikan pengurusan Samsat" };
   };
 
-  // Update in-memory orderStore
-  const success = orderStore.updateOrder(orderNo, {
-    samsatStatus: "Selesai",
-    samsatCompletedAt: nowIso,
-    samsatCompletedCycle: currentCycle,
-    samsatPickupStatus: order.samsatPickupStatus && order.samsatPickupStatus !== "Belum Dijadwal"
-      ? order.samsatPickupStatus
-      : "Belum Dijadwal",
-    taskAcceptance: updatedAcceptance,
-    messengerTaskNotes: note?.trim() || order.messengerTaskNotes,
-    messengerTimeline: [...timelineEventsToPrepend, ...existingTimeline],
-  });
-
-  // Call Express backend endpoint asynchronously for complete synchronization
-  if (typeof fetch !== "undefined") {
-    const token = typeof localStorage !== "undefined" ? localStorage.getItem("auth_token") : null;
-    fetch(`${APP_CONFIG.apiBaseUrl}/orders/${encodeURIComponent(orderNo)}/samsat/complete`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        ...(token ? { Authorization: `Bearer ${token}` } : {}),
-      },
-      body: JSON.stringify({ note: note?.trim() }),
-    }).catch(() => {});
+  const authHeaders = getAuthHeader();
+  if (typeof fetch !== "undefined" && authHeaders.Authorization) {
+    const promise = (async () => {
+      try {
+        // BD-WF-01: Courier must never send note/notes to backend
+        const backendPayload = isMessenger ? {} : (note?.trim() ? { note: note.trim() } : {});
+        const res = await fetchWithTimeout(
+          `${APP_CONFIG.apiBaseUrl}/orders/${encodeURIComponent(orderNo)}/samsat/complete`,
+          {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              ...authHeaders,
+            },
+            body: JSON.stringify(backendPayload),
+          }
+        );
+        if (!res.ok) {
+          const errorMsg = await parseApiErrorResponse(res, `Gagal menyelesaikan pengurusan Samsat (${res.status})`);
+          return { success: false, error: errorMsg };
+        }
+        const data = await res.json().catch(() => ({}));
+        if (data?.data && typeof data.data === "object") {
+          applyServerSnapshot(orderNo, data.data);
+          return { success: true };
+        }
+      } catch (err: any) {
+        return { success: false, error: err?.message || "Gagal menghubungi server untuk menyelesaikan Samsat" };
+      }
+      return applyLocal();
+    })();
+    return createActionResult(promise);
   }
 
-  if (success) {
-    try {
-      auditLog.log({
-        userId: user.employeeId || "emp-messenger",
-        userName: user.userName,
-        userRole: toAuditRole(user.role),
-        action: "UPDATE",
-        module: "Proses Samsat",
-        details: `Pengurusan Samsat untuk order ${orderNo} dinyatakan selesai oleh ${user.userName}`,
-        metadata: { orderNo, cycle: currentCycle },
-      });
-    } catch {}
-  }
-
-  return { success, error: success ? undefined : "Gagal menyelesaikan pengurusan Samsat" };
+  const syncResult = applyLocal();
+  return createActionResult(Promise.resolve(syncResult), syncResult);
 }
 
 /**

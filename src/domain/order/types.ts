@@ -112,6 +112,8 @@ export interface PaymentCorrectionHistoryItem {
 
 export interface PaymentRecordItem {
   id: string;
+  payment_id?: string;
+  paymentId?: string;
   nominal: number;
   tanggal: string;
   metodePembayaran: string;
@@ -461,4 +463,34 @@ export function getDefaultSamsatProcesses(layanan: string, isFinished: boolean =
   }
 
   return [];
+}
+
+
+export interface IOrderDataProvider {
+  getActiveOrders(): Record<StageName, OperationalOrder[]>;
+  getArchivedOrders(): OperationalOrder[];
+  getAllFlat(archived?: boolean): OperationalOrder[];
+  getOrderByNo(orderNo: string): OperationalOrder | undefined;
+  getOrdersByStage(stage: StageName): OperationalOrder[];
+  addOrder(order: OperationalOrder): void;
+  addOrderAsync?(order: OperationalOrder): Promise<OperationalOrder>;
+  updateOrder(orderNo: string, updates: Partial<OperationalOrder>): boolean;
+  updateOrderAsync?(orderNo: string, updates: Partial<OperationalOrder>): Promise<boolean>;
+  advanceOrder(orderNo: string, targetStage: StageName, updates?: Partial<OperationalOrder>): boolean;
+  advanceOrderAsync?(orderNo: string, targetStage: StageName, updates?: Partial<OperationalOrder>): Promise<OperationalOrder | false>;
+  rollbackOrder(orderNo: string, targetStage: StageName, updates?: Partial<OperationalOrder>): boolean;
+  rollbackOrderAsync?(orderNo: string, targetStage: StageName, updates?: Partial<OperationalOrder>): Promise<OperationalOrder | false>;
+  archiveOrder(orderNo: string): boolean;
+  archiveOrderAsync?(orderNo: string): Promise<boolean>;
+  deleteArchivedOrder?(orderNo: string): boolean;
+  deleteOrder?(orderNo: string): boolean | Promise<boolean>;
+  clearArchivedOrders?(): boolean;
+  cancelOrder?(orderNo: string, reason?: string): boolean | Promise<boolean>;
+  verifyPayment?(orderNo: string, verifierName?: string, confirmedAmount?: number, notes?: string, proofPayload?: any): boolean;
+  verifyPaymentAsync?(orderNo: string, verifierName?: string, confirmedAmount?: number, notes?: string, proofPayload?: any): Promise<OperationalOrder>;
+  subscribe(listener: () => void): () => void;
+  getIsLoading?(): boolean;
+  getError?(): string | null;
+  getIsInitialized?(): boolean;
+  refresh?(silent?: boolean): Promise<void>;
 }

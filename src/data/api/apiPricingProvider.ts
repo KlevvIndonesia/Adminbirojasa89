@@ -7,7 +7,7 @@
  */
 
 import { SamsatCostItem } from "../../domain/pricing/types";
-import { IPricingDataProvider } from "../mock/mockPricingProvider";
+import { IPricingDataProvider } from "../../domain/pricing/types";
 import { APP_CONFIG } from "../../app/config/appConfig";
 
 export class ApiPricingProvider implements IPricingDataProvider {

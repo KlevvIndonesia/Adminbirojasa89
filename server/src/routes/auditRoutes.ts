@@ -24,25 +24,33 @@ auditRouter.post(
   recordAuditLog
 );
 
-// Clear audit logs permanently (Supports DELETE / and POST /clear)
-// Note: Role 'administrator' and 'svp' are authorized.
-// If requested via /api/audit-logs directly with DELETE, 'administrator' is strictly enforced
-// to maintain existing RBAC test guarantee where non-superadmin DELETE is forbidden.
+// Clear audit logs permanently is strictly disabled (BD-RBAC-01: Immutable Audit Trail)
+// All variations (DELETE /, POST /clear, DELETE /clear) are rejected with HTTP 405 for all roles, including SVP.
+const rejectAuditMutation = (_req: any, res: any): void => {
+  res.status(405).json({
+    success: false,
+    error: {
+      code: "AUDIT_LOG_IMMUTABLE",
+      message: "Audit trail bersifat immutable dan tidak dapat dihapus atau dibersihkan oleh role mana pun.",
+    },
+    timestamp: new Date().toISOString(),
+  });
+};
+
 auditRouter.delete(
   "/",
   requireAuth,
-  (req, res, next) => {
-    if (req.baseUrl?.includes("audit-logs")) {
-      return requireRoles("administrator")(req, res, next);
-    }
-    return requireRoles("administrator", "svp", "admin")(req, res, next);
-  },
-  clearAuditLogs
+  rejectAuditMutation
 );
 
 auditRouter.post(
   "/clear",
   requireAuth,
-  requireRoles("administrator", "svp", "admin"),
-  clearAuditLogs
+  rejectAuditMutation
+);
+
+auditRouter.delete(
+  "/clear",
+  requireAuth,
+  rejectAuditMutation
 );

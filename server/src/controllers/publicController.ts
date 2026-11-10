@@ -217,7 +217,7 @@ export async function createPublicOrder(req: Request, res: Response, next: NextF
     }
 
     // 2. Validate & normalize phone / WhatsApp
-    let rawHP = typeof rawBody.nomorHP === "string" ? rawBody.nomorHP.trim() : (typeof rawBody.nomor_hp === "string" ? rawBody.nomor_hp.trim() : "");
+    const rawHP = typeof rawBody.nomorHP === "string" ? rawBody.nomorHP.trim() : (typeof rawBody.nomor_hp === "string" ? rawBody.nomor_hp.trim() : "");
     if (!rawHP) {
       throw new ApiError(400, "VALIDATION_ERROR", "Nomor WhatsApp (nomorHP) pemesan wajib diisi.");
     }
@@ -680,6 +680,8 @@ export function mapInternalStageToPublicWorkflow(
           if (isDatangLangsung) {
             if (currentStep === 1) {
               stageStatus = "WAITING";
+            } else if (currentStep === 2) {
+              stageStatus = "IN_PROGRESS";
             } else {
               stageStatus = "COMPLETED";
               waktuSelesai = h1?.waktu_transisi || order.createdAt || null;

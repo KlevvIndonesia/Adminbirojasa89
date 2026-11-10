@@ -5,9 +5,27 @@
 
 import { db, runInTransaction } from "./db";
 import { hashPassword } from "../utils/crypto";
-import { DEMO_CREDENTIALS } from "../../../src/data/repositories/userRepository";
+import crypto from "crypto";
+
+/**
+ * Resolves a bootstrap credential from environment variables.
+ * In production mode, if the environment variable is not supplied,
+ * a cryptographically secure random password is generated and logged once.
+ * In non-production (dev/test), falls back to default test credentials.
+ */
+function resolveBootstrapCredential(envVar: string, devFallback: string): string {
+  if (process.env[envVar]) {
+    return process.env[envVar]!;
+  }
+  if (process.env.NODE_ENV === "production") {
+    const generated = crypto.randomBytes(16).toString("base64url");
+    console.warn(`[SECURITY WARNING] Initial bootstrap credential generated for ${envVar}: ${generated}`);
+    console.warn(`[SECURITY WARNING] Record this initial credential immediately. It will only be shown once during bootstrap.`);
+    return generated;
+  }
+  return devFallback;
+}
 import { pricingStore } from "../../../src/app/data/pricingStore";
-import { tagihanData, kasKantorData, pengeluaranKantorData } from "../../../src/app/data/financeDummyData";
 import {
   DEFAULT_R4_ANNUAL_TEMPLATE,
   DEFAULT_R2_ANNUAL_TEMPLATE,
@@ -36,46 +54,50 @@ export function seedDatabase(): void {
       VALUES (?, ?, ?, ?, ?, ?)
     `);
 
+    const defaultAdminPass = resolveBootstrapCredential("INITIAL_ADMIN_PASSWORD", "admin123");
+    const defaultFinancePass = resolveBootstrapCredential("INITIAL_FINANCE_PASSWORD", "finance123");
+    const defaultMessengerPass = resolveBootstrapCredential("INITIAL_MESSENGER_PASSWORD", "messenger123");
+
     const usersToSeed = [
       {
-        email: DEMO_CREDENTIALS.administrator.email,
-        password: DEMO_CREDENTIALS.administrator.password,
-        nama: DEMO_CREDENTIALS.administrator.name,
+        email: process.env.INITIAL_SVP_EMAIL || "svp@birojasa.com",
+        password: defaultAdminPass,
+        nama: "Admin Super (SVP)",
         jabatan: "SVP",
         status: "Aktif",
       },
       {
-        email: DEMO_CREDENTIALS.admin.email,
-        password: DEMO_CREDENTIALS.admin.password,
-        nama: DEMO_CREDENTIALS.admin.name,
+        email: process.env.INITIAL_ADMIN_EMAIL || "admin@birojasa.com",
+        password: defaultAdminPass,
+        nama: "Adrian Adhari",
         jabatan: "ADMIN",
         status: "Aktif",
       },
       {
-        email: DEMO_CREDENTIALS.finance.email,
-        password: DEMO_CREDENTIALS.finance.password,
-        nama: DEMO_CREDENTIALS.finance.name,
+        email: process.env.INITIAL_FINANCE_EMAIL || "finance@birojasa.com",
+        password: defaultFinancePass,
+        nama: "Finance User",
         jabatan: "FINANCE",
         status: "Aktif",
       },
       {
-        email: DEMO_CREDENTIALS.messenger1.email,
-        password: DEMO_CREDENTIALS.messenger1.password,
-        nama: DEMO_CREDENTIALS.messenger1.name,
+        email: process.env.INITIAL_MESSENGER1_EMAIL || "budi.messenger@birojasa.com",
+        password: defaultMessengerPass,
+        nama: "Budi Santoso",
         jabatan: "MESSENGER",
         status: "Aktif",
       },
       {
-        email: DEMO_CREDENTIALS.messenger2.email,
-        password: DEMO_CREDENTIALS.messenger2.password,
-        nama: DEMO_CREDENTIALS.messenger2.name,
+        email: process.env.INITIAL_MESSENGER2_EMAIL || "andi.messenger@birojasa.com",
+        password: defaultMessengerPass,
+        nama: "Andi Pratama",
         jabatan: "MESSENGER",
         status: "Aktif",
       },
       {
-        email: DEMO_CREDENTIALS.messenger.email,
-        password: DEMO_CREDENTIALS.messenger.password,
-        nama: DEMO_CREDENTIALS.messenger.name,
+        email: process.env.INITIAL_MESSENGER_EMAIL || "messenger@birojasa.com",
+        password: defaultMessengerPass,
+        nama: "Budi Santoso",
         jabatan: "MESSENGER",
         status: "Aktif",
       },
@@ -463,7 +485,8 @@ export function seedDatabase(): void {
       );
 
       // Seed portal customer account for CUST-0002
-      const { hash: custHash, salt: custSalt } = hashPassword("klien123");
+      const defaultCustPass = resolveBootstrapCredential("INITIAL_CUSTOMER_PASSWORD", "klien123");
+      const { hash: custHash, salt: custSalt } = hashPassword(defaultCustPass);
       db.prepare(`
         INSERT OR IGNORE INTO customer_accounts (
           id, customer_id, email, password_hash, password_salt, status_akun, created_at, updated_at

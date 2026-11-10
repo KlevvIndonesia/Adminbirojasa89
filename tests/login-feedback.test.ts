@@ -1,8 +1,10 @@
 import test from "node:test";
 import assert from "node:assert";
 import { userRepository, UserRepository, AuthResult } from "../src/data/repositories/userRepository";
-import { MockUserProvider } from "../src/data/mock/mockUserProvider";
+import { MockUserProvider } from "./fixtures/mock/mockUserProvider";
 import { ApiUserProvider } from "../src/data/api/apiUserProvider";
+
+userRepository.setProvider(new MockUserProvider());
 
 const EXPECTED_MESSAGES = {
   INVALID_CREDENTIALS: "Email atau password yang Anda masukkan tidak sesuai. Periksa kembali data login Anda.",

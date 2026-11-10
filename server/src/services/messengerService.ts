@@ -917,6 +917,66 @@ export class MessengerService {
     });
   }
 
+
+  /**
+   * BD-RBAC-03: Returns active tasks and orders assigned strictly to the authenticated courier.
+   * Strips sensitive financial metrics and filters out any orders not owned by this courier.
+   */
+  public getMyTasks(user: TokenPayload): Record<string, OperationalOrder[]> {
+    const rawActive = dbOrderRepository.getActiveOrders();
+    const result: Record<string, OperationalOrder[]> = {
+      "Verifikasi": [],
+      "Penjadwalan": [],
+      "Verifikasi Fisik": [],
+      "Proses Samsat": [],
+      "Verifikasi Dokumen": [],
+      "Supervisi": [],
+      "Pengantaran": [],
+      "Dokumen Telah Diterima": [],
+    };
+
+    const courierEmpId = (user.employeeId || "").trim().toLowerCase();
+    // Scope 1: If employeeId is missing, empty, or whitespace, return empty dictionary immediately
+    if (!courierEmpId) {
+      return result;
+    }
+
+    for (const [stage, orders] of Object.entries(rawActive)) {
+      if (!Array.isArray(orders)) continue;
+      for (const order of orders) {
+        if (!order || !order.orderNo) continue;
+
+        // Scope 1: Strictly match against verified employeeId only; zero fallback to courier display name
+        const isAssignedPickup =
+          Boolean(order.assignedMessengerId && order.assignedMessengerId.trim().toLowerCase() === courierEmpId);
+
+        const isAssignedSamsat =
+          Boolean(order.samsatMessengerId && order.samsatMessengerId.trim().toLowerCase() === courierEmpId);
+
+        const isAssignedSamsatPickup =
+          Boolean(order.samsatPickupMessengerId && order.samsatPickupMessengerId.trim().toLowerCase() === courierEmpId);
+
+        const isAssignedDelivery =
+          Boolean(order.deliveryMessengerId && order.deliveryMessengerId.trim().toLowerCase() === courierEmpId);
+
+        const isAssigned = isAssignedPickup || isAssignedSamsat || isAssignedSamsatPickup || isAssignedDelivery;
+
+        if (isAssigned) {
+          const sanitized: OperationalOrder = {
+            ...order,
+            totalBiaya: order.totalBiaya || 0,
+            biayaSamsat: order.biayaSamsat,
+            biayaJasa: 0,
+            finalBiayaJasa: 0,
+          };
+          if (!result[stage]) result[stage] = [];
+          result[stage].push(sanitized);
+        }
+      }
+    }
+    return result;
+  }
+
   public resolveMessengerEmpId(name: string): string {
     if (!name || typeof name !== "string") return "";
     const cleanName = name.trim().toLowerCase();

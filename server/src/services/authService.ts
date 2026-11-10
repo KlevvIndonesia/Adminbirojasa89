@@ -104,14 +104,19 @@ export class AuthService {
       }
     }
 
-    // Map jabatan to application role
+    // Map jabatan to canonical application role (BD-RBAC-04: 4 Canonical Roles, Fail-Closed)
     const roleMap: Record<string, 'administrator' | 'finance' | 'admin' | 'messenger'> = {
       SVP: "administrator",
       ADMIN: "admin",
       FINANCE: "finance",
       MESSENGER: "messenger",
+      KURIR: "messenger",
     };
-    const role = roleMap[userEntity.jabatan] || "admin";
+    const normalizedJabatan = (userEntity.jabatan || "").toUpperCase().trim();
+    const role = roleMap[normalizedJabatan];
+    if (!role) {
+      throw new ApiError(403, "UNASSIGNED_ROLE", "Akun tidak memiliki jabatan kanonikal yang valid (fail-closed). Hubungi Administrator.");
+    }
 
     let resolvedEmployeeId: string | undefined = userEntity.employee_id || undefined;
     if (role === "messenger") {
@@ -167,8 +172,11 @@ export class AuthService {
   public getMe(userPayload: TokenPayload) {
     const user = dbUserRepository.getById(userPayload.userId.replace("usr-", ""));
     return {
-      ...userPayload,
       ...(user || {}),
+      ...userPayload,
+      role: userPayload.role,
+      jabatan: userPayload.jabatan,
+      employeeId: userPayload.employeeId,
     };
   }
 

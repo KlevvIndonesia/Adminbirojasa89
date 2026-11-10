@@ -230,7 +230,14 @@ export class DbUserRepository {
     tanggal_bergabung?: string;
     jenis_kelamin?: string;
   }): SystemUser {
-    const role = userData.role || "admin";
+    const canonicalRoleMap: Record<string, string> = {
+      SVP: "administrator",
+      ADMIN: "admin",
+      FINANCE: "finance",
+      MESSENGER: "messenger",
+      KURIR: "messenger",
+    };
+    const role = userData.role || canonicalRoleMap[(userData.jabatan || "").toUpperCase().trim()] || "admin";
     const avatarUrl = userData.avatar_url || userData.avatarUrl || null;
     const employeeId = userData.employee_id || null;
 
@@ -297,7 +304,24 @@ export class DbUserRepository {
     const userValues: any[] = [];
 
     if (updates.nama !== undefined) { userFields.push("nama = ?"); userValues.push(updates.nama.trim()); }
-    if (updates.jabatan !== undefined) { userFields.push("jabatan = ?"); userValues.push(updates.jabatan.trim()); }
+    if (updates.jabatan !== undefined) {
+      userFields.push("jabatan = ?");
+      userValues.push(updates.jabatan.trim());
+      if (updates.role === undefined) {
+        const canonicalRoleMap: Record<string, string> = {
+          SVP: "administrator",
+          ADMIN: "admin",
+          FINANCE: "finance",
+          MESSENGER: "messenger",
+          KURIR: "messenger",
+        };
+        const mapped = canonicalRoleMap[updates.jabatan.trim().toUpperCase()];
+        if (mapped) {
+          userFields.push("role = ?");
+          userValues.push(mapped);
+        }
+      }
+    }
     if (updates.email !== undefined) { userFields.push("email = ?"); userValues.push(updates.email.trim()); }
     if (updates.role !== undefined) { userFields.push("role = ?"); userValues.push(updates.role); }
     if (updates.status !== undefined) { userFields.push("status = ?"); userValues.push(updates.status); }

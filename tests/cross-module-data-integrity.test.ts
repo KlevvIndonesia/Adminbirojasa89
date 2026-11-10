@@ -20,13 +20,13 @@ import { runInTransaction, db } from "../server/src/database/db";
 import { getFinancialKPIs } from "../src/app/data/dashboardAdapter";
 import { isFullyPaid, toCanonicalPaymentStatus, toOrderPaymentStatus, toFinancePaymentStatus } from "../src/domain/finance/paymentMapping";
 import { FinanceRepository } from "../src/data/repositories/financeRepository";
-import { MockFinanceProvider } from "../src/data/mock/mockFinanceProvider";
+import { MockFinanceProvider } from "./fixtures/mock/mockFinanceProvider";
 import { ApiFinanceProvider } from "../src/data/api/apiFinanceProvider";
 import { PricingRepository } from "../src/data/repositories/pricingRepository";
-import { MockPricingProvider } from "../src/data/mock/mockPricingProvider";
+import { MockPricingProvider } from "./fixtures/mock/mockPricingProvider";
 import { ApiPricingProvider } from "../src/data/api/apiPricingProvider";
 import { UserRepository } from "../src/data/repositories/userRepository";
-import { MockUserProvider } from "../src/data/mock/mockUserProvider";
+import { MockUserProvider } from "./fixtures/mock/mockUserProvider";
 import { ApiUserProvider } from "../src/data/api/apiUserProvider";
 
 function startTestServer(): Promise<{ server: http.Server; baseUrl: string }> {
@@ -85,10 +85,12 @@ test("Data Integrity 1: Finance payment synchronizes to Order atomically", async
     assert.strictEqual(linkedInvoice.status, "UNPAID");
 
     // 2b. Verify order cost through official endpoint before recording payment
+    const samsatBiaya = 750000 - (orderData.biayaJasa || 0) - (orderData.biayaAntarJemput || 0);
     const verifyCostRes = await fetch(`${baseUrl}/api/orders/${orderNo}/verify-cost`, {
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
       body: JSON.stringify({
+        finalBiayaSamsat: Math.max(0, samsatBiaya),
         finalTotalBiaya: 750000,
         notes: "Verifikasi biaya pra-pembayaran",
       }),
@@ -215,10 +217,12 @@ test("Data Integrity 3: Partial payment maintains mathematical consistency acros
     assert.ok(linkedInvoice);
 
     // 2b. Verify order cost through official endpoint before recording partial payment
+    const samsatBiaya2 = 1000000 - (orderData.biayaJasa || 0) - (orderData.biayaAntarJemput || 0);
     const verifyCostRes = await fetch(`${baseUrl}/api/orders/${orderNo}/verify-cost`, {
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
       body: JSON.stringify({
+        finalBiayaSamsat: Math.max(0, samsatBiaya2),
         finalTotalBiaya: 1000000,
         notes: "Verifikasi biaya pra-pembayaran parsial",
       }),

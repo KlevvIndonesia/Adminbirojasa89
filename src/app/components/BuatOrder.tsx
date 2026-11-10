@@ -66,6 +66,8 @@ import { APP_CONFIG } from "../config/appConfig";
 import { ActionInlineError } from "./ui/ActionInlineError";
 import { ClassifiedActionError, classifyActionError } from "../utils/actionErrorClassifier";
 import { calculateEstimation } from "../../domain/estimation/estimationEngine";
+import { resolveServiceFee } from "../../domain/pricing/pricingResolver";
+import { SERVICE_STANDARD_BASELINES, getStandardJasa } from "./BiayaLayanan";
 import { DEFAULT_R4_ANNUAL_TEMPLATE, DEFAULT_R2_ANNUAL_TEMPLATE } from "../../domain/estimation/defaultTemplates";
 import { estimationStore, useEstimationStore } from "../data/estimationStore";
 import { CalculationExplanationModal } from "./estimation/CalculationExplanationModal";
@@ -415,16 +417,26 @@ export function BuatOrder({
 
     if (isR4Annual) {
       const baseTemplate = estimationStore.getTemplate("template-pajak-tahunan-r4") || DEFAULT_R4_ANNUAL_TEMPLATE;
-      const isKhusus = r4KondisiBerkas === "TIDAK ADA KTP" && Boolean(cfg?.biayaPengurusanKhusus?.enabled && (cfg.biayaPengurusanKhusus.nominal || 0) > 0);
-      const effectiveJasa = isKhusus
-        ? (cfg?.biayaPengurusanKhusus?.nominal || 0)
-        : (cfg?.jasaLengkap?.enabled !== false ? (cfg?.jasaLengkap?.nominal ?? cfg?.biayaJasa ?? baseTemplate.biayaJasa) : 0);
+      const standardBaseline = getStandardJasa(formData.layanan, "Mobil");
+      const resolvedFee = resolveServiceFee({
+        serviceName: formData.layanan,
+        vehicleType: "Mobil",
+        samsatName: formData.wilayahSamsatAsal,
+        feeConfig: cfg,
+        kondisiBerkas: r4KondisiBerkas,
+        templateBiayaJasa: baseTemplate.biayaJasa,
+        standardBaselineJasa: standardBaseline,
+      });
+      const effectiveJasa = resolvedFee.effectiveJasa;
+      const isKhusus = resolvedFee.source === "SPECIAL_SERVICE";
 
       const template = {
         ...baseTemplate,
         biayaJasa: effectiveJasa,
         components: baseTemplate.components.map((c) =>
-          c.ruleId === "JASA" ? { ...c, defaultValue: effectiveJasa } : c
+          c.ruleId === "JASA" || c.category === "JASA" || c.code === "FEE-01" || c.id === "proses-dan-jasa"
+            ? { ...c, defaultValue: effectiveJasa, isActive: resolvedFee.isActive && c.isActive }
+            : c
         ),
       };
 
@@ -526,16 +538,26 @@ export function BuatOrder({
 
     if (isR2Annual) {
       const baseTemplate = estimationStore.getTemplate("template-pajak-tahunan-r2") || DEFAULT_R2_ANNUAL_TEMPLATE;
-      const isKhusus = r2KondisiBerkas === "TIDAK ADA KTP" && Boolean(cfg?.biayaPengurusanKhusus?.enabled && (cfg.biayaPengurusanKhusus.nominal || 0) > 0);
-      const effectiveJasa = isKhusus
-        ? (cfg?.biayaPengurusanKhusus?.nominal || 0)
-        : (cfg?.jasaLengkap?.enabled !== false ? (cfg?.jasaLengkap?.nominal ?? cfg?.biayaJasa ?? baseTemplate.biayaJasa) : 0);
+      const standardBaseline = getStandardJasa(formData.layanan, "Motor");
+      const resolvedFee = resolveServiceFee({
+        serviceName: formData.layanan,
+        vehicleType: "Motor",
+        samsatName: formData.wilayahSamsatAsal,
+        feeConfig: cfg,
+        kondisiBerkas: r2KondisiBerkas,
+        templateBiayaJasa: baseTemplate.biayaJasa,
+        standardBaselineJasa: standardBaseline,
+      });
+      const effectiveJasa = resolvedFee.effectiveJasa;
+      const isKhusus = resolvedFee.source === "SPECIAL_SERVICE";
 
       const template = {
         ...baseTemplate,
         biayaJasa: effectiveJasa,
         components: baseTemplate.components.map((c) =>
-          c.ruleId === "JASA" ? { ...c, defaultValue: effectiveJasa } : c
+          c.ruleId === "JASA" || c.category === "JASA" || c.code === "FEE-01" || c.id === "proses-dan-jasa"
+            ? { ...c, defaultValue: effectiveJasa, isActive: resolvedFee.isActive && c.isActive }
+            : c
         ),
       };
 
@@ -645,16 +667,27 @@ export function BuatOrder({
 
     if (isExtendedEstimation && extTemplateId) {
       const baseTemplate = estimationStore.getTemplate(extTemplateId);
-      const isKhusus = extKondisiBerkas === "TIDAK ADA KTP" && Boolean(cfg?.biayaPengurusanKhusus?.enabled && (cfg.biayaPengurusanKhusus.nominal || 0) > 0);
-      const effectiveJasa = isKhusus
-        ? (cfg?.biayaPengurusanKhusus?.nominal || 0)
-        : (cfg?.jasaLengkap?.enabled !== false ? (cfg?.jasaLengkap?.nominal ?? cfg?.biayaJasa ?? baseTemplate.biayaJasa) : 0);
+      const vehicleType: "Mobil" | "Motor" = formData.jenisKendaraan === "Motor" ? "Motor" : "Mobil";
+      const standardBaseline = getStandardJasa(formData.layanan, vehicleType);
+      const resolvedFee = resolveServiceFee({
+        serviceName: formData.layanan,
+        vehicleType,
+        samsatName: formData.wilayahSamsatAsal,
+        feeConfig: cfg,
+        kondisiBerkas: extKondisiBerkas,
+        templateBiayaJasa: baseTemplate.biayaJasa,
+        standardBaselineJasa: standardBaseline,
+      });
+      const effectiveJasa = resolvedFee.effectiveJasa;
+      const isKhusus = resolvedFee.source === "SPECIAL_SERVICE";
 
       const template = {
         ...baseTemplate,
         biayaJasa: effectiveJasa,
         components: baseTemplate.components.map((c) =>
-          c.ruleId === "JASA" ? { ...c, defaultValue: effectiveJasa } : c
+          c.ruleId === "JASA" || c.ruleId === "PROSES_DAN_JASA_MUTASI" || c.category === "JASA" || c.code === "FEE-01" || c.id === "proses-dan-jasa"
+            ? { ...c, defaultValue: effectiveJasa, isActive: resolvedFee.isActive && c.isActive }
+            : c
         ),
       };
 
@@ -710,7 +743,7 @@ export function BuatOrder({
 
       kustomItems.forEach((ki) => breakdown.push(ki));
 
-      const jasaAmount = extResult.items.find((i) => i.category === "JASA")?.amount ?? effectiveJasa;
+      const jasaAmount = extResult.items.find((i) => i.category === "JASA")?.amount ?? (resolvedFee.isActive ? effectiveJasa : 0);
       const prosesAmount = extResult.items
         .filter((i) => i.category === "ADMIN" || i.category === "PROSES" || i.category === "BBN")
         .reduce((sum, i) => sum + i.amount, 0);

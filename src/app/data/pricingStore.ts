@@ -438,6 +438,14 @@ class PricingStore {
               dbId: cfg.id,
               biayaJasa: cfg.biayaJasa,
               biayaJasaLengkap: cfg.biayaJasa,
+              biayaJasaR4: cfg.biayaJasaR4 ?? cfg.biayaJasa,
+              biayaJasaR2: cfg.biayaJasaR2,
+              jasaR4Enabled: cfg.jasaR4Enabled,
+              jasaR2Enabled: cfg.jasaR2Enabled,
+              biayaKhususR4: cfg.biayaKhususR4,
+              biayaKhususR2: cfg.biayaKhususR2,
+              khususR4Enabled: cfg.khususR4Enabled,
+              khususR2Enabled: cfg.khususR2Enabled,
               biayaAntarJemput: cfg.biayaAntarJemput,
             };
           } else {
@@ -448,6 +456,14 @@ class PricingStore {
               wilayah: cfg.wilayah || cfg.samsatId,
               biayaJasa: cfg.biayaJasa || 0,
               biayaJasaLengkap: cfg.biayaJasa || 0,
+              biayaJasaR4: cfg.biayaJasaR4 ?? cfg.biayaJasa,
+              biayaJasaR2: cfg.biayaJasaR2,
+              jasaR4Enabled: cfg.jasaR4Enabled,
+              jasaR2Enabled: cfg.jasaR2Enabled,
+              biayaKhususR4: cfg.biayaKhususR4,
+              biayaKhususR2: cfg.biayaKhususR2,
+              khususR4Enabled: cfg.khususR4Enabled,
+              khususR2Enabled: cfg.khususR2Enabled,
               biayaJasaNembak: cfg.jasaNembak?.nominal || 0,
               biayaAntarJemput: cfg.biayaAntarJemput || 50000,
               antarJemputEnabled: cfg.antarJemputEnabled ?? true,
@@ -1645,6 +1661,16 @@ class PricingStore {
 
     const oldBiayaJasa = existing.biayaJasa;
 
+    if (updates.biayaJasa !== undefined) existing.biayaJasa = updates.biayaJasa;
+    if (updates.biayaJasaR4 !== undefined) existing.biayaJasaR4 = updates.biayaJasaR4;
+    if (updates.biayaJasaR2 !== undefined) existing.biayaJasaR2 = updates.biayaJasaR2;
+    if (updates.jasaR4Enabled !== undefined) existing.jasaR4Enabled = updates.jasaR4Enabled;
+    if (updates.jasaR2Enabled !== undefined) existing.jasaR2Enabled = updates.jasaR2Enabled;
+    if (updates.biayaKhususR4 !== undefined) existing.biayaKhususR4 = updates.biayaKhususR4;
+    if (updates.biayaKhususR2 !== undefined) existing.biayaKhususR2 = updates.biayaKhususR2;
+    if (updates.khususR4Enabled !== undefined) existing.khususR4Enabled = updates.khususR4Enabled;
+    if (updates.khususR2Enabled !== undefined) existing.khususR2Enabled = updates.khususR2Enabled;
+
     if (updates.jasaLengkap) existing.jasaLengkap = { ...updates.jasaLengkap };
     if (updates.jasaNembak) {
       existing.jasaNembak = { ...updates.jasaNembak };
@@ -2068,6 +2094,14 @@ class PricingStore {
     serviceIdOrName: string,
     sourceConfig: {
       biayaJasaLengkap: number;
+      biayaJasaR4?: number;
+      biayaJasaR2?: number;
+      jasaR4Enabled?: boolean;
+      jasaR2Enabled?: boolean;
+      biayaKhususR4?: number;
+      biayaKhususR2?: number;
+      khususR4Enabled?: boolean;
+      khususR2Enabled?: boolean;
       jasaLengkapEnabled: boolean;
       biayaJasaNembak: number;
       jasaNembakEnabled: boolean;
@@ -2152,6 +2186,14 @@ class PricingStore {
         if (scope.applyBiayaLayanan !== false) {
           row.biayaJasa = sourceConfig.biayaJasaLengkap;
           row.biayaJasaLengkap = sourceConfig.biayaJasaLengkap;
+          if (sourceConfig.biayaJasaR4 !== undefined) row.biayaJasaR4 = sourceConfig.biayaJasaR4;
+          if (sourceConfig.biayaJasaR2 !== undefined) row.biayaJasaR2 = sourceConfig.biayaJasaR2;
+          if (sourceConfig.jasaR4Enabled !== undefined) row.jasaR4Enabled = sourceConfig.jasaR4Enabled;
+          if (sourceConfig.jasaR2Enabled !== undefined) row.jasaR2Enabled = sourceConfig.jasaR2Enabled;
+          if (sourceConfig.biayaKhususR4 !== undefined) row.biayaKhususR4 = sourceConfig.biayaKhususR4;
+          if (sourceConfig.biayaKhususR2 !== undefined) row.biayaKhususR2 = sourceConfig.biayaKhususR2;
+          if (sourceConfig.khususR4Enabled !== undefined) row.khususR4Enabled = sourceConfig.khususR4Enabled;
+          if (sourceConfig.khususR2Enabled !== undefined) row.khususR2Enabled = sourceConfig.khususR2Enabled;
           row.jasaLengkapEnabled = sourceConfig.jasaLengkapEnabled;
           row.biayaPengurusanKhusus = sourceConfig.biayaJasaNembak;
           row.biayaJasaNembak = sourceConfig.biayaJasaNembak;
@@ -2187,6 +2229,14 @@ class PricingStore {
         if (existing) {
           if (scope.applyBiayaLayanan !== false) {
             existing.biayaJasa = sourceConfig.biayaJasaLengkap;
+            if (sourceConfig.biayaJasaR4 !== undefined) existing.biayaJasaR4 = sourceConfig.biayaJasaR4;
+            if (sourceConfig.biayaJasaR2 !== undefined) existing.biayaJasaR2 = sourceConfig.biayaJasaR2;
+            if (sourceConfig.jasaR4Enabled !== undefined) existing.jasaR4Enabled = sourceConfig.jasaR4Enabled;
+            if (sourceConfig.jasaR2Enabled !== undefined) existing.jasaR2Enabled = sourceConfig.jasaR2Enabled;
+            if (sourceConfig.biayaKhususR4 !== undefined) existing.biayaKhususR4 = sourceConfig.biayaKhususR4;
+            if (sourceConfig.biayaKhususR2 !== undefined) existing.biayaKhususR2 = sourceConfig.biayaKhususR2;
+            if (sourceConfig.khususR4Enabled !== undefined) existing.khususR4Enabled = sourceConfig.khususR4Enabled;
+            if (sourceConfig.khususR2Enabled !== undefined) existing.khususR2Enabled = sourceConfig.khususR2Enabled;
             existing.jasaLengkap = {
               nominal: sourceConfig.biayaJasaLengkap,
               enabled: sourceConfig.jasaLengkapEnabled,

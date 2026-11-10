@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { pricingStore } from "../src/app/data/pricingStore";
 import { pricingRepository } from "../src/data/repositories/pricingRepository";
-import { MockPricingProvider } from "../src/data/mock/mockPricingProvider";
+import { MockPricingProvider } from "./fixtures/mock/mockPricingProvider";
 
 test("Biaya Layanan Tahap 3: Frontend Data Layer & SSoT Synchronization Verification", async (t) => {
   const serviceId = "svc-perp-1th";
@@ -13,7 +13,10 @@ test("Biaya Layanan Tahap 3: Frontend Data Layer & SSoT Synchronization Verifica
     const mockProvider = new MockPricingProvider();
     mockProvider.batchReplicateServicePricing = async (params: any) => {
       calledParams = params;
-      return { success: true, updatedCount: 500, preservedCount: 15, totalCount: 515 };
+      const isOverwrite = params.overridePolicy === "OVERWRITE_ALL";
+      const preservedCount = isOverwrite ? 0 : 15;
+      const updatedCount = isOverwrite ? 515 : 500;
+      return { success: true, updatedCount, preservedCount, totalCount: 515 };
     };
 
     pricingRepository.setProvider(mockProvider);

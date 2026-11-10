@@ -32,7 +32,7 @@ import { orderStore } from "../src/app/data/orderStore";
 import { orderService } from "../server/src/services/orderService";
 import { validateOrderUpdatePayload } from "../server/src/middleware/validation";
 import { ApiOrderProvider } from "../src/data/api/apiOrderProvider";
-import { MockOrderProvider } from "../src/data/mock/mockOrderProvider";
+import { MockOrderProvider } from "./fixtures/mock/mockOrderProvider";
 import { getDb } from "../server/src/database/db";
 
 test("Scenario 1: Tambah data sukses -> modal ditutup, popup sukses ('Data Berhasil Ditambahkan'), data ada di tabel", async () => {
@@ -380,7 +380,7 @@ test("Scenario 12: Nilai form tidak hilang saat error pada tambah data", async (
   ];
 
   // Clone form state
-  let currentRows = JSON.parse(JSON.stringify(initialFormRows));
+  const currentRows = JSON.parse(JSON.stringify(initialFormRows));
 
   // Simulate failed mutation (e.g. server returned 500)
   const mockFailedSubmit = async () => {
@@ -411,7 +411,7 @@ test("Scenario 13: Nilai form tidak hilang saat error pada edit data", async () 
     },
   ];
 
-  let currentRows = JSON.parse(JSON.stringify(editedFormRows));
+  const currentRows = JSON.parse(JSON.stringify(editedFormRows));
 
   // Simulate failed mutation (e.g. duplicate invoice)
   const mockFailedEdit = async () => {

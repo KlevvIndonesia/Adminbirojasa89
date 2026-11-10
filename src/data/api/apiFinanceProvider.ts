@@ -14,7 +14,7 @@ import {
   KasMessengerItem,
   PengeluaranItem,
 } from "../../domain/finance/types";
-import { IFinanceDataProvider } from "../mock/mockFinanceProvider";
+import { IFinanceDataProvider } from "../../domain/finance/types";
 import { isFullyPaid, toFinancePaymentStatus, toCanonicalPaymentStatus } from "../../domain/finance/paymentMapping";
 import { APP_CONFIG } from "../../app/config/appConfig";
 import {

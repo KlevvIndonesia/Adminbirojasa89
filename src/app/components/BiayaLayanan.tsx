@@ -28,29 +28,25 @@ import { EstimatorR4Tahunan } from "./estimation/EstimatorR4Tahunan";
 import { EstimatorR2Tahunan } from "./estimation/EstimatorR2Tahunan";
 import { EstimatorExtended } from "./estimation/EstimatorExtended";
 import { ProvinsiFilterSelect } from "./ProvinsiFilterSelect";
+import { SERVICE_STANDARD_BASELINES, getStandardJasa } from "../../domain/pricing/pricingResolver";
+export { SERVICE_STANDARD_BASELINES, getStandardJasa };
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Service Standard Baselines & Overrides Detector
+// Overrides Detector
 // ─────────────────────────────────────────────────────────────────────────────
 
-export const SERVICE_STANDARD_BASELINES: Record<string, { jasa: number; kurir: number }> = {
-  "Perpanjangan 1 Tahun": { jasa: 250000, kurir: 50000 },
-  "Perpanjangan 5 Tahun": { jasa: 500000, kurir: 50000 },
-  "Mutasi Antar Samsat": { jasa: 800000, kurir: 50000 },
-  "Mutasi Luar Daerah": { jasa: 1500000, kurir: 50000 },
-  "Balik Nama": { jasa: 1200000, kurir: 50000 },
-  "Tarik Berkas": { jasa: 600000, kurir: 50000 },
-  "Duplikat STNK": { jasa: 350000, kurir: 50000 },
-  "Lainnya": { jasa: 300000, kurir: 50000 },
-};
-
-export const isRowCustomOrOverridden = (item: any): boolean => {
+export const isRowCustomOrOverridden = (item: any, vehicle: "Mobil" | "Motor" = "Mobil"): boolean => {
   const baseline = SERVICE_STANDARD_BASELINES[item.layanan] || { jasa: 250000, kurir: 50000 };
-  const jasa = item.biayaJasaLengkap ?? item.biayaJasa ?? 0;
+  const baselineJasa = vehicle === "Mobil" ? (baseline.jasaR4 ?? baseline.jasa) : (baseline.jasaR2 ?? Math.round(baseline.jasa * 0.5));
+  const jasa = vehicle === "Mobil"
+    ? (item.biayaJasaR4 ?? item.biayaJasaLengkap ?? item.biayaJasa ?? 0)
+    : (item.biayaJasaR2 ?? (item.layanan === "Mutasi Luar Daerah" ? 500000 : Math.round(Number(item.biayaJasa ?? 0) * 0.5)));
   const kurir = item.biayaAntarJemput ?? 50000;
   const hasCustomFees = Array.isArray(item.biayaLainnya) && item.biayaLainnya.some((b: any) => b.enabled !== false && b.label && b.label.trim() !== "");
-  const isKhususActive = item.pengurusanKhususEnabled === true || item.jasaNembakEnabled === true;
-  return jasa !== baseline.jasa || kurir !== baseline.kurir || hasCustomFees || isKhususActive;
+  const isKhususActive = vehicle === "Mobil"
+    ? (item.khususR4Enabled === true || item.pengurusanKhususEnabled === true || item.jasaNembakEnabled === true)
+    : (item.khususR2Enabled === true || item.pengurusanKhususEnabled === true || item.jasaNembakEnabled === true);
+  return jasa !== baselineJasa || kurir !== baseline.kurir || hasCustomFees || isKhususActive;
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -244,6 +240,16 @@ export interface SamsatFeeDraft {
   jasaLengkapIncludesInTotal: boolean;
   savedJasaLengkapIncludesInTotal: boolean;
 
+  biayaJasaR4: string;
+  jasaR4Enabled: boolean;
+  biayaJasaR2: string;
+  jasaR2Enabled: boolean;
+
+  biayaKhususR4: string;
+  khususR4Enabled: boolean;
+  biayaKhususR2: string;
+  khususR2Enabled: boolean;
+
   biayaJasaNembak: string;
   jasaNembakEnabled: boolean;
   jasaNembakIncludesInTotal: boolean;
@@ -291,6 +297,14 @@ const buildEmptySamsatDraft = (): SamsatFeeDraft => ({
   jasaLengkapEnabled: true,
   jasaLengkapIncludesInTotal: true,
   savedJasaLengkapIncludesInTotal: true,
+  biayaJasaR4: "1500000",
+  jasaR4Enabled: true,
+  biayaJasaR2: "500000",
+  jasaR2Enabled: true,
+  biayaKhususR4: "900000",
+  khususR4Enabled: false,
+  biayaKhususR2: "300000",
+  khususR2Enabled: false,
   biayaJasaNembak: "300000",
   jasaNembakEnabled: false,
   jasaNembakIncludesInTotal: true,
@@ -400,6 +414,7 @@ export function BiayaLayanan() {
   >("Perpanjangan 1 Tahun");
 
   const [selectedItem, setSelectedItem] = useState<any>(null);
+  const [tableVehicle, setTableVehicle] = useState<"Mobil" | "Motor">("Mobil");
 
   // General Rules Modal & Regional Samsat Tariff Modal states
   const [isGeneralRulesOpen, setIsGeneralRulesOpen] = useState(false);
@@ -547,10 +562,17 @@ export function BiayaLayanan() {
     const adminStnk = (tpl?.adminStnk ?? refTpl?.adminStnk ?? (serviceName.includes("5 Tahun") ? (vehicle === "Mobil" ? 200000 : 100000) : 0)).toString();
     const adminTnkb = (tpl?.adminTnkb ?? refTpl?.adminTnkb ?? (serviceName.includes("5 Tahun") ? (vehicle === "Mobil" ? 100000 : 60000) : 0)).toString();
 
-    const components = (tpl?.components || refTpl?.components || []).map((c) => ({
-      ...c,
-      description: sanitizeComponentDescription(c.description),
-    }));
+    const standardJasa = getStandardJasa(serviceName, vehicle);
+    const components = (tpl?.components || refTpl?.components || []).map((c) => {
+      const isJasaComp = c.category === "JASA" || c.ruleId === "PROSES_DAN_JASA_MUTASI" || c.ruleId === "JASA" || c.code === "FEE-01" || c.id === "proses-dan-jasa";
+      return {
+        ...c,
+        defaultValue: isJasaComp ? standardJasa : c.defaultValue,
+        description: isJasaComp
+          ? `Biaya Proses dan Jasa ${serviceName === "Mutasi Luar Daerah" ? "Mutasi LD" : serviceName} ${vehicle === "Mobil" ? "Mobil" : "Motor"} Rp ${standardJasa.toLocaleString("id-ID")}`
+          : sanitizeComponentDescription(c.description),
+      };
+    });
     const savedIncludesInTotal: Record<string, boolean> = {};
     components.forEach((c) => {
       savedIncludesInTotal[c.id] = c.includesInTotal ?? true;
@@ -575,10 +597,25 @@ export function BiayaLayanan() {
     const samsatId = resolveSamsatId(item.wilayah);
     const config = pricingStore.getServiceFeeConfig(serviceId, samsatId);
 
-    const jasaLengkapNom = (config?.jasaLengkap?.nominal ?? item.biayaJasaLengkap ?? item.biayaJasa ?? 500000).toString();
+    const defaultMobilJasa = getStandardJasa(item.layanan, "Mobil");
+    const defaultMotorJasa = getStandardJasa(item.layanan, "Motor");
+
+    const jasaR4Nom = (config?.biayaJasaR4 ?? item.biayaJasaR4 ?? (item.layanan === "Mutasi Luar Daerah" ? 1500000 : defaultMobilJasa)).toString();
+    const jasaR4En = config?.jasaR4Enabled ?? item.jasaR4Enabled ?? true;
+
+    const jasaR2Nom = (config?.biayaJasaR2 ?? item.biayaJasaR2 ?? (item.layanan === "Mutasi Luar Daerah" ? 500000 : defaultMotorJasa)).toString();
+    const jasaR2En = config?.jasaR2Enabled ?? item.jasaR2Enabled ?? true;
+
+    const khususR4Nom = (config?.biayaKhususR4 ?? item.biayaKhususR4 ?? Math.round(Number(jasaR4Nom) * 0.6)).toString();
+    const khususR4En = config?.khususR4Enabled ?? item.khususR4Enabled ?? false;
+
+    const khususR2Nom = (config?.biayaKhususR2 ?? item.biayaKhususR2 ?? Math.round(Number(jasaR2Nom) * 0.6)).toString();
+    const khususR2En = config?.khususR2Enabled ?? item.khususR2Enabled ?? false;
+
+    const jasaLengkapNom = (config?.jasaLengkap?.nominal ?? item.biayaJasaLengkap ?? item.biayaJasa ?? jasaR4Nom).toString();
     const jasaLengkapEn = config?.jasaLengkap?.enabled ?? item.jasaLengkapEnabled ?? true;
 
-    const jasaNembakNom = (config?.biayaPengurusanKhusus?.nominal ?? config?.jasaNembak?.nominal ?? item.biayaPengurusanKhusus ?? item.biayaJasaNembak ?? Math.round(Number(jasaLengkapNom) * 0.6)).toString();
+    const jasaNembakNom = (config?.biayaPengurusanKhusus?.nominal ?? config?.jasaNembak?.nominal ?? item.biayaPengurusanKhusus ?? item.biayaJasaNembak ?? khususR4Nom).toString();
     const jasaNembakEn = config?.biayaPengurusanKhusus?.enabled ?? config?.jasaNembak?.enabled ?? item.pengurusanKhususEnabled ?? item.jasaNembakEnabled ?? false;
 
     const antarJemputNom = (config?.biayaAntarJemput ?? item.biayaAntarJemput ?? 50000).toString();
@@ -615,6 +652,15 @@ export function BiayaLayanan() {
       jasaLengkapEnabled: jasaLengkapEn,
       jasaLengkapIncludesInTotal: true,
       savedJasaLengkapIncludesInTotal: true,
+
+      biayaJasaR4: jasaR4Nom,
+      jasaR4Enabled: jasaR4En,
+      biayaJasaR2: jasaR2Nom,
+      jasaR2Enabled: jasaR2En,
+      biayaKhususR4: khususR4Nom,
+      khususR4Enabled: khususR4En,
+      biayaKhususR2: khususR2Nom,
+      khususR2Enabled: khususR2En,
 
       biayaJasaNembak: jasaNembakNom,
       jasaNembakEnabled: jasaNembakEn,
@@ -847,12 +893,21 @@ export function BiayaLayanan() {
   const handleSaveUnified = async () => {
     if (!selectedItem) return;
 
-    const biayaJasaLengkapNum = parseInt(samsatDraft.biayaJasaLengkap) || 0;
-    const biayaJasaNembakNum = parseInt(samsatDraft.biayaJasaNembak) || 0;
+    const biayaJasaR4Num = parseInt(samsatDraft.biayaJasaR4) || parseInt(samsatDraft.biayaJasaLengkap) || 0;
+    const biayaJasaR2Num = parseInt(samsatDraft.biayaJasaR2) || 0;
+    const biayaKhususR4Num = parseInt(samsatDraft.biayaKhususR4) || parseInt(samsatDraft.biayaJasaNembak) || 0;
+    const biayaKhususR2Num = parseInt(samsatDraft.biayaKhususR2) || 0;
     const biayaAntarJemputNum = parseInt(samsatDraft.biayaAntarJemput) || 0;
     const swdklljNum = parseInt(samsatDraft.nominalSwdkllj) || 0;
 
-    if (biayaJasaLengkapNum < 0 || biayaJasaNembakNum < 0 || biayaAntarJemputNum < 0 || swdklljNum < 0) {
+    if (
+      biayaJasaR4Num < 0 ||
+      biayaJasaR2Num < 0 ||
+      biayaKhususR4Num < 0 ||
+      biayaKhususR2Num < 0 ||
+      biayaAntarJemputNum < 0 ||
+      swdklljNum < 0
+    ) {
       toast.error("Nominal biaya tidak boleh negatif!");
       return;
     }
@@ -871,13 +926,21 @@ export function BiayaLayanan() {
     // 1. Update row in pricingStore
     const updatedRow: any = {
       ...selectedItem,
-      biayaJasa: biayaJasaLengkapNum,
-      biayaJasaLengkap: biayaJasaLengkapNum,
-      jasaLengkapEnabled: samsatDraft.jasaLengkapEnabled,
-      biayaPengurusanKhusus: biayaJasaNembakNum,
-      biayaJasaNembak: biayaJasaNembakNum,
-      pengurusanKhususEnabled: samsatDraft.jasaNembakEnabled,
-      jasaNembakEnabled: samsatDraft.jasaNembakEnabled,
+      biayaJasa: biayaJasaR4Num,
+      biayaJasaLengkap: biayaJasaR4Num,
+      biayaJasaR4: biayaJasaR4Num,
+      biayaJasaR2: biayaJasaR2Num,
+      jasaR4Enabled: samsatDraft.jasaR4Enabled,
+      jasaR2Enabled: samsatDraft.jasaR2Enabled,
+      biayaKhususR4: biayaKhususR4Num,
+      biayaKhususR2: biayaKhususR2Num,
+      khususR4Enabled: samsatDraft.khususR4Enabled,
+      khususR2Enabled: samsatDraft.khususR2Enabled,
+      jasaLengkapEnabled: samsatDraft.jasaR4Enabled,
+      biayaPengurusanKhusus: biayaKhususR4Num,
+      biayaJasaNembak: biayaKhususR4Num,
+      pengurusanKhususEnabled: samsatDraft.khususR4Enabled,
+      jasaNembakEnabled: samsatDraft.khususR4Enabled,
       biayaAntarJemput: biayaAntarJemputNum,
       antarJemputEnabled: samsatDraft.antarJemputEnabled,
       antarJemputMode: samsatDraft.antarJemputMode,
@@ -908,18 +971,26 @@ export function BiayaLayanan() {
 
       // 3. Update authoritative ServiceFeeConfig in pricingStore
       pricingStore.updateServiceFeeConfig(selectedItem.layanan, selectedItem.wilayah, {
-        biayaJasa: biayaJasaLengkapNum,
+        biayaJasa: biayaJasaR4Num,
+        biayaJasaR4: biayaJasaR4Num,
+        biayaJasaR2: biayaJasaR2Num,
+        jasaR4Enabled: samsatDraft.jasaR4Enabled,
+        jasaR2Enabled: samsatDraft.jasaR2Enabled,
+        biayaKhususR4: biayaKhususR4Num,
+        biayaKhususR2: biayaKhususR2Num,
+        khususR4Enabled: samsatDraft.khususR4Enabled,
+        khususR2Enabled: samsatDraft.khususR2Enabled,
         jasaLengkap: {
-          nominal: biayaJasaLengkapNum,
-          enabled: samsatDraft.jasaLengkapEnabled,
+          nominal: biayaJasaR4Num,
+          enabled: samsatDraft.jasaR4Enabled,
         },
         biayaPengurusanKhusus: {
-          nominal: biayaJasaNembakNum,
-          enabled: samsatDraft.jasaNembakEnabled,
+          nominal: biayaKhususR4Num,
+          enabled: samsatDraft.khususR4Enabled,
         },
         jasaNembak: {
-          nominal: biayaJasaNembakNum,
-          enabled: samsatDraft.jasaNembakEnabled,
+          nominal: biayaKhususR4Num,
+          enabled: samsatDraft.khususR4Enabled,
         },
         biayaAntarJemput: biayaAntarJemputNum,
         antarJemputEnabled: samsatDraft.antarJemputEnabled,
@@ -967,8 +1038,14 @@ export function BiayaLayanan() {
       adminTnkb: parseInt(vehicleDrafts.Mobil.adminTnkb) || 0,
     });
     const activeMobilTpl = estimationStore.getTemplate(mobilTplId);
+    let newMobilJasa: number | undefined;
     if (activeMobilTpl) {
       activeMobilTpl.components = vehicleDrafts.Mobil.components.map((c) => ({ ...c }));
+      const jasaComp = activeMobilTpl.components.find((c) => c.category === "JASA" || c.ruleId === "PROSES_DAN_JASA_MUTASI" || c.ruleId === "JASA");
+      if (jasaComp && typeof jasaComp.defaultValue === "number" && jasaComp.defaultValue > 0) {
+        activeMobilTpl.biayaJasa = jasaComp.defaultValue;
+        newMobilJasa = jasaComp.defaultValue;
+      }
       estimationStore.updateTemplate(activeMobilTpl);
     }
 
@@ -988,17 +1065,39 @@ export function BiayaLayanan() {
       adminTnkb: parseInt(vehicleDrafts.Motor.adminTnkb) || 0,
     });
     const activeMotorTpl = estimationStore.getTemplate(motorTplId);
+    let newMotorJasa: number | undefined;
     if (activeMotorTpl) {
       activeMotorTpl.components = vehicleDrafts.Motor.components.map((c) => ({ ...c }));
+      const motorJasaComp = activeMotorTpl.components.find((c) => c.category === "JASA" || c.ruleId === "PROSES_DAN_JASA_MUTASI" || c.ruleId === "JASA");
+      if (motorJasaComp && typeof motorJasaComp.defaultValue === "number" && motorJasaComp.defaultValue > 0) {
+        activeMotorTpl.biayaJasa = motorJasaComp.defaultValue;
+        newMotorJasa = motorJasaComp.defaultValue;
+      }
       estimationStore.updateTemplate(activeMotorTpl);
     }
 
-    // 3. Sync Mutasi components to all Samsats for this service
+    // 3. Sync Mutasi components and baseline service fee to all Samsats for this service
+    const shouldSyncBiayaLayanan = (typeof newMobilJasa === "number" && newMobilJasa > 0) || (typeof newMotorJasa === "number" && newMotorJasa > 0);
+    const standardEntry = SERVICE_STANDARD_BASELINES[currentLayanan];
+    if (shouldSyncBiayaLayanan && standardEntry) {
+      if (typeof newMobilJasa === "number" && newMobilJasa > 0) {
+        standardEntry.jasa = newMobilJasa;
+        standardEntry.jasaR4 = newMobilJasa;
+      }
+      if (typeof newMotorJasa === "number" && newMotorJasa > 0) {
+        standardEntry.jasaR2 = newMotorJasa;
+      }
+    }
+
     pricingStore.applyConfigToAllSamsats(
       currentLayanan,
       {
-        biayaJasaLengkap: 0,
+        biayaJasaLengkap: newMobilJasa ?? 0,
+        biayaJasaR4: newMobilJasa,
+        biayaJasaR2: newMotorJasa,
         jasaLengkapEnabled: true,
+        jasaR4Enabled: true,
+        jasaR2Enabled: true,
         biayaJasaNembak: 0,
         jasaNembakEnabled: false,
         biayaAntarJemput: 0,
@@ -1008,12 +1107,13 @@ export function BiayaLayanan() {
         components: samsatDraft.selectedComponents,
       },
       {
-        applyBiayaLayanan: false,
+        applyBiayaLayanan: shouldSyncBiayaLayanan,
         applyBiayaTambahan: false,
         applyKomponenSamsat: true,
         applyBiayaLainnya: false,
         applyAturanEstimasi: true,
-      }
+      },
+      "PRESERVE_EXISTING_CUSTOM"
     );
 
     setIsGeneralRulesOpen(false);
@@ -1599,26 +1699,136 @@ export function BiayaLayanan() {
 
   const renderSectionBiayaLayanan = () => {
     return (
-      <div className="space-y-2.5">
+      <div className="space-y-3.5">
         <div>
           <h4 className="text-xs font-bold uppercase tracking-wider text-foreground flex items-center gap-1.5">
             <Briefcase className="w-3.5 h-3.5 text-primary" />
-            Biaya Layanan — Tarif Jasa Samsat
+            Biaya Layanan — Tarif Jasa Samsat (R4 & R2)
           </h4>
           <p className="text-[11px] text-muted-foreground mt-0.5">
-            Kelola tarif jasa standar biro dan biaya pengurusan dokumen khusus untuk wilayah {samsatDraft.wilayah}.
+            Kelola tarif jasa standar biro dan biaya pengurusan dokumen khusus untuk kendaraan Mobil (R4) dan Motor (R2) di wilayah {samsatDraft.wilayah}.
           </p>
         </div>
 
-        {/* 1. Jasa Standar */}
-        <div className="p-3 rounded-lg border border-border/70 bg-card">
+        {/* 1. Tarif Jasa Mobil (R4) */}
+        <div className="p-3.5 rounded-lg border border-border/80 bg-card space-y-3">
+          <div className="flex items-center justify-between border-b border-border/60 pb-2">
+            <div className="flex items-center gap-2">
+              <Badge variant="outline" className="text-[10px] font-semibold bg-primary/10 text-primary border-primary/30">
+                Mobil (R4)
+              </Badge>
+              <span className="text-xs font-bold text-foreground">Tarif Jasa Mobil</span>
+            </div>
+            <span className="text-[10px] text-muted-foreground">Khusus Kendaraan Roda 4</span>
+          </div>
+
+          {/* Jasa Standar Mobil */}
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
             <div className="min-w-0">
               <Label className="text-xs font-semibold text-foreground">
-                Biaya Jasa (Standar)
+                Biaya Jasa Standar Mobil (R4)
               </Label>
               <p className="text-[11px] text-muted-foreground mt-0.5">
-                Tarif standar pengurusan berkas di Samsat {samsatDraft.wilayah}.
+                Tarif standar pengurusan berkas Mobil di Samsat {samsatDraft.wilayah}.
+              </p>
+            </div>
+            <div className="flex items-center gap-2.5 shrink-0 self-end sm:self-auto">
+              <div className="flex items-center gap-1.5 bg-background border border-border rounded-md px-2.5 py-1 focus-within:ring-1 focus-within:ring-primary">
+                <span className="text-[11px] text-muted-foreground font-medium">Rp</span>
+                <input
+                  className="w-28 text-xs font-mono tabular-nums text-right bg-transparent border-0 focus:outline-hidden"
+                  type="number"
+                  placeholder="1500000"
+                  value={samsatDraft.biayaJasaR4}
+                  onChange={(e) =>
+                    setSamsatDraft({
+                      ...samsatDraft,
+                      biayaJasaR4: e.target.value,
+                      biayaJasaLengkap: e.target.value,
+                    })
+                  }
+                />
+              </div>
+              <ComponentStatusControls
+                isActive={samsatDraft.jasaR4Enabled}
+                onToggleActive={() => {
+                  const nextAct = !samsatDraft.jasaR4Enabled;
+                  setSamsatDraft((prev) => ({
+                    ...prev,
+                    jasaR4Enabled: nextAct,
+                    jasaLengkapEnabled: nextAct,
+                    jasaLengkapIncludesInTotal: nextAct,
+                    savedJasaLengkapIncludesInTotal: nextAct,
+                  }));
+                }}
+              />
+            </div>
+          </div>
+
+          {/* Pengurusan Khusus Mobil */}
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 pt-2 border-t border-border/40">
+            <div className="min-w-0">
+              <Label className="text-xs font-semibold text-foreground">
+                Biaya Pengurusan Khusus Mobil (R4)
+              </Label>
+              <p className="text-[11px] text-muted-foreground mt-0.5">
+                Penanganan berkas Mobil tanpa KTP asli atau kondisi administrasi khusus.
+              </p>
+            </div>
+            <div className="flex items-center gap-2.5 shrink-0 self-end sm:self-auto">
+              <div className="flex items-center gap-1.5 bg-background border border-border rounded-md px-2.5 py-1 focus-within:ring-1 focus-within:ring-primary">
+                <span className="text-[11px] text-muted-foreground font-medium">Rp</span>
+                <input
+                  className="w-28 text-xs font-mono tabular-nums text-right bg-transparent border-0 focus:outline-hidden"
+                  type="number"
+                  placeholder="900000"
+                  value={samsatDraft.biayaKhususR4}
+                  onChange={(e) =>
+                    setSamsatDraft({
+                      ...samsatDraft,
+                      biayaKhususR4: e.target.value,
+                      biayaJasaNembak: e.target.value,
+                    })
+                  }
+                />
+              </div>
+              <ComponentStatusControls
+                isActive={samsatDraft.khususR4Enabled}
+                onToggleActive={() => {
+                  const nextAct = !samsatDraft.khususR4Enabled;
+                  setSamsatDraft((prev) => ({
+                    ...prev,
+                    khususR4Enabled: nextAct,
+                    jasaNembakEnabled: nextAct,
+                    jasaNembakIncludesInTotal: nextAct,
+                    savedJasaNembakIncludesInTotal: nextAct,
+                  }));
+                }}
+              />
+            </div>
+          </div>
+        </div>
+
+        {/* 2. Tarif Jasa Motor (R2) */}
+        <div className="p-3.5 rounded-lg border border-border/80 bg-card space-y-3">
+          <div className="flex items-center justify-between border-b border-border/60 pb-2">
+            <div className="flex items-center gap-2">
+              <Badge variant="outline" className="text-[10px] font-semibold bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border-emerald-500/30">
+                Motor (R2)
+              </Badge>
+              <span className="text-xs font-bold text-foreground">Tarif Jasa Motor</span>
+            </div>
+            <span className="text-[10px] text-muted-foreground">Khusus Kendaraan Roda 2</span>
+          </div>
+
+          {/* Jasa Standar Motor */}
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
+            <div className="min-w-0">
+              <Label className="text-xs font-semibold text-foreground">
+                Biaya Jasa Standar Motor (R2)
+              </Label>
+              <p className="text-[11px] text-muted-foreground mt-0.5">
+                Tarif standar pengurusan berkas Motor di Samsat {samsatDraft.wilayah}.
               </p>
             </div>
             <div className="flex items-center gap-2.5 shrink-0 self-end sm:self-auto">
@@ -1628,35 +1838,36 @@ export function BiayaLayanan() {
                   className="w-28 text-xs font-mono tabular-nums text-right bg-transparent border-0 focus:outline-hidden"
                   type="number"
                   placeholder="500000"
-                  value={samsatDraft.biayaJasaLengkap}
-                  onChange={(e) => setSamsatDraft({ ...samsatDraft, biayaJasaLengkap: e.target.value })}
+                  value={samsatDraft.biayaJasaR2}
+                  onChange={(e) =>
+                    setSamsatDraft({
+                      ...samsatDraft,
+                      biayaJasaR2: e.target.value,
+                    })
+                  }
                 />
               </div>
               <ComponentStatusControls
-                isActive={samsatDraft.jasaLengkapEnabled}
+                isActive={samsatDraft.jasaR2Enabled}
                 onToggleActive={() => {
-                  const nextAct = !samsatDraft.jasaLengkapEnabled;
+                  const nextAct = !samsatDraft.jasaR2Enabled;
                   setSamsatDraft((prev) => ({
                     ...prev,
-                    jasaLengkapEnabled: nextAct,
-                    jasaLengkapIncludesInTotal: nextAct,
-                    savedJasaLengkapIncludesInTotal: nextAct,
+                    jasaR2Enabled: nextAct,
                   }));
                 }}
               />
             </div>
           </div>
-        </div>
 
-        {/* 2. Biaya Pengurusan Khusus (Jasa Nembak) */}
-        <div className="p-3 rounded-lg border border-border/70 bg-card">
-          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
+          {/* Pengurusan Khusus Motor */}
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 pt-2 border-t border-border/40">
             <div className="min-w-0">
               <Label className="text-xs font-semibold text-foreground">
-                Biaya Pengurusan Khusus
+                Biaya Pengurusan Khusus Motor (R2)
               </Label>
               <p className="text-[11px] text-muted-foreground mt-0.5">
-                Penanganan berkas tanpa KTP asli atau kondisi administrasi khusus.
+                Penanganan berkas Motor tanpa KTP asli atau kondisi administrasi khusus.
               </p>
             </div>
             <div className="flex items-center gap-2.5 shrink-0 self-end sm:self-auto">
@@ -1666,19 +1877,22 @@ export function BiayaLayanan() {
                   className="w-28 text-xs font-mono tabular-nums text-right bg-transparent border-0 focus:outline-hidden"
                   type="number"
                   placeholder="300000"
-                  value={samsatDraft.biayaJasaNembak}
-                  onChange={(e) => setSamsatDraft({ ...samsatDraft, biayaJasaNembak: e.target.value })}
+                  value={samsatDraft.biayaKhususR2}
+                  onChange={(e) =>
+                    setSamsatDraft({
+                      ...samsatDraft,
+                      biayaKhususR2: e.target.value,
+                    })
+                  }
                 />
               </div>
               <ComponentStatusControls
-                isActive={samsatDraft.jasaNembakEnabled}
+                isActive={samsatDraft.khususR2Enabled}
                 onToggleActive={() => {
-                  const nextAct = !samsatDraft.jasaNembakEnabled;
+                  const nextAct = !samsatDraft.khususR2Enabled;
                   setSamsatDraft((prev) => ({
                     ...prev,
-                    jasaNembakEnabled: nextAct,
-                    jasaNembakIncludesInTotal: nextAct,
-                    savedJasaNembakIncludesInTotal: nextAct,
+                    khususR2Enabled: nextAct,
                   }));
                 }}
               />
@@ -2335,14 +2549,20 @@ export function BiayaLayanan() {
 
   const renderTableRow = (item: any, index: number) => {
     const config = pricingStore.getServiceFeeConfig(item.layanan, item.wilayah);
-    const isLengkapActive = config?.jasaLengkap ? config.jasaLengkap.enabled : item.jasaLengkapEnabled !== false;
+    const isLengkapActive = tableVehicle === "Mobil"
+      ? (config?.jasaR4Enabled ?? config?.jasaLengkap?.enabled ?? item.jasaR4Enabled ?? item.jasaLengkapEnabled !== false)
+      : (config?.jasaR2Enabled ?? item.jasaR2Enabled ?? true);
     const isAntarJemputActive = config?.antarJemputEnabled !== undefined ? config.antarJemputEnabled : item.antarJemputEnabled !== false;
 
-    const biayaJasaVal = item.biayaJasaLengkap ?? item.biayaJasa ?? config?.jasaLengkap?.nominal ?? config?.biayaJasa ?? 0;
+    const defaultVehicleJasa = getStandardJasa(item.layanan, tableVehicle);
+    const biayaJasaVal = tableVehicle === "Mobil"
+      ? (item.biayaJasaR4 ?? item.biayaJasaLengkap ?? item.biayaJasa ?? config?.biayaJasaR4 ?? config?.biayaJasa ?? defaultVehicleJasa)
+      : (item.biayaJasaR2 ?? config?.biayaJasaR2 ?? (item.layanan === "Mutasi Luar Daerah" ? 500000 : defaultVehicleJasa));
+
     const biayaAntarJemputVal = item.biayaAntarJemput ?? config?.biayaAntarJemput ?? 50000;
     const totalBiroVal = (isLengkapActive ? biayaJasaVal : 0) + (isAntarJemputActive ? biayaAntarJemputVal : 0);
 
-    const isCustom = isRowCustomOrOverridden(item);
+    const isCustom = isRowCustomOrOverridden(item, tableVehicle);
     const customFees = (config?.biayaLainnya || item.biayaLainnya || []).filter(
       (b: any) => b.enabled !== false && b.label && b.label.trim() !== ""
     );
@@ -2512,6 +2732,35 @@ export function BiayaLayanan() {
                     <Calculator className="w-3.5 h-3.5" />
                     <span>Kalkulator Estimasi</span>
                   </Button>
+
+                  {supportsVehicleChoice(getCurrentLayanan()) && (
+                    <div className="flex items-center gap-1 border border-border/70 p-0.5 rounded-lg bg-muted/40 shrink-0">
+                      <Button
+                        type="button"
+                        variant={tableVehicle === "Mobil" ? "default" : "ghost"}
+                        size="sm"
+                        onClick={() => {
+                          setTableVehicle("Mobil");
+                          setEditVehicle("Mobil");
+                        }}
+                        className={cn("h-7 px-2.5 text-xs font-semibold", tableVehicle === "Mobil" && "shadow-xs")}
+                      >
+                        Mobil (R4)
+                      </Button>
+                      <Button
+                        type="button"
+                        variant={tableVehicle === "Motor" ? "default" : "ghost"}
+                        size="sm"
+                        onClick={() => {
+                          setTableVehicle("Motor");
+                          setEditVehicle("Motor");
+                        }}
+                        className={cn("h-7 px-2.5 text-xs font-semibold", tableVehicle === "Motor" && "shadow-xs")}
+                      >
+                        Motor (R2)
+                      </Button>
+                    </div>
+                  )}
 
                   {/* Filter Tarif Khusus / Berbeda */}
                   <Button

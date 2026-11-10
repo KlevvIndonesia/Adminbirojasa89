@@ -18,6 +18,6 @@ orderCorrectionRouter.get("/:id", requireAuth, getOrderCorrectionById);
 orderCorrectionRouter.post(
   "/:id/review",
   requireAuth,
-  requireRoles("administrator", "admin", "svp", "supervisor", "spv"),
+  requireRoles("administrator", "admin", "svp"),
   reviewOrderCorrection
 );

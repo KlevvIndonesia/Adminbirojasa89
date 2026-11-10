@@ -9,21 +9,12 @@ import { financeRepository } from "../../data/repositories/financeRepository";
 import { APP_CONFIG } from "../config/appConfig";
 import { parseDateSafe } from "./dashboardAdapter";
 import {
-  profitData as rawProfitData,
-  kasMessengerData as rawKasMessengerData,
-  kasKantorData as rawKasKantorData,
-  pengeluaranKantorData as rawPengeluaranData,
-  tagihanData as rawTagihanData,
-  belumKurangBayarData as rawBelumKurangBayarData,
-  profitTerpendingData as rawProfitTerpendingData,
-  cashbackTerpendingData as rawCashbackTerpendingData,
-  labaRugiData as rawLabaRugiData,
-  LabaRugiMonthlyItem,
   ProfitItem,
   KasMessengerItem,
   KasKantorItem,
   PengeluaranItem,
-} from "./financeDummyData";
+  LabaRugiMonthlyItem,
+} from "../../domain/finance/types";
 
 export type { ProfitItem, KasMessengerItem, KasKantorItem, PengeluaranItem, LabaRugiMonthlyItem };
 
@@ -158,161 +149,7 @@ const SAMPLE_CUSTOMER_PHONES: Record<string, { phone: string; email?: string; al
 
 // Initial state builder migrating all existing dummy data seamlessly
 function buildInitialInvoices(): InvoiceBillingRecord[] {
-  const invoiceList: InvoiceBillingRecord[] = [];
-  let currentId = 1;
-
-  // 1. Migrate raw Tagihan Data
-  rawTagihanData.forEach((tagihan) => {
-    const total = tagihan.totalTagihan || 0;
-    const paid = tagihan.terbayar || 0;
-    const status = derivePaymentStatus(total, paid);
-    const isLunas = status === "Lunas";
-    const contact = SAMPLE_CUSTOMER_PHONES[tagihan.customer] || {
-      phone: undefined,
-      email: `${tagihan.customer.toLowerCase().replace(/[^a-z0-9]/g, "")}@example.com`,
-      alamat: "Kabupaten Bogor, Jawa Barat",
-    };
-
-    const biayaSamsat = (tagihan as any).biayaSamsat ?? 0;
-    const initialMetrics = calculateInvoiceProfitMetrics({ dibayar: paid, totalTagihan: total, biayaSamsat });
-    const profit = (tagihan as any).profit ?? (total > 0 ? initialMetrics.grossServiceMargin : 0);
-
-    invoiceList.push({
-      id: currentId++,
-      tanggal: tagihan.tanggal,
-      customer: tagihan.customer,
-      nopol: tagihan.nopol,
-      jenisLayanan: tagihan.jenisLayanan,
-      totalTagihan: total,
-      terbayar: paid,
-      sisa: Math.max(0, total - paid),
-      status,
-      jatuhTempo: tagihan.jatuhTempo,
-      invoice: `INV-24-${String(tagihan.id).padStart(4, "0")}`,
-      phone: contact.phone,
-      email: contact.email,
-      alamat: contact.alamat,
-      biayaSamsat,
-      profit,
-      profitStatus: isLunas ? "REALIZED" : "PENDING",
-      cashback: isLunas ? Math.round(profit * 0.1) : 0,
-      cashbackStatus: isLunas ? "REALIZED" : "PENDING",
-      isCashRealized: isLunas,
-      cashRecordedAmount: paid, // Already in cash ledger initially if paid
-      metodePembayaran: paid > 0 ? "Transfer Bank" : "Tempo",
-      bank: paid > 0 ? "BCA" : "Kas Kantor",
-      billingStatus: "ACTIVE",
-    });
-  });
-
-  // 2. Migrate Belum & Kurang Bayar Items (ensuring 0 duplicate nopol/invoice)
-  rawBelumKurangBayarData.forEach((bkb) => {
-    const existing = invoiceList.find((inv) => inv.nopol === bkb.nopol || inv.invoice === bkb.invoice);
-    if (!existing) {
-      const total = (bkb.uangMasuk || 0) + (bkb.kekurangan || 0);
-      const paid = bkb.uangMasuk || 0;
-      const status = derivePaymentStatus(total, paid);
-      const contact = SAMPLE_CUSTOMER_PHONES[bkb.customer] || {
-        phone: undefined,
-        email: "finance@customer.co.id",
-        alamat: "Jawa Barat",
-      };
-
-      invoiceList.push({
-        id: currentId++,
-        tanggal: bkb.tanggal,
-        customer: bkb.customer,
-        nopol: bkb.nopol,
-        namaBerkas: bkb.namaBerkas,
-        jenisLayanan: bkb.pengurusan,
-        totalTagihan: total,
-        terbayar: paid,
-        sisa: Math.max(0, total - paid),
-        status,
-        jatuhTempo: "20 November 2024",
-        invoice: bkb.invoice || `INV-BKB-${String(bkb.id).padStart(3, "0")}`,
-        phone: contact.phone,
-        email: contact.email,
-        alamat: contact.alamat,
-        biayaSamsat: bkb.biayaSamsat,
-        profit: bkb.profit,
-        profitStatus: "PENDING",
-        cashback: 0,
-        cashbackStatus: "PENDING",
-        isCashRealized: paid > 0,
-        cashRecordedAmount: paid,
-        metodePembayaran: paid > 0 ? "Transfer Bank" : "Tempo",
-        bank: "Kas Kantor",
-        billingStatus: "ACTIVE",
-      });
-    }
-  });
-
-  // 3. Migrate Profit Terpending Items
-  rawProfitTerpendingData.forEach((pt) => {
-    const existing = invoiceList.find((inv) => inv.nopol === pt.nopol || inv.invoice === pt.invoice);
-    if (!existing) {
-      const total = pt.uangMasuk || 0;
-      invoiceList.push({
-        id: currentId++,
-        tanggal: pt.tanggal,
-        customer: pt.customer,
-        nopol: pt.nopol,
-        namaBerkas: pt.namaBerkas,
-        jenisLayanan: pt.pengurusan,
-        totalTagihan: total,
-        terbayar: total,
-        sisa: 0,
-        status: "Lunas",
-        jatuhTempo: pt.tanggal,
-        invoice: pt.invoice,
-        phone: "081288776655",
-        biayaSamsat: pt.biayaSamsat,
-        profit: pt.profit,
-        profitStatus: "PENDING", // Explicitly pending as requested
-        cashback: 0,
-        cashbackStatus: "PENDING",
-        isCashRealized: true,
-        cashRecordedAmount: total,
-        alasanPending: pt.alasan,
-        billingStatus: "ACTIVE",
-      });
-    }
-  });
-
-  // 4. Migrate Cashback Terpending Items
-  rawCashbackTerpendingData.forEach((cb) => {
-    const existing = invoiceList.find((inv) => inv.nopol === cb.nopol || inv.invoice === cb.invoice);
-    if (!existing) {
-      const total = cb.uangMasuk || 0;
-      invoiceList.push({
-        id: currentId++,
-        tanggal: cb.tanggal,
-        customer: cb.customer,
-        nopol: cb.nopol,
-        namaBerkas: cb.namaBerkas,
-        jenisLayanan: cb.pengurusan,
-        totalTagihan: total,
-        terbayar: total,
-        sisa: 0,
-        status: "Lunas",
-        jatuhTempo: cb.tanggal,
-        invoice: cb.invoice,
-        phone: "081377889900",
-        biayaSamsat: total - cb.profit,
-        profit: cb.profit,
-        profitStatus: "REALIZED",
-        cashback: cb.jumlahCashback,
-        cashbackPersen: cb.cashbackPersen,
-        cashbackStatus: "PENDING", // Explicitly pending as requested
-        isCashRealized: true,
-        cashRecordedAmount: total,
-        billingStatus: "ACTIVE",
-      });
-    }
-  });
-
-  return invoiceList;
+  return [];
 }
 
 class FinanceStore {
@@ -378,11 +215,11 @@ class FinanceStore {
       });
     } else {
       this.invoices = buildInitialInvoices();
-      this.kasKantor = [...rawKasKantorData];
-      this.kasMessenger = [...rawKasMessengerData];
-      this.pengeluaran = [...rawPengeluaranData];
-      this.profitData = [...rawProfitData];
-      this.labaRugiData = [...rawLabaRugiData];
+      this.kasKantor = [];
+      this.kasMessenger = [];
+      this.pengeluaran = [];
+      this.profitData = [];
+      this.labaRugiData = [];
     }
 
     // Subscribe to order repository updates to project orders into Data Penjualan reactively
@@ -428,11 +265,11 @@ class FinanceStore {
       });
     } else {
       this.invoices = buildInitialInvoices();
-      this.kasKantor = [...rawKasKantorData];
-      this.kasMessenger = [...rawKasMessengerData];
-      this.pengeluaran = [...rawPengeluaranData];
-      this.profitData = [...rawProfitData];
-      this.labaRugiData = [...rawLabaRugiData];
+      this.kasKantor = [];
+      this.kasMessenger = [];
+      this.pengeluaran = [];
+      this.profitData = [];
+      this.labaRugiData = [];
       this.contractDatasets = {
         "perpanjangan-1-tahun": [...initialPerpanjangan1TahunContract],
         "perpanjangan-5-tahun": [...initialPerpanjangan5TahunContract],

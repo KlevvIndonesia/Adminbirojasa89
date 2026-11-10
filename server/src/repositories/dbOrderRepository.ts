@@ -5,6 +5,7 @@
 
 import { db, runInTransaction } from "../database/db";
 import { OperationalOrder, StageName, STAGES } from "../../../src/domain/order/types";
+import { serializeUtcTimestamp } from "../utils/timestampSerializer";
 
 /**
  * Evaluates whether an order represents a partial estimate or complete pricing.
@@ -105,7 +106,8 @@ export class DbOrderRepository {
     const samsatAsalId = row.samsat_asal_id !== null && row.samsat_asal_id !== undefined ? String(row.samsat_asal_id) : (parsed.samsatAsalId || parsed.samsat_asal_id || undefined);
     const samsatTujuanId = row.samsat_tujuan_id !== null && row.samsat_tujuan_id !== undefined ? String(row.samsat_tujuan_id) : (parsed.samsatTujuanId || parsed.samsat_tujuan_id || "-");
     const createdAt = row.created_at ? String(row.created_at) : (parsed.createdAt || new Date().toISOString());
-    const updatedAt = row.updated_at ? String(row.updated_at) : (parsed.updatedAt || new Date().toISOString());
+    const rawUpdatedAt = row.updated_at ? String(row.updated_at) : (parsed.updatedAt || new Date().toISOString());
+    const updatedAt = serializeUtcTimestamp(rawUpdatedAt) || rawUpdatedAt;
     const costEval = evaluateOrderCostCompleteness({
       ...parsed,
       is_cost_verified: row.is_cost_verified,
@@ -116,8 +118,8 @@ export class DbOrderRepository {
 
     let isCostVerified: boolean;
     let costCompletenessStatus: string;
-    let costVerifiedAt = row.cost_verified_at || parsed.costVerifiedAt || (parsed as any).cost_verified_at || undefined;
-    let costVerifiedBy = row.cost_verified_by || parsed.costVerifiedBy || (parsed as any).cost_verified_by || undefined;
+    const costVerifiedAt = row.cost_verified_at || parsed.costVerifiedAt || (parsed as any).cost_verified_at || undefined;
+    const costVerifiedBy = row.cost_verified_by || parsed.costVerifiedBy || (parsed as any).cost_verified_by || undefined;
 
     if (row.is_cost_verified !== null && row.is_cost_verified !== undefined) {
       isCostVerified = Boolean(row.is_cost_verified);
@@ -193,6 +195,7 @@ export class DbOrderRepository {
       payment,
       createdAt,
       updatedAt,
+      updated_at: updatedAt,
       isCostVerified,
       costCompletenessStatus,
       cost_completeness_status: costCompletenessStatus,
@@ -713,7 +716,11 @@ export class DbOrderRepository {
       WHERE UPPER(osh.order_no) = UPPER(?) OR osh.order_no = ?
       ORDER BY osh.id ASC
     `);
-    return stmt.all(orderNo, orderNo) as any[];
+    const rows = stmt.all(orderNo, orderNo) as any[];
+    return rows.map((r) => ({
+      ...r,
+      waktu_transisi: serializeUtcTimestamp(r.waktu_transisi) || r.waktu_transisi,
+    }));
   }
 
   public advanceOrder(

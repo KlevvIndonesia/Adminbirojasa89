@@ -4,8 +4,11 @@
  */
 
 import { db } from "../database/db";
+import { ApiError } from "../middleware/errorHandler";
+import { isValidCanonicalPaymentId, formatScopedIdempotencyKey } from "../utils/canonicalHasher";
 import { InvoiceBillingRecord, KasKantorItem, PengeluaranItem, KasMessengerItem, CostClassificationType } from "../../../src/domain/finance/types";
 import { computeCanonicalLabaRugi, CanonicalLabaRugiSummary } from "../../../src/domain/finance/labaRugiCanonical";
+import { calculateCanonicalInvoiceTotals } from "../services/canonicalInvoiceCalculator";
 
 export class DbFinanceRepository {
   private mapRowToInvoice(r: any): InvoiceBillingRecord {
@@ -83,25 +86,63 @@ export class DbFinanceRepository {
     };
   }
 
+  /**
+   * Enriches an invoice record with canonical financial calculations (GAP-FIN-05).
+   * Ensures getInvoiceById, getInvoiceByOrderNo, and getInvoiceByNo produce
+   * 100% consistent totals, balances, and statuses with getAllInvoices.
+   */
+  private enrichInvoiceWithCanonicalCalculation(inv: InvoiceBillingRecord): InvoiceBillingRecord {
+    try {
+      const orderNo = (inv.orderNo || "").trim();
+      const invoiceNo = (inv.invoiceNo || inv.invoice || "").trim();
+      const payments = this.getPaymentsByOrderNo(orderNo);
+      const calc = calculateCanonicalInvoiceTotals({
+        invoiceNo,
+        orderNo,
+        totalTagihan: inv.totalTagihan,
+        biayaSamsat: inv.biayaSamsat,
+        isExplicitZero: Boolean(inv.isExplicitZero),
+        basePaid: Number(inv.dibayar ?? inv.terbayar ?? 0),
+        payments,
+      });
+
+      inv.dibayar = calc.verifiedPaid;
+      inv.terbayar = calc.verifiedPaid;
+      inv.sisa = calc.sisaTagihan;
+      (inv as any).overpayment = calc.overpayment;
+      inv.status = calc.status as any;
+      (inv as any).settlementCondition = calc.settlementCondition;
+      inv.profit = calc.grossProfit;
+      inv.profitStatus = calc.profitStatus as any;
+      inv.riwayatPembayaran = calc.allActivePayments;
+
+      const lastVerified = calc.eligibleVerifiedPayments[calc.eligibleVerifiedPayments.length - 1] || calc.allActivePayments[calc.allActivePayments.length - 1];
+      if (lastVerified) {
+        inv.bank = lastVerified.nama_bank || inv.bank;
+        inv.metodePembayaran = lastVerified.metode_pembayaran || inv.metodePembayaran;
+        (inv as any).tanggalBayar = lastVerified.tanggal_bayar;
+        (inv as any).nomorRekening = lastVerified.nomor_rekening;
+      }
+    } catch {
+      // Non-fatal if table not initialized
+    }
+    return inv;
+  }
+
   public getAllInvoices(): InvoiceBillingRecord[] {
     const stmt = db.prepare("SELECT * FROM finance_invoices ORDER BY id DESC");
     const rows = stmt.all() as any[];
 
-    // Join and attach invoice payments
-    let paymentsByInv = new Map<string, any[]>();
+    // Index all active non-void payments by order_no to guarantee strict order isolation (GAP-FIN-01)
+    const paymentsByOrder = new Map<string, any[]>();
     try {
       const paymentsStmt = db.prepare("SELECT * FROM invoice_payments WHERE is_void = 0 ORDER BY id ASC");
       const allPayments = paymentsStmt.all() as any[];
       for (const p of allPayments) {
-        const invKey = (p.invoice_no || "").trim().toUpperCase();
         const ordKey = (p.order_no || "").trim().toUpperCase();
-        if (invKey) {
-          if (!paymentsByInv.has(invKey)) paymentsByInv.set(invKey, []);
-          paymentsByInv.get(invKey)!.push(p);
-        }
-        if (ordKey && ordKey !== invKey) {
-          if (!paymentsByInv.has(ordKey)) paymentsByInv.set(ordKey, []);
-          paymentsByInv.get(ordKey)!.push(p);
+        if (ordKey) {
+          if (!paymentsByOrder.has(ordKey)) paymentsByOrder.set(ordKey, []);
+          paymentsByOrder.get(ordKey)!.push(p);
         }
       }
     } catch {
@@ -110,41 +151,38 @@ export class DbFinanceRepository {
 
     return rows.map((r) => {
       const inv = this.mapRowToInvoice(r);
-      const invKey = (r.invoice_no || "").trim().toUpperCase();
       const ordKey = (r.order_no || "").trim().toUpperCase();
-      const payments = paymentsByInv.get(invKey) || paymentsByInv.get(ordKey) || [];
-      if (payments.length > 0) {
-        inv.riwayatPembayaran = payments;
-        // Phase C Canonical Rule 1.B: Only payments with status_verifikasi = 'TERVERIFIKASI' and is_void = 0 qualify as valid paid
-        const verifiedPayments = payments.filter((p) => p.status_verifikasi === "TERVERIFIKASI" && !p.is_void);
-        const totalPaidFromPayments = verifiedPayments.reduce((acc, p) => acc + Number(p.nominal || 0), 0);
-        inv.dibayar = totalPaidFromPayments;
-        inv.terbayar = totalPaidFromPayments;
-        inv.sisa = Math.max(0, inv.totalTagihan - totalPaidFromPayments);
-        const overpayment = Math.max(0, totalPaidFromPayments - inv.totalTagihan);
-        (inv as any).overpayment = overpayment;
-        if (overpayment > 0) {
-          inv.status = "OVERPAID" as any;
-          (inv as any).settlementCondition = "OVERPAID";
-        } else if (inv.sisa === 0 && inv.totalTagihan > 0) {
-          inv.status = "PAID" as any;
-          (inv as any).settlementCondition = "BALANCED";
-        } else if (totalPaidFromPayments > 0) {
-          inv.status = "PARTIAL" as any;
-          (inv as any).settlementCondition = "UNDERPAID";
-        } else {
-          inv.status = "UNPAID" as any;
-          (inv as any).settlementCondition = "UNDERPAID";
-        }
+      const rawPayments = paymentsByOrder.get(ordKey) || [];
 
-        const lastVerified = verifiedPayments[verifiedPayments.length - 1] || payments[payments.length - 1];
-        if (lastVerified) {
-          inv.bank = lastVerified.nama_bank || inv.bank;
-          inv.metodePembayaran = lastVerified.metode_pembayaran || inv.metodePembayaran;
-          (inv as any).tanggalBayar = lastVerified.tanggal_bayar;
-          (inv as any).nomorRekening = lastVerified.nomor_rekening;
-        }
+      // Use shared canonical calculator (GAP-FIN-05)
+      const calc = calculateCanonicalInvoiceTotals({
+        invoiceNo: (r.invoice_no || "").trim(),
+        orderNo: (r.order_no || "").trim(),
+        totalTagihan: inv.totalTagihan,
+        biayaSamsat: inv.biayaSamsat,
+        isExplicitZero: Boolean(r.is_explicit_zero || (inv as any).isExplicitZero),
+        basePaid: Number(inv.dibayar ?? inv.terbayar ?? 0),
+        payments: rawPayments,
+      });
+
+      inv.dibayar = calc.verifiedPaid;
+      inv.terbayar = calc.verifiedPaid;
+      inv.sisa = calc.sisaTagihan;
+      (inv as any).overpayment = calc.overpayment;
+      inv.status = calc.status as any;
+      (inv as any).settlementCondition = calc.settlementCondition;
+      inv.profit = calc.grossProfit;
+      inv.profitStatus = calc.profitStatus as any;
+      inv.riwayatPembayaran = calc.allActivePayments;
+
+      const lastVerified = calc.eligibleVerifiedPayments[calc.eligibleVerifiedPayments.length - 1] || calc.allActivePayments[calc.allActivePayments.length - 1];
+      if (lastVerified) {
+        inv.bank = lastVerified.nama_bank || inv.bank;
+        inv.metodePembayaran = lastVerified.metode_pembayaran || inv.metodePembayaran;
+        (inv as any).tanggalBayar = lastVerified.tanggal_bayar;
+        (inv as any).nomorRekening = lastVerified.nomor_rekening;
       }
+
       return inv;
     });
   }
@@ -289,7 +327,7 @@ export class DbFinanceRepository {
     const stmt = db.prepare("SELECT * FROM finance_invoices WHERE id = ?");
     const row = stmt.get(id) as any;
     if (!row) return undefined;
-    return this.mapRowToInvoice(row);
+    return this.enrichInvoiceWithCanonicalCalculation(this.mapRowToInvoice(row));
   }
 
   public getInvoiceByOrderNo(orderNo: string): InvoiceBillingRecord | undefined {
@@ -297,26 +335,33 @@ export class DbFinanceRepository {
     const stmt = db.prepare("SELECT * FROM finance_invoices WHERE UPPER(order_no) = ? OR order_no = ?");
     const row = stmt.get(cleanNo, orderNo) as any;
     if (!row) return undefined;
-    return this.mapRowToInvoice(row);
+    return this.enrichInvoiceWithCanonicalCalculation(this.mapRowToInvoice(row));
   }
 
   public getInvoiceByNo(invoiceNo: string): InvoiceBillingRecord | undefined {
     const stmt = db.prepare("SELECT * FROM finance_invoices WHERE invoice_no = ?");
     const row = stmt.get(invoiceNo) as any;
     if (!row) return undefined;
-    return this.mapRowToInvoice(row);
+    return this.enrichInvoiceWithCanonicalCalculation(this.mapRowToInvoice(row));
   }
 
   public saveInvoice(invoice: Partial<InvoiceBillingRecord> & { invoiceNo: string; orderNo: string }): number {
     const existingByNo = this.getInvoiceByNo(invoice.invoiceNo);
     const existingByOrder = this.getInvoiceByOrderNo(invoice.orderNo);
 
-    // [DEF-FIN-001 REMEDIATION]: Anti-hijacking & Collision Prevention
-    // If an invoice with this invoiceNo already exists, it MUST belong to the same order.
-    // An order cannot overwrite, hijack, or re-link an invoice belonging to a different order.
-    if (existingByNo && existingByNo.orderNo !== invoice.orderNo) {
+    // [GAP-FIN-02 & DEF-FIN-001 REMEDIATION]: Anti-hijacking & Bi-directional Relational Validation
+    // 1. If an invoice with this invoiceNo already exists, it MUST belong to the same order.
+    if (existingByNo && existingByNo.orderNo && existingByNo.orderNo.trim().toUpperCase() !== invoice.orderNo.trim().toUpperCase()) {
       throw new Error(
         `[FINANCE_INVOICE_COLLISION] Nomor invoice '${invoice.invoiceNo}' sudah terdaftar untuk pesanan '${existingByNo.orderNo}'. Tidak dapat digunakan untuk pesanan '${invoice.orderNo}'.`
+      );
+    }
+
+    // 2. If an order already has an active invoice, prevent silent renumbering to a different invoiceNo.
+    const activeInvNo = existingByOrder ? (existingByOrder.invoiceNo || existingByOrder.invoice) : undefined;
+    if (existingByOrder && activeInvNo && activeInvNo.trim().toUpperCase() !== invoice.invoiceNo.trim().toUpperCase()) {
+      throw new Error(
+        `[RELATIONAL_INTEGRITY_VIOLATION] Pesanan '${invoice.orderNo}' sudah memiliki invoice terdaftar '${activeInvNo}'. Perubahan nomor invoice ke '${invoice.invoiceNo}' tidak diizinkan tanpa prosedur migrasi formal.`
       );
     }
 
@@ -595,10 +640,26 @@ export class DbFinanceRepository {
 
   /**
    * Checks if an invoice has recorded payment entries.
+   * Scoped to invoiceNo and optional orderNo to prevent false positives across collided invoices.
    */
-  public hasPayments(invoiceNo: string): boolean {
+  public hasPayments(invoiceNo: string, orderNo?: string): boolean {
+    let cleanOrderNo = orderNo;
+    if (!cleanOrderNo) {
+      try {
+        const invRow = db.prepare("SELECT order_no FROM finance_invoices WHERE invoice_no = ?").get(invoiceNo) as { order_no: string } | undefined;
+        cleanOrderNo = invRow?.order_no;
+      } catch {}
+    }
+
+    if (cleanOrderNo) {
+      const row = db
+        .prepare("SELECT COUNT(*) AS count FROM invoice_payments WHERE invoice_no = ? AND order_no = ? AND is_void = 0")
+        .get(invoiceNo, cleanOrderNo) as { count: number } | undefined;
+      return Boolean(row && row.count > 0);
+    }
+
     const row = db
-      .prepare("SELECT COUNT(*) AS count FROM invoice_payments WHERE invoice_no = ?")
+      .prepare("SELECT COUNT(*) AS count FROM invoice_payments WHERE invoice_no = ? AND is_void = 0")
       .get(invoiceNo) as { count: number } | undefined;
     return Boolean(row && row.count > 0);
   }
@@ -611,7 +672,7 @@ export class DbFinanceRepository {
     const inv = this.getInvoiceById(id);
     if (!inv) return false;
 
-    if (inv.invoiceNo && this.hasPayments(inv.invoiceNo)) {
+    if (inv.invoiceNo && this.hasPayments(inv.invoiceNo, inv.orderNo)) {
       throw new Error(`INVOICE_HAS_PAYMENTS: Cannot delete invoice '${inv.invoiceNo}' because it has recorded payments.`);
     }
 
@@ -622,7 +683,29 @@ export class DbFinanceRepository {
 
   // ─── INVOICE PAYMENTS REPOSITORY METHODS ────────────────────────────────────
 
-  public getValidPaymentsTotal(invoiceNo: string): number {
+  public getValidPaymentsTotal(invoiceNo: string, orderNo?: string): number {
+    let cleanOrderNo = orderNo;
+    if (!cleanOrderNo) {
+      // Resolve associated orderNo from finance_invoices to avoid cross-order aggregation (GAP-FIN-01)
+      try {
+        const invRow = db.prepare("SELECT order_no FROM finance_invoices WHERE invoice_no = ?").get(invoiceNo) as { order_no: string } | undefined;
+        cleanOrderNo = invRow?.order_no;
+      } catch {}
+    }
+
+    if (cleanOrderNo) {
+      const stmt = db.prepare(`
+        SELECT COALESCE(SUM(nominal), 0) AS total
+        FROM invoice_payments
+        WHERE invoice_no = ?
+          AND order_no = ?
+          AND is_void = 0
+          AND status_verifikasi = 'TERVERIFIKASI'
+      `);
+      const row = stmt.get(invoiceNo, cleanOrderNo) as { total: number } | undefined;
+      return row ? Math.round(Number(row.total)) : 0;
+    }
+
     const stmt = db.prepare(`
       SELECT COALESCE(SUM(nominal), 0) AS total
       FROM invoice_payments
@@ -631,7 +714,7 @@ export class DbFinanceRepository {
         AND status_verifikasi = 'TERVERIFIKASI'
     `);
     const row = stmt.get(invoiceNo) as { total: number } | undefined;
-    return row ? Number(row.total) : 0;
+    return row ? Math.round(Number(row.total)) : 0;
   }
 
   public getValidPaymentsTotalByOrder(orderNo: string): number {
@@ -643,11 +726,30 @@ export class DbFinanceRepository {
         AND status_verifikasi = 'TERVERIFIKASI'
     `);
     const row = stmt.get(orderNo) as { total: number } | undefined;
-    return row ? Number(row.total) : 0;
+    return row ? Math.round(Number(row.total)) : 0;
   }
 
-  public getPaymentsByInvoiceNo(invoiceNo: string): any[] {
-    const stmt = db.prepare("SELECT * FROM invoice_payments WHERE invoice_no = ? ORDER BY id ASC");
+  public getPaymentsByInvoiceAndOrder(invoiceNo: string, orderNo: string): any[] {
+    const stmt = db.prepare(`
+      SELECT * FROM invoice_payments
+      WHERE invoice_no = ? AND order_no = ? AND is_void = 0
+      ORDER BY id ASC
+    `);
+    return stmt.all(invoiceNo, orderNo);
+  }
+
+  public getPaymentsByInvoiceNo(invoiceNo: string, orderNo?: string): any[] {
+    let cleanOrderNo = orderNo;
+    if (!cleanOrderNo) {
+      try {
+        const invRow = db.prepare("SELECT order_no FROM finance_invoices WHERE invoice_no = ?").get(invoiceNo) as { order_no: string } | undefined;
+        cleanOrderNo = invRow?.order_no;
+      } catch {}
+    }
+    if (cleanOrderNo) {
+      return this.getPaymentsByInvoiceAndOrder(invoiceNo, cleanOrderNo);
+    }
+    const stmt = db.prepare("SELECT * FROM invoice_payments WHERE invoice_no = ? AND is_void = 0 ORDER BY id ASC");
     return stmt.all(invoiceNo);
   }
 
@@ -661,22 +763,89 @@ export class DbFinanceRepository {
     return stmt.all();
   }
 
-  public getInvoicePaymentById(paymentId: number): any {
-    const stmt = db.prepare("SELECT * FROM invoice_payments WHERE id = ?");
-    return stmt.get(paymentId);
+  public getInvoicePaymentById(paymentId: number | string): any {
+    if (typeof paymentId === "number" || /^\d+$/.test(String(paymentId).trim())) {
+      const numericId = typeof paymentId === "number" ? paymentId : parseInt(String(paymentId).trim(), 10);
+      const stmt = db.prepare("SELECT * FROM invoice_payments WHERE id = ?");
+      return stmt.get(numericId);
+    }
+    const cleanStr = String(paymentId).trim();
+    if (isValidCanonicalPaymentId(cleanStr)) {
+      const stmt = db.prepare("SELECT * FROM invoice_payments WHERE payment_id = ?");
+      return stmt.get(cleanStr);
+    }
+    return undefined;
   }
 
-  public updateInvoicePayment(paymentId: number, updates: Partial<any>): boolean {
-    const fields = Object.keys(updates);
+  public getInvoicePaymentByPaymentId(paymentId: string): any {
+    const cleanStr = String(paymentId || "").trim();
+    if (!cleanStr) return undefined;
+    const stmt = db.prepare("SELECT * FROM invoice_payments WHERE payment_id = ?");
+    return stmt.get(cleanStr);
+  }
+
+  public updateInvoicePayment(paymentId: number | string, updates: Partial<any>): boolean {
+    const existing = this.getInvoicePaymentById(paymentId);
+    if (!existing) return false;
+    const numericId = existing.id;
+
+    const COLUMN_MAP: Record<string, string> = {
+      paymentId: "payment_id",
+      invoiceNo: "invoice_no",
+      orderNo: "order_no",
+      metodePembayaran: "metode_pembayaran",
+      namaBank: "nama_bank",
+      nomorRekening: "nomor_rekening",
+      tanggalBayar: "tanggal_bayar",
+      documentId: "document_id",
+      kasKantorId: "kas_kantor_id",
+      statusVerifikasi: "status_verifikasi",
+      idempotencyKey: "idempotency_key",
+      verifiedBy: "verified_by",
+      verifiedAt: "verified_at",
+      isVoid: "is_void",
+      voidReason: "void_reason",
+      voidAt: "void_at",
+      voidBy: "void_by",
+      voidKasKantorId: "void_kas_kantor_id",
+    };
+
+    const normalizedUpdates: Record<string, any> = {};
+    for (const [k, v] of Object.entries(updates)) {
+      const col = COLUMN_MAP[k] || k;
+      normalizedUpdates[col] = v;
+    }
+
+    // GAP-FIN-02: Prevent silent or unauthorized changes to invoice_no or order_no
+    const newInvoiceNo = normalizedUpdates.invoice_no !== undefined ? String(normalizedUpdates.invoice_no).trim() : existing.invoice_no;
+    const newOrderNo = normalizedUpdates.order_no !== undefined ? String(normalizedUpdates.order_no).trim() : existing.order_no;
+
+    if (normalizedUpdates.invoice_no !== undefined || normalizedUpdates.order_no !== undefined) {
+      try {
+        const targetInvoice = this.getInvoiceByNo(newInvoiceNo);
+        if (targetInvoice && targetInvoice.orderNo) {
+          if (targetInvoice.orderNo.trim().toUpperCase() !== newOrderNo.toUpperCase()) {
+            throw new Error(
+              `[RELATIONAL_INTEGRITY_VIOLATION] Cannot update payment #${paymentId}: Invoice '${newInvoiceNo}' belongs to order '${targetInvoice.orderNo}', not '${newOrderNo}'.`
+            );
+          }
+        }
+      } catch (err: any) {
+        if (err?.message?.includes("RELATIONAL_INTEGRITY_VIOLATION")) throw err;
+      }
+    }
+
+    const fields = Object.keys(normalizedUpdates);
     if (fields.length === 0) return true;
     const setClause = fields.map((f) => `${f} = ?`).join(", ");
-    const values = fields.map((f) => updates[f]);
+    const values = fields.map((f) => normalizedUpdates[f]);
     const stmt = db.prepare(`UPDATE invoice_payments SET ${setClause} WHERE id = ?`);
-    const res = stmt.run(...values, paymentId);
+    const res = stmt.run(...values, numericId);
     return res.changes > 0;
   }
 
   public recordInvoicePayment(data: {
+    paymentId?: string;
     invoiceNo: string;
     orderNo: string;
     nominal: number;
@@ -692,19 +861,62 @@ export class DbFinanceRepository {
     verifiedAt?: string;
     catatan?: string;
   }): any {
+    // Validate paymentId if provided
+    let cleanPaymentId: string | null = null;
+    if (data.paymentId !== undefined && data.paymentId !== null) {
+      const trimmed = String(data.paymentId).trim();
+      if (!isValidCanonicalPaymentId(trimmed)) {
+        throw new ApiError(
+          400,
+          "VALIDATION_ERROR",
+          "Payment ID harus berupa UUID v4 kanonis dengan prefix 'pay-'."
+        );
+      }
+      cleanPaymentId = trimmed;
+    }
+
+    // GAP-FIN-02: Fail-closed relational integrity validation
+    const cleanInvoiceNo = (data.invoiceNo || "").trim();
+    const cleanOrderNo = (data.orderNo || "").trim();
+
+    if (!cleanInvoiceNo) {
+      throw new Error("[RELATIONAL_INTEGRITY_VIOLATION] invoiceNo is required for invoice_payments.");
+    }
+    if (!cleanOrderNo) {
+      throw new Error("[RELATIONAL_INTEGRITY_VIOLATION] orderNo is required for invoice_payments.");
+    }
+
+    try {
+      const targetInvoice = this.getInvoiceByNo(cleanInvoiceNo);
+      if (targetInvoice && targetInvoice.orderNo) {
+        const invoiceOrderNo = targetInvoice.orderNo.trim().toUpperCase();
+        if (invoiceOrderNo !== cleanOrderNo.toUpperCase()) {
+          throw new Error(
+            `[RELATIONAL_INTEGRITY_VIOLATION] Mismatch between invoice and order. Invoice '${cleanInvoiceNo}' belongs to order '${targetInvoice.orderNo}', but payment payload specifies order '${cleanOrderNo}'. Payment rejected.`
+          );
+        }
+      }
+    } catch (e: any) {
+      if (e?.message?.includes("RELATIONAL_INTEGRITY_VIOLATION")) {
+        throw e;
+      }
+      // Non-fatal if invoice table not yet initialized in early migration
+    }
+
     const stmt = db.prepare(`
       INSERT INTO invoice_payments (
-        invoice_no, order_no, nominal, metode_pembayaran, nama_bank,
+        payment_id, invoice_no, order_no, nominal, metode_pembayaran, nama_bank,
         nomor_rekening, tanggal_bayar, document_id, kas_kantor_id,
         status_verifikasi, idempotency_key, verified_by, verified_at,
         catatan, created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
     `);
 
     const res = stmt.run(
-      data.invoiceNo,
-      data.orderNo,
-      data.nominal,
+      cleanPaymentId,
+      cleanInvoiceNo,
+      cleanOrderNo,
+      Math.round(Number(data.nominal)),
       data.metodePembayaran,
       data.namaBank || null,
       data.nomorRekening || null,
@@ -720,7 +932,10 @@ export class DbFinanceRepository {
 
     return {
       id: Number(res.lastInsertRowid),
+      payment_id: cleanPaymentId,
+      paymentId: cleanPaymentId,
       ...data,
+      nominal: Math.round(Number(data.nominal)),
       createdAt: new Date().toISOString(),
     };
   }
@@ -848,6 +1063,9 @@ export class DbFinanceRepository {
       saldo: r.saldo,
       total: r.saldo,
       penanggungJawab: r.penanggung_jawab || undefined,
+      kategori: r.kategori || undefined,
+      orderNo: r.order_no || undefined,
+      invoiceNo: r.invoice_no || undefined,
     } as unknown as KasKantorItem;
   }
 
@@ -1056,7 +1274,7 @@ export class DbFinanceRepository {
 
   // ─── IDEMPOTENCY RECORD OPERATIONS ──────────────────────────────────────────
 
-  public getIdempotencyRecord(key: string, scope = "payment"): {
+  public getIdempotencyRecord(key: string, scope = "PAYMENT_SUBMISSION"): {
     key: string;
     scope: string;
     user_id?: string | null;
@@ -1065,8 +1283,28 @@ export class DbFinanceRepository {
     response_json: string;
     created_at: string;
   } | undefined {
-    const stmt = db.prepare("SELECT * FROM idempotency_keys WHERE key = ? AND scope = ?");
-    return stmt.get(key, scope) as any;
+    const cleanKey = (key || "").trim();
+    if (!cleanKey) return undefined;
+
+    const scopedKey = formatScopedIdempotencyKey(scope, cleanKey);
+
+    // 1. Primary Lookup: Look for new scoped key (${scope}::${clientKey})
+    const stmtScoped = db.prepare("SELECT * FROM idempotency_keys WHERE key = ?");
+    const recordScoped = stmtScoped.get(scopedKey) as any;
+    if (recordScoped) return recordScoped;
+
+    // 2. Dual-Read Fallback: Look for legacy unprefixed key matching this exact scope
+    const stmtLegacy = db.prepare("SELECT * FROM idempotency_keys WHERE key = ? AND scope = ?");
+    const recordLegacy = stmtLegacy.get(cleanKey, scope) as any;
+    if (recordLegacy) return recordLegacy;
+
+    // 3. Fallback for legacy scope alias: 'payment' -> 'PAYMENT_SUBMISSION'
+    if (scope === "PAYMENT_SUBMISSION") {
+      const recordLegacyAlias = stmtLegacy.get(cleanKey, "payment") as any;
+      if (recordLegacyAlias) return recordLegacyAlias;
+    }
+
+    return undefined;
   }
 
   public saveIdempotencyRecord(data: {
@@ -1080,10 +1318,6 @@ export class DbFinanceRepository {
     const stmt = db.prepare(`
       INSERT INTO idempotency_keys (key, scope, user_id, request_hash, resource_id, response_json, created_at)
       VALUES (?, ?, ?, ?, ?, ?, datetime('now'))
-      ON CONFLICT(key) DO UPDATE SET
-        user_id = excluded.user_id,
-        request_hash = excluded.request_hash,
-        response_json = excluded.response_json
     `);
     stmt.run(data.key, data.scope, data.user_id || null, data.request_hash, data.resource_id || null, data.response_json);
   }

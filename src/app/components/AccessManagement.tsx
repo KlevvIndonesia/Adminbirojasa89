@@ -146,7 +146,7 @@ export function AccessManagement({ currentUserId, currentUserName }: AccessManag
 
   // Sync when selectedRole changes or external matrix updates
   useEffect(() => {
-    const validRole = (["admin", "finance"] as Role[]).includes(selectedRole) ? selectedRole : "admin";
+    const validRole = (["svp", "admin", "finance", "messenger"] as Role[]).includes(selectedRole) ? selectedRole : "admin";
     if (validRole !== selectedRole) {
       setSelectedRole(validRole);
       return;
@@ -156,42 +156,12 @@ export function AccessManagement({ currentUserId, currentUserName }: AccessManag
     setHasChanges(false);
   }, [selectedRole, matrix]);
 
-  const handleToggleView = (moduleId: string) => {
-    setLocalPermissions((prev) => {
-      const current = prev.modules[moduleId] || { view: false, manage: false };
-      const nextView = !current.view;
-      return {
-        ...prev,
-        modules: {
-          ...prev.modules,
-          [moduleId]: {
-            view: nextView,
-            // If view is disabled, manage must also be disabled
-            manage: nextView ? current.manage : false,
-          },
-        },
-      };
-    });
-    setHasChanges(true);
+  const handleToggleView = (_moduleId: string) => {
+    // View-only static RBAC (BD-RBAC-06)
   };
 
-  const handleToggleManage = (moduleId: string) => {
-    setLocalPermissions((prev) => {
-      const current = prev.modules[moduleId] || { view: false, manage: false };
-      const nextManage = !current.manage;
-      return {
-        ...prev,
-        modules: {
-          ...prev.modules,
-          [moduleId]: {
-            // If manage is enabled, view must be true
-            view: nextManage ? true : current.view,
-            manage: nextManage,
-          },
-        },
-      };
-    });
-    setHasChanges(true);
+  const handleToggleManage = (_moduleId: string) => {
+    // View-only static RBAC (BD-RBAC-06)
   };
 
   const handleSave = async () => {
@@ -267,6 +237,12 @@ export function AccessManagement({ currentUserId, currentUserName }: AccessManag
       badge: "Kurir Lapangan",
       color: "border-amber-500 text-amber-600 bg-amber-500/10",
     },
+    unknown: {
+      label: "Tidak Dikenal",
+      desc: "Role tidak dikenal atau belum di-assign (Fail-Closed). Tidak memiliki izin akses.",
+      badge: "No Access",
+      color: "border-red-500 text-red-600 bg-red-500/10",
+    },
   };
 
   return (
@@ -286,26 +262,10 @@ export function AccessManagement({ currentUserId, currentUserName }: AccessManag
         </div>
 
         <div className="flex items-center gap-2">
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={handleReset}
-            className="h-8 text-xs gap-1.5"
-            title="Reset ke pengaturan standar sistem"
-          >
-            <RotateCcw className="w-3.5 h-3.5" />
-            Reset Standar
-          </Button>
-
-          <Button
-            size="sm"
-            onClick={handleSave}
-            disabled={!hasChanges && false}
-            className="h-8 text-xs gap-1.5 bg-primary hover:bg-primary/90 text-primary-foreground font-medium shadow-xs"
-          >
-            <Save className="w-3.5 h-3.5" />
-            Simpan Hak Akses
-          </Button>
+          <Badge variant="outline" className="h-8 px-3 text-xs gap-1.5 border-primary/40 bg-primary/5 text-primary font-medium">
+            <ShieldCheck className="w-3.5 h-3.5 text-primary" />
+            <span>Dokumentasi Hak Akses Statis</span>
+          </Badge>
         </div>
       </div>
 
@@ -329,9 +289,20 @@ export function AccessManagement({ currentUserId, currentUserName }: AccessManag
         </div>
       )}
 
-      {/* ROLE SELECTOR TABS (MANAGEABLE ROLES: ADMIN & FINANCE - MESSENGER DI DASHBOARD TERPISAH) */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
-        {(["admin", "finance"] as Role[]).map((role) => {
+      {/* STATIC RBAC DOCUMENTATION BANNER (BD-RBAC-06) */}
+      <div className="p-3.5 rounded-xl bg-blue-500/10 border border-blue-500/20 flex items-start gap-3 text-xs text-blue-700 dark:text-blue-400">
+        <Info className="w-4 h-4 shrink-0 mt-0.5 text-primary" />
+        <div>
+          <p className="font-semibold text-foreground">Kebijakan Hak Akses Statis (BD-RBAC-06)</p>
+          <p className="text-[11px] text-muted-foreground mt-0.5 leading-relaxed">
+            Matriks hak akses dan kewenangan sistem ditentukan secara terpusat oleh Backend sebagai Single Source of Truth (SSoT). Halaman ini berfungsi sebagai dokumentasi izin aktif untuk setiap role. Pengubahan izin secara dinamis telah dinonaktifkan untuk menjamin integritas tata kelola operasional dan kepatuhan RBAC.
+          </p>
+        </div>
+      </div>
+
+      {/* ROLE SELECTOR TABS (4 CANONICAL ROLES) */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2.5">
+        {(["svp", "admin", "finance", "messenger"] as Role[]).map((role) => {
           const isSelected = selectedRole === role;
           const meta = roleMeta[role];
           return (
@@ -425,8 +396,8 @@ export function AccessManagement({ currentUserId, currentUserName }: AccessManag
                           <span className="text-[10px] sm:hidden text-muted-foreground font-medium">Lihat:</span>
                           <Switch
                             checked={perm.view}
-                            onCheckedChange={() => handleToggleView(mod.id)}
-                            aria-label={`Toggle view for ${mod.label}`}
+                            disabled={true}
+                            aria-label={`View permission for ${mod.label}`}
                           />
                         </div>
 
@@ -435,9 +406,8 @@ export function AccessManagement({ currentUserId, currentUserName }: AccessManag
                           <span className="text-[10px] sm:hidden text-muted-foreground font-medium">Kelola:</span>
                           <Switch
                             checked={perm.manage}
-                            disabled={!perm.view}
-                            onCheckedChange={() => handleToggleManage(mod.id)}
-                            aria-label={`Toggle manage for ${mod.label}`}
+                            disabled={true}
+                            aria-label={`Manage permission for ${mod.label}`}
                           />
                         </div>
                       </div>
@@ -454,7 +424,7 @@ export function AccessManagement({ currentUserId, currentUserName }: AccessManag
       <div className="p-3 sm:p-3.5 bg-card/95 backdrop-blur-md rounded-xl border border-border/80 shadow-xs flex items-center gap-2 text-xs text-muted-foreground">
         <Info className="w-4 h-4 text-primary shrink-0" />
         <span>
-          Perubahan akan langsung mengupdate menu navigasi, route guard, dan tombol aksi untuk seluruh akun dengan role <strong>{selectedRole.toUpperCase()}</strong> setelah Anda mengklik <strong>Simpan Hak Akses</strong>.
+          Matriks hak akses bersifat statis dan mengikat seluruh pengguna sesuai role kanonikal masing-masing (SVP, Admin, Finance, Messenger) berdasarkan Backend SSoT.
         </span>
       </div>
 

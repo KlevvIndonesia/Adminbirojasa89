@@ -146,9 +146,7 @@ function AppContent() {
       const savedUserStr = localStorage.getItem("auth_user");
       if (savedUserStr) {
         const savedUser = JSON.parse(savedUserStr);
-        const uName = (savedUser.nama || savedUser.name || "").toLowerCase();
-        const defaultMsgId = uName.includes("andi") ? 'EMP-0005' : 'EMP-0004';
-        return savedUser.employeeId || (savedUser.role === 'messenger' ? defaultMsgId : '');
+        return savedUser.employeeId || '';
       }
     } catch {}
     return "";
@@ -309,8 +307,7 @@ function AppContent() {
     setUserRole(role);
     setUserName(name);
     setUserId(id);
-    const defaultMsgId = name?.toLowerCase().includes("andi") ? 'EMP-0005' : 'EMP-0004';
-    const finalEmpId = empId || (role === 'messenger' ? defaultMsgId : '');
+    const finalEmpId = empId || '';
     setEmployeeId(finalEmpId);
     setIsAuthenticated(true);
 
@@ -385,7 +382,7 @@ function AppContent() {
             userId,
             userName,
             role: 'messenger',
-            employeeId: employeeId || (userName?.toLowerCase().includes("andi") ? 'EMP-0005' : 'EMP-0004'),
+            employeeId: employeeId || '',
           }}
         />
       </Suspense>
